@@ -1,0 +1,210 @@
+{
+  "provider": "azure",
+  "tenant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "subscription_id": "00000000-0000-0000-0000-000000000001",
+  "version": "1.0",
+  "errors": {},
+  "data": {
+    "network_security_groups": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkSecurityGroups/nsg-jumpbox",
+        "name": "nsg-jumpbox",
+        "location": "westeurope",
+        "tags": {
+          "environment": "production"
+        },
+        "properties": {
+          "securityRules": [
+            {
+              "name": "AllowRDP",
+              "properties": {
+                "direction": "Inbound",
+                "access": "Allow",
+                "protocol": "Tcp",
+                "sourceAddressPrefix": "*",
+                "destinationPortRange": "3389",
+                "priority": 100
+              }
+            },
+            {
+              "name": "AllowHTTPS",
+              "properties": {
+                "direction": "Inbound",
+                "access": "Allow",
+                "protocol": "Tcp",
+                "sourceAddressPrefix": "Internet",
+                "destinationPortRanges": [
+                  "443"
+                ],
+                "priority": 200
+              }
+            }
+          ],
+          "defaultSecurityRules": [
+            {
+              "name": "DenyAllInBound"
+            }
+          ],
+          "networkInterfaces": [
+            {
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkInterfaces/nic-jumpbox"
+            }
+          ]
+        }
+      }
+    ],
+    "network_interfaces": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkInterfaces/nic-jumpbox",
+        "name": "nic-jumpbox",
+        "properties": {
+          "networkSecurityGroup": {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkSecurityGroups/nsg-jumpbox"
+          },
+          "ipConfigurations": [
+            {
+              "name": "ipconfig1",
+              "properties": {
+                "publicIPAddress": {
+                  "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/publicIPAddresses/pip-jumpbox"
+                },
+                "subnet": {
+                  "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/virtualNetworks/vnet/subnets/default"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "public_ip_addresses": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/publicIPAddresses/pip-jumpbox",
+        "name": "pip-jumpbox",
+        "properties": {
+          "ipAddress": "20.50.10.10"
+        }
+      }
+    ],
+    "virtual_machines": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-jumpbox",
+        "name": "vm-jumpbox",
+        "location": "westeurope",
+        "tags": {
+          "environment": "production",
+          "criticality": "high"
+        },
+        "properties": {
+          "hardwareProfile": {
+            "vmSize": "Standard_D2s_v3"
+          },
+          "storageProfile": {
+            "osDisk": {
+              "osType": "Windows"
+            }
+          },
+          "networkProfile": {
+            "networkInterfaces": [
+              {
+                "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkInterfaces/nic-jumpbox"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "storage_accounts": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stgpublic",
+        "name": "stgpublic",
+        "location": "westeurope",
+        "tags": {},
+        "properties": {
+          "allowBlobPublicAccess": true,
+          "supportsHttpsTrafficOnly": true,
+          "minimumTlsVersion": "TLS1_2",
+          "allowSharedKeyAccess": true,
+          "publicNetworkAccess": "Enabled",
+          "networkAcls": {
+            "defaultAction": "Allow",
+            "ipRules": [],
+            "virtualNetworkRules": []
+          },
+          "encryption": {
+            "requireInfrastructureEncryption": false
+          }
+        }
+      }
+    ],
+    "sql_servers": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Sql/servers/sql-prod-01",
+        "name": "sql-prod-01",
+        "location": "westeurope",
+        "tags": {
+          "env": "prod"
+        },
+        "properties": {
+          "publicNetworkAccess": "Enabled",
+          "version": "12.0",
+          "administratorLogin": "sqladmin",
+          "privateEndpointConnections": []
+        },
+        "_firewall_rules": [
+          {
+            "name": "AllowAll",
+            "properties": {
+              "startIpAddress": "0.0.0.0",
+              "endIpAddress": "255.255.255.255"
+            }
+          }
+        ]
+      }
+    ],
+    "postgresql_servers": [],
+    "diagnostic_settings": {
+      "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stgpublic": [],
+      "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Sql/servers/sql-prod-01": [
+        {
+          "name": "audit",
+          "properties": {
+            "workspaceId": "/ws/1"
+          }
+        }
+      ]
+    },
+    "users": [
+      {
+        "id": "u-admin",
+        "displayName": "Arben K",
+        "userPrincipalName": "arben@contoso.com",
+        "accountEnabled": true
+      },
+      {
+        "id": "u-normal",
+        "displayName": "Normal User",
+        "userPrincipalName": "normal@contoso.com",
+        "accountEnabled": true
+      }
+    ],
+    "directory_roles": [
+      {
+        "id": "r-ga",
+        "displayName": "Global Administrator"
+      }
+    ],
+    "user_role_map": {
+      "u-admin": [
+        "Global Administrator"
+      ]
+    },
+    "authentication_methods": {
+      "u-admin": [
+        {
+          "@odata.type": "#microsoft.graph.passwordAuthenticationMethod"
+        }
+      ]
+    }
+  }
+}

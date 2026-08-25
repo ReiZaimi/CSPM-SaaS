@@ -1,0 +1,126 @@
+"""The Azure connector: validate, collect, normalize."""
+
+from typing import Any
+
+import httpx
+
+from app.connectors.azure.auth import REQUIRED_GRAPH_PERMISSIONS, TokenProvider
+from app.connectors.azure.client import ArmClient, GraphClient
+from app.connectors.azure.collector import AzureCollector
+from app.connectors.azure.normalizer import AzureNormalizer
+from app.connectors.base import CloudConnector, ConnectionCheck, NormalizedState, RawSnapshot
+from app.core.enums import Provider
+from app.core.logging import get_logger
+
+log = get_logger(__name__)
+
+
+class AzureConnector(CloudConnector):
+    provider = Provider.AZURE
+
+    def __init__(
+        self,
+        tenant_id: str,
+        subscription_id: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.tenant_id = tenant_id
+        self.subscription_id = subscription_id
+        self._http = http_client
+        self._normalizer = AzureNormalizer()
+
+    async def validate_connection(self) -> ConnectionCheck:
+        """Verify both grants by using them, not by asking whether they exist.
+
+        Graph consent and the RBAC Reader assignment are independent, and a
+        customer very often completes the first and forgets the second. The two
+        are therefore checked separately so the UI can say which one is missing
+        (AZURE_INTEGRATION.md section 2).
+        """
+        check = ConnectionCheck(ok=False, tenant_id=self.tenant_id)
+
+        try:
+            tokens = TokenProvider(self.tenant_id)
+        except Exception as exc:
+            check.problems.append(f"Could not authenticate to tenant {self.tenant_id}: {exc}")
+            check.detail = "Authentication failed"
+            return check
+
+        # --- Graph: did admin consent actually happen? ----------------------
+        async with GraphClient(tokens, self._http) as graph:
+            try:
+                await graph.get_organization()
+                check.permissions_verified.append("Microsoft Graph: Directory.Read.All")
+            except Exception as exc:
+                check.problems.append(
+                    "Microsoft Graph directory data is not readable. Admin consent may not "
+                    f"have been granted. ({exc})"
+                )
+
+        # --- ARM: was the Reader role assigned? -----------------------------
+        async with ArmClient(tokens, self._http) as arm:
+            try:
+                subscriptions = await arm.list_subscriptions()
+                visible = [
+                    str(s["subscriptionId"])
+                    for s in subscriptions
+                    if s.get("subscriptionId")
+                ]
+
+                if not subscriptions:
+                    check.problems.append(
+                        "No subscriptions are visible. Assign the Reader role to CloudGuard "
+                        "on the subscription you want to scan."
+                    )
+                elif self.subscription_id and self.subscription_id not in visible:
+                    check.problems.append(
+                        f"Subscription {self.subscription_id} is not visible to CloudGuard. "
+                        "Check that the Reader role is assigned on that subscription."
+                    )
+                else:
+                    chosen = self.subscription_id or visible[0]
+                    check.subscription_id = chosen
+                    check.permissions_verified.append(f"Azure RBAC Reader on {chosen}")
+
+                    # Reading a resource list proves the role works, not just
+                    # that the subscription is listed.
+                    await arm.list_resources(chosen)
+                    check.permissions_verified.append("Resource inventory readable")
+            except Exception as exc:
+                check.problems.append(f"Azure Resource Manager is not readable: {exc}")
+
+        check.ok = not check.problems
+        check.detail = (
+            "Read-only access verified"
+            if check.ok
+            else "; ".join(check.problems)
+        )
+        return check
+
+    async def collect(self) -> RawSnapshot:
+        if not self.subscription_id:
+            raise ValueError("A subscription id is required to collect Azure state")
+        collector = AzureCollector(
+            tenant_id=self.tenant_id,
+            subscription_id=self.subscription_id,
+            http_client=self._http,
+        )
+        return await collector.collect()
+
+    def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
+        return self._normalizer.normalize(snapshot)
+
+    @staticmethod
+    def required_permissions() -> dict[str, Any]:
+        """What CloudGuard asks for, in the form the onboarding UI shows it.
+
+        Presented to the customer before they consent, because "what does this
+        thing get to see" is the first question anyone sensible asks
+        (SECURITY.md section 5).
+        """
+        return {
+            "graph_application_permissions": REQUIRED_GRAPH_PERMISSIONS,
+            "azure_rbac_role": "Reader",
+            "access_type": "read-only",
+            "writes_performed": "none",
+        }

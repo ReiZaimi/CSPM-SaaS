@@ -1,0 +1,43 @@
+from uuid import UUID
+
+from fastapi import APIRouter, status
+
+from app.core.deps import CurrentUser, DbSession, Tenant
+from app.core.errors import OrganizationNotFound, envelope
+from app.models.organization import Organization
+from app.schemas.organization import OrganizationCreate, OrganizationOut
+from app.services import organizations as service
+
+router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_organization(
+    payload: OrganizationCreate, user: CurrentUser, session: DbSession
+) -> dict:
+    org = await service.create_organization(session, user, payload)
+    return envelope(OrganizationOut.model_validate(org).model_dump(mode="json"))
+
+
+@router.get("")
+async def list_organizations(user: CurrentUser, session: DbSession) -> dict:
+    memberships = await service.list_memberships(session, user)
+    return envelope(
+        [
+            {
+                **OrganizationOut.model_validate(org).model_dump(mode="json"),
+                "role": role.value,
+            }
+            for org, role in memberships
+        ]
+    )
+
+
+@router.get("/{organization_id}")
+async def get_organization(organization_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    # RLS would hide another tenant's row anyway; this returns the honest 404
+    # rather than letting a NULL propagate.
+    org = await session.get(Organization, organization_id)
+    if org is None:
+        raise OrganizationNotFound()
+    return envelope(OrganizationOut.model_validate(org).model_dump(mode="json"))

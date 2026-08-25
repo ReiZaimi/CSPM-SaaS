@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    name: API — lint, types, tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cloudguard
+          POSTGRES_PASSWORD: cloudguard
+          POSTGRES_DB: cloudguard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cloudguard"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    env:
+      # RLS tests need the non-owner role, exactly as production does -- running
+      # them as the owner would silently pass while proving nothing.
+      DATABASE_URL: postgresql+asyncpg://cloudguard_app:cloudguard_app@localhost:5432/cloudguard
+      DATABASE_OWNER_URL: postgresql+asyncpg://cloudguard:cloudguard@localhost:5432/cloudguard
+      REDIS_URL: redis://localhost:6379/0
+      SUPABASE_JWT_SECRET: ci-test-secret
+      APP_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Create the RLS-constrained application role
+        env:
+          PGPASSWORD: cloudguard
+        run: psql -h localhost -U cloudguard -d cloudguard -f infrastructure/docker/postgres-init.sql
+
+      - name: Migrate
+        working-directory: apps/api
+        run: alembic upgrade head
+
+      - name: Lint
+        working-directory: apps/api
+        run: ruff check .
+
+      - name: Type check
+        working-directory: apps/api
+        run: mypy app
+
+      - name: Test
+        working-directory: apps/api
+        run: pytest -q
+
+  web:
+    name: Web — types and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package.json
+
+      - name: Install
+        working-directory: apps/web
+        run: npm install
+
+      - name: Type check
+        working-directory: apps/web
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: apps/web
+        run: npm test
+
+      - name: Build
+        working-directory: apps/web
+        run: npm run build

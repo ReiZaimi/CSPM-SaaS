@@ -1,0 +1,18 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-jumpbox",
+  "resource_type": "virtual_machine",
+  "name": "vm-jumpbox",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "HIGH",
+  "data_sensitivity": "MEDIUM",
+  "public_exposure": "CRITICAL",
+  "metadata": {
+    "has_public_ip": true,
+    "public_ips": [
+      "20.50.10.10"
+    ],
+    "os_type": "Windows",
+    "vm_size": "Standard_D2s_v3"
+  }
+}

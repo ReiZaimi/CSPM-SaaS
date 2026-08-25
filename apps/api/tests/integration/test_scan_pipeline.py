@@ -1,0 +1,446 @@
+"""The full product loop, end to end against a real database.
+
+    connect -> scan -> discover -> evaluate -> findings -> risk
+            -> (fix) -> rescan -> verified resolution
+
+The Azure connector is replaced with one that replays a recorded snapshot. That
+is test plumbing, not a product component: there is no MockAzureConnector in the
+application, and CI should not make live Azure calls on every commit
+(TESTING.md section 5 / AZURE_INTEGRATION.md section 1).
+"""
+
+import copy
+import json
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+from sqlalchemy import text
+
+from app.connectors.azure.normalizer import AzureNormalizer
+from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
+from app.core.db import service_session
+from app.core.enums import (
+    CloudAccountStatus,
+    ConsentStatus,
+    FindingStatus,
+    Level,
+    Provider,
+    RiskStatus,
+    ScanStatus,
+)
+from app.models.cloud_account import CloudAccount
+from app.models.finding import Finding
+from app.models.scan import Scan
+from app.services import scanner as scanner_module
+from app.services.scanner import ScanPipeline
+from tests.integration.conftest import create_org_as
+
+pytestmark = pytest.mark.integration
+
+RAW = Path(__file__).parent.parent / "fixtures" / "azure_raw"
+USER = uuid.UUID("cccccccc-0000-0000-0000-00000000000c")
+
+
+def load_raw(name: str = "snapshot_mixed") -> dict:
+    return json.loads((RAW / f"{name}.json").read_text())
+
+
+class ReplayConnector(CloudConnector):
+    """Replays a recorded Azure snapshot through the real normalizer."""
+
+    provider = Provider.AZURE
+
+    def __init__(self, payload: dict, **_: object) -> None:
+        self.payload = payload
+        self._normalizer = AzureNormalizer()
+
+    async def validate_connection(self):  # pragma: no cover -- not used here
+        raise NotImplementedError
+
+    async def collect(self) -> RawSnapshot:
+        return RawSnapshot(
+            provider=Provider.AZURE,
+            tenant_id=self.payload["tenant_id"],
+            subscription_id=self.payload["subscription_id"],
+            version=self.payload["version"],
+            data=copy.deepcopy(self.payload["data"]),
+            errors=copy.deepcopy(self.payload["errors"]),
+        )
+
+    def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
+        return self._normalizer.normalize(snapshot)
+
+
+@pytest.fixture
+def replay(monkeypatch):
+    """Point the pipeline at a snapshot of our choosing."""
+    holder = {"payload": load_raw()}
+
+    def _factory(_provider, **kwargs):
+        return ReplayConnector(holder["payload"], **kwargs)
+
+    monkeypatch.setattr(scanner_module, "get_connector", _factory)
+    return holder
+
+
+@pytest.fixture
+async def connected_account(cleanup_orgs):
+    org_id = await create_org_as(USER, "Scan Test Org")
+    cleanup_orgs.append(org_id)
+
+    async with service_session() as session:
+        account = CloudAccount(
+            organization_id=org_id,
+            provider=Provider.AZURE,
+            account_name="Production Subscription",
+            tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            subscription_id="00000000-0000-0000-0000-000000000001",
+            consent_status=ConsentStatus.GRANTED,
+            rbac_verified_at=datetime.now(UTC),
+            status=CloudAccountStatus.ACTIVE,
+        )
+        session.add(account)
+        await session.commit()
+        return org_id, account.id
+
+
+async def run_scan(org_id: uuid.UUID, account_id: uuid.UUID) -> uuid.UUID:
+    async with service_session() as session:
+        scan = Scan(
+            organization_id=org_id,
+            cloud_account_id=account_id,
+            status=ScanStatus.QUEUED,
+        )
+        session.add(scan)
+        await session.commit()
+        scan_id = scan.id
+
+    await ScanPipeline(scan_id).run()
+    return scan_id
+
+
+async def fetch(sql: str, params: dict) -> list:
+    async with service_session() as session:
+        return list((await session.execute(text(sql), params)).all())
+
+
+class TestFirstScan:
+    async def test_scan_completes_and_records_a_snapshot(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            snapshot = (
+                await session.execute(
+                    text("SELECT id FROM cloud_snapshots WHERE scan_id = :s"),
+                    {"s": scan_id},
+                )
+            ).scalar_one_or_none()
+
+        assert scan.status == ScanStatus.COMPLETED
+        assert scan.resource_count > 0
+        assert scan.rule_count == 10
+        # Every scan produces exactly one snapshot -- no exceptions.
+        assert snapshot is not None
+
+    async def test_assets_are_discovered(self, replay, connected_account) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT resource_type, name FROM cloud_resources WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        types = {r[0] for r in rows}
+        assert "network_security_group" in types
+        assert "virtual_machine" in types
+        assert "storage_account" in types
+        assert "sql_server" in types
+        assert "user" in types
+
+    async def test_findings_are_created_with_evidence_and_remediation(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            findings = list(
+                (
+                    await session.execute(
+                        text("SELECT * FROM findings WHERE organization_id = :o"),
+                        {"o": org_id},
+                    )
+                ).mappings()
+            )
+
+        assert findings, "the vulnerable fixture must produce findings"
+        by_rule = {f["rule_id"]: f for f in findings}
+        assert "AZ-NET-001" in by_rule    # RDP open to the internet
+        assert "AZ-DB-001" in by_rule     # SQL firewall allows everything
+
+        rdp = by_rule["AZ-NET-001"]
+        # Every finding needs evidence (SECURITY.md section 1, rule 8).
+        assert rdp["evidence"]["port"] == 3389
+        # Remediation is snapshot-copied at creation, not looked up later.
+        assert "az network nsg rule update" in rdp["remediation"]
+        assert rdp["rule_version"] == "1.0"
+        assert rdp["status"] == FindingStatus.OPEN
+
+    async def test_finding_titles_name_the_asset_in_plain_language(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT title FROM findings WHERE organization_id = :o AND rule_id = 'AZ-NET-001'",
+            {"o": org_id},
+        )
+        title = rows[0][0]
+        assert "nsg-jumpbox" in title
+        assert "RDP" in title
+
+    async def test_every_finding_gets_a_scored_risk(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            risks = list(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT r.risk_score, r.risk_level, r.score_breakdown, f.rule_id "
+                            "FROM risks r "
+                            "JOIN risk_findings rf ON rf.risk_id = r.id "
+                            "JOIN findings f ON f.id = rf.finding_id "
+                            "WHERE r.organization_id = :o"
+                        ),
+                        {"o": org_id},
+                    )
+                ).mappings()
+            )
+
+        assert risks
+        for risk in risks:
+            assert 0 <= float(risk["risk_score"]) <= 100
+            assert risk["score_breakdown"]["components"]
+
+        # The RDP finding sits on a production, internet-exposed asset.
+        rdp = next(r for r in risks if r["rule_id"] == "AZ-NET-001")
+        assert float(rdp["risk_score"]) >= 75
+        assert rdp["risk_level"] == Level.CRITICAL
+
+    async def test_coverage_is_recorded_for_every_rule(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT rule_id, passed_count, failed_count, unknown_count, "
+            "not_applicable_count FROM scan_rule_results WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert len(rows) == 10, "one aggregate row per rule in the registry"
+
+
+class TestUnknownHandling:
+    async def test_collection_failure_produces_gaps_not_findings(
+        self, replay, connected_account
+    ) -> None:
+        """A storage API timeout must never read as "no storage problems"."""
+        org_id, account_id = connected_account
+        replay["payload"]["errors"] = {"storage": "Azure Storage API timed out"}
+
+        scan_id = await run_scan(org_id, account_id)
+
+        gaps = await fetch(
+            "SELECT rule_id, reason FROM scan_evaluation_gaps WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        storage_gaps = [g for g in gaps if g[0].startswith("AZ-STO")]
+        assert storage_gaps, "storage rules must be recorded as UNKNOWN"
+        assert "timed out" in storage_gaps[0][1]
+
+        storage_findings = await fetch(
+            "SELECT rule_id FROM findings WHERE organization_id = :o "
+            "AND rule_id LIKE 'AZ-STO%'",
+            {"o": org_id},
+        )
+        assert storage_findings == [], "UNKNOWN must never become a Finding"
+
+    async def test_partial_scan_status_when_a_category_failed(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        replay["payload"]["errors"] = {"storage": "Azure Storage API timed out"}
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.status == ScanStatus.PARTIAL
+        assert "storage" in scan.collection_errors
+
+
+class TestRemediationVerification:
+    """Requirement 13: a rescan verifies the fix. No human marks anything."""
+
+    async def test_rescan_auto_resolves_a_fixed_finding(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+
+        # --- scan 1: RDP is open --------------------------------------------
+        await run_scan(org_id, account_id)
+        rows = await fetch(
+            "SELECT id, status FROM findings WHERE organization_id = :o "
+            "AND rule_id = 'AZ-NET-001'",
+            {"o": org_id},
+        )
+        assert rows[0][1] == FindingStatus.OPEN
+        finding_id = rows[0][0]
+
+        # --- the customer fixes it ------------------------------------------
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+
+        # --- scan 2: verification -------------------------------------------
+        scan_2 = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            finding = await session.get(Finding, finding_id)
+
+        assert finding.status == FindingStatus.RESOLVED
+        assert finding.resolved_at is not None
+        # Stamped with the scan that proved it -- this IS the verification.
+        assert finding.resolved_by_scan_id == scan_2
+
+    async def test_resolving_a_finding_resolves_its_risk(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            status = (
+                await session.execute(
+                    text(
+                        "SELECT r.status FROM risks r "
+                        "JOIN risk_findings rf ON rf.risk_id = r.id "
+                        "JOIN findings f ON f.id = rf.finding_id "
+                        "WHERE f.organization_id = :o AND f.rule_id = 'AZ-NET-001'"
+                    ),
+                    {"o": org_id},
+                )
+            ).scalar_one()
+        assert status == RiskStatus.RESOLVED
+
+    async def test_unknown_on_rescan_does_not_resolve_a_finding(
+        self, replay, connected_account
+    ) -> None:
+        """Failing to look is not the same as looking and finding nothing."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        replay["payload"] = load_raw()
+        replay["payload"]["errors"] = {"network": "Azure Network API timed out"}
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT status FROM findings WHERE organization_id = :o "
+            "AND rule_id = 'AZ-NET-001'",
+            {"o": org_id},
+        )
+        assert rows[0][0] == FindingStatus.OPEN
+
+    async def test_a_regression_reopens_a_resolved_finding(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+        await run_scan(org_id, account_id)
+
+        # Someone re-opens the port.
+        replay["payload"] = load_raw()
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT status, resolved_at FROM findings WHERE organization_id = :o "
+            "AND rule_id = 'AZ-NET-001'",
+            {"o": org_id},
+        )
+        assert rows[0][0] == FindingStatus.OPEN
+        assert rows[0][1] is None
+
+    async def test_findings_are_not_duplicated_across_scans(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT rule_id, count(*) FROM findings WHERE organization_id = :o "
+            "GROUP BY rule_id HAVING count(*) > 1",
+            {"o": org_id},
+        )
+        assert rows == [], "a re-detection must update, not duplicate"
+
+
+class TestSecurityScoreMoves:
+    async def test_score_improves_after_a_verified_fix(
+        self, replay, connected_account
+    ) -> None:
+        """The MVP success condition: the score moves when a fix is verified."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            before = await build_dashboard(session, org_id)
+
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        for server in fixed["data"]["sql_servers"]:
+            server["properties"]["publicNetworkAccess"] = "Disabled"
+            server["_firewall_rules"] = []
+        replay["payload"] = fixed
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            after = await build_dashboard(session, org_id)
+
+        assert after["security_score"] > before["security_score"]
+        assert after["open_finding_count"] < before["open_finding_count"]
+        assert after["verified_resolved_last_30_days"] >= 2

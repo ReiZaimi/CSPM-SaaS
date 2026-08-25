@@ -1,0 +1,36 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkSecurityGroups/nsg-db",
+  "resource_type": "network_security_group",
+  "name": "nsg-db",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "CRITICAL",
+  "data_sensitivity": "CRITICAL",
+  "public_exposure": "HIGH",
+  "metadata": {
+    "security_rules": [
+      {
+        "name": "AllowPostgres",
+        "direction": "Inbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source": "*",
+        "destination_ports": [
+          "5432"
+        ],
+        "priority": 120
+      },
+      {
+        "name": "AllowRDPRange",
+        "direction": "Inbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source": "10.0.0.0/8",
+        "destination_ports": [
+          "3000-4000"
+        ],
+        "priority": 130
+      }
+    ]
+  }
+}

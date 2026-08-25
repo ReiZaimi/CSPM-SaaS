@@ -1,0 +1,21 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stgpublicdata",
+  "resource_type": "storage_account",
+  "name": "stgpublicdata",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "HIGH",
+  "data_sensitivity": "CRITICAL",
+  "public_exposure": "CRITICAL",
+  "metadata": {
+    "allow_blob_public_access": true,
+    "network_default_action": "Allow",
+    "public_network_access": "Enabled",
+    "https_traffic_only": true,
+    "min_tls_version": "TLS1_2",
+    "public_containers": [
+      "customer-exports"
+    ],
+    "diagnostic_settings": []
+  }
+}

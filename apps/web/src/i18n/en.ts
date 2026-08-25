@@ -1,0 +1,140 @@
+/**
+ * English strings.
+ *
+ * Every user-facing string goes through here even though English is the only
+ * language in the MVP. Adding Albanian later is then a new dictionary rather
+ * than a hunt through JSX for hardcoded text -- which is the cheap-now,
+ * expensive-later trade the spec calls out.
+ */
+export const en = {
+  app: {
+    name: "CloudGuard",
+    tagline: "Cloud security posture, in plain language",
+  },
+  nav: {
+    dashboard: "Dashboard",
+    assets: "Assets",
+    findings: "Findings",
+    risks: "Risks",
+    remediation: "Remediation",
+    scans: "Scans",
+    rules: "Rules",
+    connections: "Connections",
+    signOut: "Sign out",
+  },
+  auth: {
+    signIn: "Sign in",
+    email: "Email address",
+    continue: "Continue",
+    devNotice:
+      "Local development mode. In production this screen is Supabase Auth — CloudGuard never handles your password.",
+  },
+  onboarding: {
+    createOrg: "Create your organization",
+    orgName: "Organization name",
+    industry: "Industry",
+    country: "Country",
+    create: "Create organization",
+    step: "Step",
+  },
+  connect: {
+    title: "Connect your Azure environment",
+    readOnlyPromise: "CloudGuard requests read-only access. It never modifies your Azure resources.",
+    whatWeAccess: "What CloudGuard can see",
+    whatWeCannot: "What CloudGuard cannot do",
+    noSecrets:
+      "You never give CloudGuard a password, client secret, or certificate. CloudGuard authenticates as its own application against your directory, so there is no credential of yours for us to store or lose.",
+    step1: "Grant admin consent",
+    step1Detail:
+      "Your Entra ID Global Administrator approves read access to directory data. One click, applied tenant-wide.",
+    step2: "Assign the Reader role",
+    step2Detail:
+      "Separately, assign CloudGuard the built-in Reader role on the subscription you want scanned. Admin consent does not grant this.",
+    step3: "Verify the connection",
+    step3Detail: "CloudGuard confirms both grants by actually reading from your environment.",
+    accountName: "Connection name",
+    tenantId: "Directory (tenant) ID",
+    subscriptionId: "Subscription ID",
+    createConnection: "Add connection",
+    openConsent: "Open admin consent",
+    verify: "Verify connection",
+    verified: "Connection verified",
+    notConfigured:
+      "This CloudGuard server has no Azure application identity configured, so the consent flow cannot start. Set AZURE_CLIENT_ID and AZURE_CLIENT_SECRET.",
+  },
+  dashboard: {
+    title: "Security posture",
+    score: "Security score",
+    outOf: "out of 100",
+    sinceLastScan: "since last scan",
+    critical: "Critical",
+    high: "High",
+    medium: "Medium",
+    low: "Low",
+    topRisk: "Top risk",
+    topRisks: "What matters most right now",
+    remediation: "Verified fixes",
+    resolvedRecently: "verified fixed in the last 30 days",
+    coverage: "Assessment coverage",
+    coverageHelp:
+      "How much of your environment CloudGuard could conclusively assess. Tracked separately from your score so the score stays easy to explain.",
+    assets: "Assets discovered",
+    noScans: "No scan has run yet",
+    noScansHelp: "Connect an Azure subscription and run your first scan to see your posture.",
+    runFirstScan: "Run your first scan",
+    allClear: "No open findings. Nice.",
+  },
+  findings: {
+    title: "Findings",
+    empty: "No findings match these filters.",
+    whyItMatters: "Why this matters",
+    evidence: "Evidence",
+    howToFix: "How to fix it",
+    riskScore: "Risk score",
+    effort: "Estimated effort",
+    minutes: "min",
+    asset: "Asset",
+    firstSeen: "First detected",
+    lastSeen: "Last detected",
+    resolvedBy: "Verified fixed by scan",
+    actions: "Actions",
+    assign: "Assign",
+    markInProgress: "Mark in progress",
+    acceptRisk: "Accept risk",
+    rescan: "Rescan to verify",
+    rescanQueued: "Rescan queued. CloudGuard will close this finding automatically if the fix worked.",
+    acceptReason: "Why are you accepting this risk?",
+    confirm: "Confirm",
+    cancel: "Cancel",
+    cannotResolveManually:
+      "Findings are closed by a scan that confirms the fix, never by hand.",
+    scoreBreakdown: "How this score was calculated",
+    compliance: "Related controls",
+  },
+  assets: { title: "Assets", empty: "No assets discovered yet.", openFindings: "Open findings" },
+  risks: { title: "Risks", empty: "No risks recorded yet." },
+  scans: {
+    title: "Scans",
+    runScan: "Run scan",
+    empty: "No scans yet.",
+    resources: "Resources",
+    rules: "Rules run",
+    findings: "Findings",
+    partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
+  },
+  rules: { title: "Rule library", empty: "No rules loaded." },
+  remediation: { title: "Remediation", empty: "No remediation tasks yet." },
+  common: {
+    loading: "Loading…",
+    error: "Something went wrong",
+    retry: "Try again",
+    severity: "Severity",
+    status: "Status",
+    all: "All",
+    unknown: "Unknown",
+    never: "Never",
+    back: "Back",
+  },
+} as const;
+
+export type Strings = typeof en;

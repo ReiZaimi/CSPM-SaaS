@@ -1,0 +1,16 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-internal",
+  "resource_type": "virtual_machine",
+  "name": "vm-internal",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "MEDIUM",
+  "data_sensitivity": "MEDIUM",
+  "public_exposure": "LOW",
+  "metadata": {
+    "has_public_ip": false,
+    "public_ips": [],
+    "os_type": "Linux",
+    "vm_size": "Standard_B2s"
+  }
+}

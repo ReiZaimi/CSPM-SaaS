@@ -1,0 +1,10 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stgopaque",
+  "resource_type": "storage_account",
+  "name": "stgopaque",
+  "region": "westeurope",
+  "criticality": "UNKNOWN",
+  "data_sensitivity": "UNKNOWN",
+  "public_exposure": "UNKNOWN",
+  "metadata": {}
+}

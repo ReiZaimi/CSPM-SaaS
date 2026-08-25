@@ -1,0 +1,200 @@
+"""Seed a demo organization with a scanned environment.
+
+Why this exists: the product loop cannot be demonstrated without a real Azure
+tenant, and setting one up is a prerequisite for Phase 2 that may not be done
+yet. This script runs the **real** pipeline -- real normalizer, real rules, real
+risk engine -- against a recorded Azure snapshot, so what you see in the UI is
+genuinely what CloudGuard computes, not fabricated rows.
+
+It is a development tool, not part of the application. Nothing imports it, and
+it refuses to run against a production environment.
+
+    docker compose exec api python /srv/database/seed/demo_environment.py
+    docker compose exec api python /srv/database/seed/demo_environment.py --fix
+
+``--fix`` replays the scan with the RDP exposure and the open SQL firewall
+repaired, which is how you watch a finding auto-resolve and the score move.
+"""
+
+import argparse
+import asyncio
+import copy
+import json
+import sys
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+sys.path.insert(0, "/srv/apps/api")
+
+from sqlalchemy import text  # noqa: E402
+
+from app.connectors.azure.normalizer import AzureNormalizer  # noqa: E402
+from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot  # noqa: E402
+from app.core.config import settings  # noqa: E402
+from app.core.db import service_session  # noqa: E402
+from app.core.enums import CloudAccountStatus, ConsentStatus, Provider, ScanStatus  # noqa: E402
+from app.models.cloud_account import CloudAccount  # noqa: E402
+from app.models.scan import Scan  # noqa: E402
+from app.services import scanner as scanner_module  # noqa: E402
+from app.services.rule_sync import sync_rules_to_database  # noqa: E402
+from app.services.scanner import ScanPipeline  # noqa: E402
+
+SNAPSHOT = Path("/srv/apps/api/tests/fixtures/azure_raw/snapshot_mixed.json")
+DEMO_EMAIL = "founder@cloudguard.al"
+DEMO_ORG = "Banka Kombetare (demo)"
+DEMO_NAMESPACE = uuid.UUID("00000000-0000-0000-0000-0000000c1a11")
+
+
+class ReplayConnector(CloudConnector):
+    provider = Provider.AZURE
+
+    def __init__(self, payload: dict, **_: object) -> None:
+        self.payload = payload
+        self._normalizer = AzureNormalizer()
+
+    async def validate_connection(self):
+        raise NotImplementedError
+
+    async def collect(self) -> RawSnapshot:
+        return RawSnapshot(
+            provider=Provider.AZURE,
+            tenant_id=self.payload["tenant_id"],
+            subscription_id=self.payload["subscription_id"],
+            version=self.payload["version"],
+            data=copy.deepcopy(self.payload["data"]),
+            errors=copy.deepcopy(self.payload["errors"]),
+        )
+
+    def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
+        return self._normalizer.normalize(snapshot)
+
+
+def apply_fixes(payload: dict) -> dict:
+    """Repair the two headline problems, as a customer would have."""
+    fixed = copy.deepcopy(payload)
+    for nsg in fixed["data"]["network_security_groups"]:
+        for rule in nsg["properties"]["securityRules"]:
+            if rule["name"] == "AllowRDP":
+                rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+    for server in fixed["data"]["sql_servers"]:
+        server["properties"]["publicNetworkAccess"] = "Disabled"
+        server["_firewall_rules"] = []
+    return fixed
+
+
+async def seed(fix: bool) -> None:
+    if settings.is_production:
+        raise SystemExit("Refusing to seed demo data in a production environment")
+
+    await sync_rules_to_database()
+
+    user_id = uuid.uuid5(DEMO_NAMESPACE, DEMO_EMAIL)
+    payload = json.loads(SNAPSHOT.read_text())
+    if fix:
+        payload = apply_fixes(payload)
+
+    async with service_session() as session:
+        org_id = (
+            await session.execute(
+                text("SELECT organization_id FROM organization_members WHERE user_id = :u LIMIT 1"),
+                {"u": user_id},
+            )
+        ).scalar_one_or_none()
+
+        if org_id is None:
+            org_id = (
+                await session.execute(
+                    text(
+                        "INSERT INTO organizations (name, slug, industry, country) "
+                        "VALUES (:n, :s, 'Financial Services', 'AL') RETURNING id"
+                    ),
+                    {"n": DEMO_ORG, "s": f"demo-{uuid.uuid4().hex[:8]}"},
+                )
+            ).scalar_one()
+            await session.execute(
+                text(
+                    "INSERT INTO organization_members (organization_id, user_id, role) "
+                    "VALUES (:o, :u, 'OWNER')"
+                ),
+                {"o": org_id, "u": user_id},
+            )
+            print(f"created organization {DEMO_ORG}")
+
+        account_id = (
+            await session.execute(
+                text("SELECT id FROM cloud_accounts WHERE organization_id = :o LIMIT 1"),
+                {"o": org_id},
+            )
+        ).scalar_one_or_none()
+
+        if account_id is None:
+            account = CloudAccount(
+                organization_id=org_id,
+                provider=Provider.AZURE,
+                account_name="Production Subscription (demo)",
+                tenant_id=payload["tenant_id"],
+                subscription_id=payload["subscription_id"],
+                consent_status=ConsentStatus.GRANTED,
+                consented_at=datetime.now(UTC),
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+                status_detail="Demo connection seeded from a recorded snapshot.",
+            )
+            session.add(account)
+            await session.flush()
+            account_id = account.id
+            print("created demo cloud account")
+
+        scan = Scan(
+            organization_id=org_id,
+            cloud_account_id=account_id,
+            status=ScanStatus.QUEUED,
+        )
+        session.add(scan)
+        await session.commit()
+        scan_id = scan.id
+
+    # Point the pipeline at the recorded snapshot for this run only.
+    original = scanner_module.get_connector
+    scanner_module.get_connector = lambda _provider, **kw: ReplayConnector(payload, **kw)
+    try:
+        await ScanPipeline(scan_id).run()
+    finally:
+        scanner_module.get_connector = original
+
+    async with service_session() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT status, resource_count, rule_count, finding_count "
+                    "FROM scans WHERE id = :s"
+                ),
+                {"s": scan_id},
+            )
+        ).one()
+        resolved = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM findings WHERE organization_id = :o "
+                    "AND status = 'RESOLVED'"
+                ),
+                {"o": org_id},
+            )
+        ).scalar_one()
+
+    print(
+        f"scan {row[0]}: {row[1]} resources, {row[2]} rules, "
+        f"{row[3]} open findings, {resolved} verified fixed"
+    )
+    print(f"\nSign in at {settings.app_url} as {DEMO_EMAIL}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="replay with the RDP and SQL exposures repaired, to watch findings auto-resolve",
+    )
+    asyncio.run(seed(parser.parse_args().fix))

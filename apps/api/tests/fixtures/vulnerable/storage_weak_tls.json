@@ -1,0 +1,24 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stglegacy",
+  "resource_type": "storage_account",
+  "name": "stglegacy",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "MEDIUM",
+  "data_sensitivity": "HIGH",
+  "public_exposure": "MEDIUM",
+  "metadata": {
+    "allow_blob_public_access": false,
+    "network_default_action": "Deny",
+    "public_network_access": "Enabled",
+    "https_traffic_only": false,
+    "min_tls_version": "TLS1_0",
+    "allow_shared_key_access": true,
+    "diagnostic_settings": [
+      {
+        "name": "audit",
+        "workspace_id": "/ws/1"
+      }
+    ]
+  }
+}

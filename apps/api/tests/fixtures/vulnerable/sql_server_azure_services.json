@@ -1,0 +1,27 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Sql/servers/sql-prod-02",
+  "resource_type": "sql_server",
+  "name": "sql-prod-02",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "HIGH",
+  "data_sensitivity": "HIGH",
+  "public_exposure": "HIGH",
+  "metadata": {
+    "public_network_access": "Enabled",
+    "firewall_rules": [
+      {
+        "name": "AllowAllWindowsAzureIps",
+        "start_ip_address": "0.0.0.0",
+        "end_ip_address": "0.0.0.0"
+      }
+    ],
+    "private_endpoints": [],
+    "diagnostic_settings": [
+      {
+        "name": "audit",
+        "workspace_id": "/ws/1"
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/stgsecure",
+  "resource_type": "storage_account",
+  "name": "stgsecure",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "HIGH",
+  "data_sensitivity": "HIGH",
+  "public_exposure": "LOW",
+  "metadata": {
+    "allow_blob_public_access": false,
+    "network_default_action": "Deny",
+    "public_network_access": "Disabled",
+    "https_traffic_only": true,
+    "min_tls_version": "TLS1_2",
+    "allow_shared_key_access": false,
+    "infrastructure_encryption": true,
+    "diagnostic_settings": [
+      {
+        "name": "audit",
+        "workspace_id": "/ws/1"
+      }
+    ]
+  }
+}

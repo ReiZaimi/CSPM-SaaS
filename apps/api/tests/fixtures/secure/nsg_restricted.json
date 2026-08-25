@@ -1,0 +1,47 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkSecurityGroups/nsg-secure",
+  "resource_type": "network_security_group",
+  "name": "nsg-secure",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "HIGH",
+  "data_sensitivity": "MEDIUM",
+  "public_exposure": "LOW",
+  "metadata": {
+    "security_rules": [
+      {
+        "name": "AllowRDPFromVPN",
+        "direction": "Inbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source": "10.10.0.0/16",
+        "destination_ports": [
+          "3389"
+        ],
+        "priority": 100
+      },
+      {
+        "name": "AllowHTTPS",
+        "direction": "Inbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source": "*",
+        "destination_ports": [
+          "443"
+        ],
+        "priority": 200
+      },
+      {
+        "name": "DenyRDPFromInternet",
+        "direction": "Inbound",
+        "access": "Deny",
+        "protocol": "Tcp",
+        "source": "*",
+        "destination_ports": [
+          "3389"
+        ],
+        "priority": 300
+      }
+    ]
+  }
+}

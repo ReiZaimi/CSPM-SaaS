@@ -1,0 +1,27 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Sql/servers/sql-office",
+  "resource_type": "sql_server",
+  "name": "sql-office",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "HIGH",
+  "data_sensitivity": "HIGH",
+  "public_exposure": "MEDIUM",
+  "metadata": {
+    "public_network_access": "Enabled",
+    "firewall_rules": [
+      {
+        "name": "OfficeRange",
+        "start_ip_address": "203.0.113.0",
+        "end_ip_address": "203.0.113.255"
+      }
+    ],
+    "private_endpoints": [],
+    "diagnostic_settings": [
+      {
+        "name": "audit",
+        "workspace_id": "/ws/1"
+      }
+    ]
+  }
+}

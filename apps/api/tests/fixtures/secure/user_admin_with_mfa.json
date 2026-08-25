@@ -1,0 +1,20 @@
+{
+  "provider_resource_id": "/users/22222222-aaaa-bbbb-cccc-222222222222",
+  "resource_type": "user",
+  "name": "Elira Hoxha",
+  "criticality": "CRITICAL",
+  "data_sensitivity": "HIGH",
+  "public_exposure": "HIGH",
+  "metadata": {
+    "user_principal_name": "elira@contoso.onmicrosoft.com",
+    "account_enabled": true,
+    "directory_roles": [
+      "Global Administrator"
+    ],
+    "mfa_methods": [
+      "password",
+      "microsoftAuthenticator",
+      "fido2"
+    ]
+  }
+}

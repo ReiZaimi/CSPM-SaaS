@@ -1,0 +1,22 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Sql/servers/sql-prod-01",
+  "resource_type": "sql_server",
+  "name": "sql-prod-01",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "CRITICAL",
+  "data_sensitivity": "CRITICAL",
+  "public_exposure": "CRITICAL",
+  "metadata": {
+    "public_network_access": "Enabled",
+    "firewall_rules": [
+      {
+        "name": "AllowAll",
+        "start_ip_address": "0.0.0.0",
+        "end_ip_address": "255.255.255.255"
+      }
+    ],
+    "private_endpoints": [],
+    "diagnostic_settings": []
+  }
+}

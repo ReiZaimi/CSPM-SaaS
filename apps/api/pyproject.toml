@@ -1,0 +1,77 @@
+[project]
+name = "cloudguard-api"
+version = "0.1.0"
+description = "CloudGuard - Azure-first CSPM. Modular monolith API + worker."
+requires-python = ">=3.12"
+
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic[email]==2.10.4",
+  "pydantic-settings==2.7.0",
+  "sqlalchemy[asyncio]==2.0.36",
+  "asyncpg==0.30.0",
+  "psycopg[binary]==3.2.3",
+  "alembic==1.14.0",
+  "celery[redis]==5.4.0",
+  "redis==5.2.1",
+  "httpx==0.28.1",
+  "pyjwt==2.10.1",
+  "msal==1.31.1",
+  "structlog==24.4.0",
+  "sentry-sdk[fastapi]==2.19.2",
+  "jinja2==3.1.5",
+  "python-multipart==0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.0",
+  "pytest-cov==6.0.0",
+  "ruff==0.8.4",
+  "mypy==1.14.0",
+  "respx==0.22.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+  "B008",  # FastAPI Depends() in argument defaults is the documented idiom
+  "N818",  # domain errors read better as NotFound / PermissionDenied than *Error
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+ignore_missing_imports = true
+exclude = "^(database/|tests/)"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+  "integration: requires a live PostgreSQL database",
+]

@@ -1,0 +1,11 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkSecurityGroups/nsg-partial",
+  "resource_type": "network_security_group",
+  "name": "nsg-partial",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "UNKNOWN",
+  "data_sensitivity": "UNKNOWN",
+  "public_exposure": "UNKNOWN",
+  "metadata": {}
+}

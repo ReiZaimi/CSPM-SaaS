@@ -1,0 +1,18 @@
+{
+  "provider_resource_id": "/users/55555555-aaaa-bbbb-cccc-555555555555",
+  "resource_type": "user",
+  "name": "Former Admin",
+  "criticality": "LOW",
+  "data_sensitivity": "LOW",
+  "public_exposure": "LOW",
+  "metadata": {
+    "user_principal_name": "former@contoso.onmicrosoft.com",
+    "account_enabled": false,
+    "directory_roles": [
+      "Global Administrator"
+    ],
+    "mfa_methods": [
+      "password"
+    ]
+  }
+}

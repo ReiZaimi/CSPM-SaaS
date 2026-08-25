@@ -1,0 +1,16 @@
+{
+  "provider_resource_id": "/users/33333333-aaaa-bbbb-cccc-333333333333",
+  "resource_type": "user",
+  "name": "Standard User",
+  "criticality": "LOW",
+  "data_sensitivity": "LOW",
+  "public_exposure": "LOW",
+  "metadata": {
+    "user_principal_name": "user@contoso.onmicrosoft.com",
+    "account_enabled": true,
+    "directory_roles": [],
+    "mfa_methods": [
+      "password"
+    ]
+  }
+}

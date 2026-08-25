@@ -1,0 +1,25 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Network/networkSecurityGroups/nsg-linux",
+  "resource_type": "network_security_group",
+  "name": "nsg-linux",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "MEDIUM",
+  "data_sensitivity": "LOW",
+  "public_exposure": "HIGH",
+  "metadata": {
+    "security_rules": [
+      {
+        "name": "AllowSSH",
+        "direction": "Inbound",
+        "access": "Allow",
+        "protocol": "Tcp",
+        "source": "0.0.0.0/0",
+        "destination_ports": [
+          "22"
+        ],
+        "priority": 110
+      }
+    ]
+  }
+}

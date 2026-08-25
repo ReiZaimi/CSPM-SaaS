@@ -1,0 +1,15 @@
+{
+  "provider_resource_id": "/users/44444444-aaaa-bbbb-cccc-444444444444",
+  "resource_type": "user",
+  "name": "Opaque Admin",
+  "criticality": "CRITICAL",
+  "data_sensitivity": "HIGH",
+  "public_exposure": "UNKNOWN",
+  "metadata": {
+    "user_principal_name": "opaque@contoso.onmicrosoft.com",
+    "account_enabled": true,
+    "directory_roles": [
+      "Security Administrator"
+    ]
+  }
+}

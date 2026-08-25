@@ -1,0 +1,82 @@
+"""CloudGuard API -- modular monolith.
+
+Everything the product does lives in this one process (plus a Celery worker
+sharing the same codebase). That is a deliberate choice: the product is a
+scanner, a rule engine and a risk engine that all operate on the same data, and
+splitting them across services would buy distributed-systems problems in
+exchange for nothing the MVP needs.
+"""
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import sentry_sdk
+from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.router import api_router
+from app.core.config import settings
+from app.core.db import ping
+from app.core.errors import (
+    AppError,
+    app_error_handler,
+    envelope,
+    http_error_handler,
+    validation_error_handler,
+)
+from app.core.logging import configure_logging, get_logger
+
+log = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
+    if settings.sentry_dsn:
+        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
+
+    # Keep the rules table in step with the Python registry. The registry is the
+    # source of truth; the table is a read-mirror for joins and the UI.
+    from app.services.rule_sync import sync_rules_to_database
+
+    try:
+        synced = await sync_rules_to_database()
+        log.info("rules.synced", count=synced)
+    except Exception as exc:  # pragma: no cover -- never block startup on this
+        log.warning("rules.sync_failed", error=str(exc))
+
+    yield
+
+
+app = FastAPI(
+    title="CloudGuard API",
+    version="0.1.0",
+    description="Azure-first Cloud Security Posture Management.",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(HTTPException, http_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+
+app.include_router(api_router)
+
+
+@app.get("/health", tags=["meta"])
+async def health() -> dict:
+    return envelope({"status": "ok", "environment": settings.app_env})
+
+
+@app.get("/health/ready", tags=["meta"])
+async def ready() -> dict:
+    await ping()
+    return envelope({"status": "ready", "database": "ok"})

@@ -1,0 +1,23 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Sql/servers/sql-secure",
+  "resource_type": "sql_server",
+  "name": "sql-secure",
+  "region": "westeurope",
+  "environment": "production",
+  "criticality": "CRITICAL",
+  "data_sensitivity": "CRITICAL",
+  "public_exposure": "LOW",
+  "metadata": {
+    "public_network_access": "Disabled",
+    "firewall_rules": [],
+    "private_endpoints": [
+      "/pe/sql-secure"
+    ],
+    "diagnostic_settings": [
+      {
+        "name": "audit",
+        "workspace_id": "/ws/1"
+      }
+    ]
+  }
+}

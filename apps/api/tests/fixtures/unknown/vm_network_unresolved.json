@@ -1,0 +1,12 @@
+{
+  "provider_resource_id": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/vm-opaque",
+  "resource_type": "virtual_machine",
+  "name": "vm-opaque",
+  "region": "westeurope",
+  "criticality": "UNKNOWN",
+  "data_sensitivity": "UNKNOWN",
+  "public_exposure": "UNKNOWN",
+  "metadata": {
+    "os_type": "Linux"
+  }
+}
