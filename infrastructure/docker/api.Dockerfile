@@ -21,4 +21,8 @@ COPY database /srv/database
 WORKDIR /srv/apps/api
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Local dev overrides this via docker-compose.yml's own `command:` (which adds
+# --reload and the migration step). This default is what a host like Railway
+# runs if no custom start command is set, so it deliberately has no --reload
+# and honors $PORT rather than assuming 8000.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

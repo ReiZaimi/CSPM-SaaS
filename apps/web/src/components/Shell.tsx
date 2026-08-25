@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, auth } from "@/lib/api";
+import { supabaseSignOut } from "@/lib/supabase";
 import type { Organization } from "@/lib/types";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/format";
@@ -48,7 +49,11 @@ export function Shell() {
           </div>
           <button
             onClick={() => {
+              // Clears the local token immediately; the Supabase sign-out
+              // (which also revokes the refresh token server-side) is fired
+              // without blocking navigation on it.
               auth.signOut();
+              void supabaseSignOut();
               navigate("/sign-in", { replace: true });
             }}
             className="text-sm text-stone-500 hover:text-stone-900"

@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "@/components/Shell";
 import { auth } from "@/lib/api";
+import { authReady } from "@/lib/supabase";
+import { Spinner } from "@/components/ui";
 import { SignInPage } from "@/pages/SignIn";
 import { OnboardingPage } from "@/pages/Onboarding";
 import { ConnectPage } from "@/pages/Connect";
@@ -19,7 +22,30 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return auth.token ? children : <Navigate to="/sign-in" replace />;
 }
 
+/**
+ * Waits for the initial Supabase session check before the router decides
+ * anything. Without this, a page load mid-magic-link-redirect would see
+ * `auth.token` still null (the session hasn't finished parsing out of the URL
+ * fragment yet) and bounce straight back to /sign-in.
+ */
+function useAuthReady(): boolean {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    authReady.then(() => setReady(true));
+  }, []);
+  return ready;
+}
+
 export function App() {
+  const ready = useAuthReady();
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Spinner />
+      </div>
+    );
+  }
+
   return (
     <Routes>
       <Route path="/sign-in" element={<SignInPage />} />

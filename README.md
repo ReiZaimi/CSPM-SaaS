@@ -14,7 +14,10 @@ The specification this is built from lives in [`docs/`](docs/); start with
 
 ## Running it
 
-Requires Docker. Nothing else is installed on your machine.
+**On the web**, deployed from this GitHub repo (Supabase + Railway + Vercel):
+see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+**Locally**, requires Docker. Nothing else is installed on your machine.
 
 ```bash
 cp .env.example .env

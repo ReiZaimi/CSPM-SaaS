@@ -16,6 +16,7 @@ build/
 node_modules/
 apps/web/dist/
 apps/web/.vite/
+*.tsbuildinfo
 *.local
 
 # Env / secrets -- never commit
