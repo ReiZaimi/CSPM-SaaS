@@ -47,16 +47,14 @@ called out separately.
    DATABASE_URL=postgresql+asyncpg://cloudguard_app:<the-password-you-set-in-step-2>@db.<project-ref>.supabase.co:5432/postgres
    ```
 
-4. **Run the schema migration against Supabase**, from your machine (this repo
-   already has everything installed in the API container):
+4. **The schema migration needs no action here.** The Railway API service's
+   start command (step 2.3) runs `alembic upgrade head` on every deploy, so
+   the tables and RLS policies are created the first time that service boots.
+   Nothing to run from your machine.
 
-   ```bash
-   docker compose run --rm -e DATABASE_OWNER_URL="postgresql+asyncpg://postgres:<db-password>@db.<project-ref>.supabase.co:5432/postgres" --no-deps api alembic upgrade head
-   ```
-
-   Tell me your project ref and I'll run this for you rather than you copying
-   commands — just don't paste the actual database password into chat; I'll
-   ask you to export it as an environment variable I reference instead.
+   > At one API instance this is the simplest correct option. If you ever scale
+   > the API past one replica, move the migration to a Railway *release*
+   > command instead, so two booting instances can't race each other on DDL.
 
 5. **Get the Auth values.** Project Settings → API:
    - **Project URL** → `SUPABASE_URL` (backend) and `VITE_SUPABASE_URL` (frontend)
@@ -136,14 +134,18 @@ called out separately.
 
    CORS_ORIGINS=https://<your-vercel-domain>
 
-   # Only needed once you register CloudGuard's own multi-tenant Entra app —
+   # Required. Signs the Entra consent round-trip, so it must be secret even
+   # before any Azure tenant is connected — the API refuses to start in
+   # production without it. Generate with: openssl rand -hex 32
+   AZURE_CONSENT_STATE_SECRET=<random 32+ char string>
+
+   # Optional until you register CloudGuard's own multi-tenant Entra app —
    # see AZURE_INTEGRATION.md §2. Leave blank until then; the app runs fine
    # without a connected Azure tenant, it just can't run a real scan.
    AZURE_CLIENT_ID=
    AZURE_CLIENT_SECRET=
    AZURE_TENANT_ID=
    AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-accounts/azure/consent/callback
-   AZURE_CONSENT_STATE_SECRET=<generate a random 32+ char string>
 
    SENTRY_DSN=
    ```
@@ -180,7 +182,22 @@ called out separately.
 
 ---
 
-## 4. Verify the loop
+## 4. If the API refuses to start
+
+With `APP_ENV=production`, the API checks its own configuration on boot and
+**crashes with an explicit list** rather than serving traffic insecurely
+(`app/core/config.py::production_config_problems`). Every check covers
+something that would otherwise boot cleanly and look healthy while being
+trivially exploitable — a default JWT secret means anyone can mint a token for
+any user, so failing the deploy is the kinder outcome.
+
+If Railway shows a crash loop, open the deploy logs: the reason is spelled out
+in full, along with where to get the correct value. The usual cause is a
+variable you left blank while waiting to know your Vercel domain.
+
+---
+
+## 5. Verify the loop
 
 ```bash
 curl https://<your-railway-api-domain>/health/ready
@@ -197,13 +214,13 @@ screen without it.
 
 ---
 
-## Redeploying after code changes
+## 6. Redeploying after code changes
 
 Both Railway and Vercel auto-deploy on push to `main`. Nothing else to do —
 this is the entire point of connecting them to GitHub rather than uploading
 builds by hand.
 
-## Rolling back
+## 7. Rolling back
 
 Both platforms keep prior deploys and let you roll back from their dashboard
 with one click if a push breaks something. Prefer that over reverting the

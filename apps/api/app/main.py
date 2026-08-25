@@ -33,6 +33,20 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+
+    # Refuse to serve a production deployment that is missing the secrets its
+    # security depends on. Each of these boots and looks healthy while being
+    # trivially exploitable, so a loud crash on deploy is the kind outcome --
+    # the alternative is a CSPM product that is itself insecure.
+    problems = settings.production_config_problems() if settings.is_production else []
+    if problems:
+        for problem in problems:
+            log.error("config.invalid", problem=problem)
+        raise RuntimeError(
+            "Refusing to start: insecure production configuration.\n  - "
+            + "\n  - ".join(problems)
+        )
+
     if settings.sentry_dsn:
         sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
 

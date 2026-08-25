@@ -6,6 +6,11 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Named so `production_config_problems()` can recognise them, rather than
+# repeating the literals in two places where they could drift apart.
+DEV_JWT_SECRET = "local-dev-jwt-secret-change-me"
+DEV_CONSENT_SECRET = "local-dev-consent-secret-change-me"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
@@ -19,7 +24,7 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_publishable_key: str = ""
     supabase_secret_key: str = ""
-    supabase_jwt_secret: str = "local-dev-jwt-secret-change-me"
+    supabase_jwt_secret: str = DEV_JWT_SECRET
     jwt_audience: str = "authenticated"
 
     # --- Database -----------------------------------------------------------
@@ -35,7 +40,7 @@ class Settings(BaseSettings):
     azure_client_secret: str = ""
     azure_tenant_id: str = ""
     azure_redirect_uri: str = "http://localhost:8000/api/v1/cloud-accounts/azure/consent/callback"
-    azure_consent_state_secret: str = "local-dev-consent-secret-change-me"
+    azure_consent_state_secret: str = DEV_CONSENT_SECRET
 
     sentry_dsn: str = ""
 
@@ -60,6 +65,51 @@ class Settings(BaseSettings):
         rather than failing deep inside a token request.
         """
         return bool(self.azure_client_id and self.azure_client_secret)
+
+    def production_config_problems(self) -> list[str]:
+        """Deployment mistakes that would leave a running server insecure.
+
+        Every item here is something that works perfectly in local development
+        and is a genuine vulnerability once the app is reachable from the
+        internet. They are checked rather than trusted because each one fails
+        *silently*: the server boots, the UI loads, and nothing looks wrong
+        until someone forges a token.
+
+        Returned rather than raised so the caller decides the severity --
+        ``main.py`` refuses to start on any of these in production.
+        """
+        problems: list[str] = []
+
+        if self.supabase_jwt_secret in {"", DEV_JWT_SECRET}:
+            problems.append(
+                "SUPABASE_JWT_SECRET is unset or still the development default. "
+                "Every request's identity is verified against it, so a known "
+                "value lets anyone mint a token for any user. Copy the real "
+                "secret from Supabase: Project Settings > API > JWT Settings."
+            )
+
+        if self.azure_consent_state_secret in {"", DEV_CONSENT_SECRET}:
+            problems.append(
+                "AZURE_CONSENT_STATE_SECRET is unset or still the development "
+                "default. It signs the Entra consent round-trip, so a known "
+                "value lets an attacker bind their own tenant to someone "
+                "else's cloud account. Set it to a random 32+ character string."
+            )
+
+        if any("localhost" in origin for origin in self.cors_origins):
+            problems.append(
+                "CORS_ORIGINS still contains localhost. Set it to your deployed "
+                "frontend's URL, or the browser will block every API call."
+            )
+
+        if not self.supabase_url:
+            problems.append(
+                "SUPABASE_URL is unset. Without it the development sign-in "
+                "route stays registered, which is not an authentication "
+                "mechanism -- it mints tokens for any email given to it."
+            )
+
+        return problems
 
 
 @lru_cache
