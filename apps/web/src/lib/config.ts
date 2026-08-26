@@ -19,7 +19,31 @@ export interface ConfigProblem {
 export function configProblems(): ConfigProblem[] {
   const problems: ConfigProblem[] = [];
 
-  if (!import.meta.env.VITE_API_URL) {
+  const apiUrl = import.meta.env.VITE_API_URL;
+  if (apiUrl && !/^https?:\/\//.test(apiUrl)) {
+    // A URL without a scheme is not a URL to fetch() -- it is a relative path,
+    // so every request silently goes to this app's own origin and comes back as
+    // index.html. Nothing errors; JSON parsing just fails somewhere far away.
+    problems.push({
+      variable: "VITE_API_URL",
+      detail:
+        `Set to "${apiUrl}", which has no https:// prefix. Without a scheme the ` +
+        "browser treats it as a path on this site, so every API call returns " +
+        "this page instead of data. Add https:// and redeploy.",
+    });
+  }
+
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  if (supabaseUrl && !/^https?:\/\//.test(supabaseUrl)) {
+    problems.push({
+      variable: "VITE_SUPABASE_URL",
+      detail:
+        `Set to "${supabaseUrl}", which has no https:// prefix. Supabase's ` +
+        "client cannot use a scheme-less URL. Add https:// and redeploy.",
+    });
+  }
+
+  if (!apiUrl) {
     problems.push({
       variable: "VITE_API_URL",
       detail:
