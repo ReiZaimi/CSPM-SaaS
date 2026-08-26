@@ -164,3 +164,65 @@ class TestStartupBehaviour:
         the variable without saying why invites working around it."""
         for problem in Settings(app_env="production").config_problems():
             assert len(problem) > 60, f"too terse to act on: {problem}"
+
+
+class TestEnvironmentParsing:
+    """Values as the platform actually supplies them: strings, via os.environ.
+
+    The rest of this file constructs Settings with init kwargs, which bypasses
+    pydantic-settings' EnvSettingsSource entirely. That gap let a crash-on-boot
+    bug through: a `list[str]` field is treated as "complex" and JSON-decoded
+    inside the source, before any validator runs, so a plain
+    `CORS_ORIGINS=https://app.example.com` raised SettingsError.
+    """
+
+    def _deployable_env(self, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
+        env = {
+            "APP_ENV": "production",
+            "APP_URL": "https://cloudguard.example.com",
+            "SUPABASE_URL": "https://abc.supabase.co",
+            "SUPABASE_PUBLISHABLE_KEY": "an-anon-key",
+            "SUPABASE_JWT_SECRET": "a-real-secret",
+            "AZURE_CONSENT_STATE_SECRET": "a-real-random-secret",
+            "DATABASE_URL": "postgresql+asyncpg://cloudguard_app:pw@db.abc.supabase.co:5432/postgres",
+            "DATABASE_OWNER_URL": "postgresql+asyncpg://postgres:pw@db.abc.supabase.co:5432/postgres",
+            "REDIS_URL": "redis://default:pw@redis.railway.internal:6379",
+            **overrides,
+        }
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+    def test_a_single_origin_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """What anyone actually types into Railway."""
+        self._deployable_env(monkeypatch, CORS_ORIGINS="https://cloudguard.vercel.app")
+        settings = Settings()
+        assert settings.cors_origins == ["https://cloudguard.vercel.app"]
+        settings.raise_if_misconfigured()
+
+    def test_comma_separated_origins_are_split(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._deployable_env(
+            monkeypatch,
+            CORS_ORIGINS="https://app.example.com, https://www.example.com",
+        )
+        assert Settings().cors_origins == [
+            "https://app.example.com",
+            "https://www.example.com",
+        ]
+
+    def test_a_json_list_still_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anyone who already set the JSON form should not be broken by the fix."""
+        self._deployable_env(
+            monkeypatch, CORS_ORIGINS='["https://a.example.com","https://b.example.com"]'
+        )
+        assert Settings().cors_origins == ["https://a.example.com", "https://b.example.com"]
+
+    def test_the_whole_environment_loads_from_env_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end: every required variable supplied as a string, as Railway
+        supplies them, produces a settings object that agrees to start."""
+        self._deployable_env(monkeypatch, CORS_ORIGINS="https://cloudguard.vercel.app")
+        settings = Settings()
+        assert settings.config_problems() == []
+        assert settings.app_env == "production"
+        assert settings.database_url.startswith("postgresql+asyncpg://cloudguard_app:")

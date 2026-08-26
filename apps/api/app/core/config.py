@@ -12,11 +12,12 @@ lets anyone mint a token for any user; a stale APP_URL strands a customer
 mid-consent. Failing the deploy is the kinder outcome for a security product.
 """
 
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class ConfigurationError(RuntimeError):
@@ -61,14 +62,32 @@ class Settings(BaseSettings):
 
     sentry_dsn: str = ""
 
-    cors_origins: list[str] = Field(default_factory=list)
+    # NoDecode is load-bearing. pydantic-settings treats any list field as
+    # "complex" and runs json.loads() on the raw environment value *inside the
+    # settings source*, before field validators ever run -- so a perfectly
+    # reasonable CORS_ORIGINS=https://app.example.com raised SettingsError and
+    # crashed the process on boot. NoDecode hands the raw string to the
+    # validator below instead.
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, v: object) -> object:
-        if isinstance(v, str):
-            return [item.strip() for item in v.split(",") if item.strip()]
-        return v
+        """Accept a comma-separated list, a JSON array, or a real list.
+
+        Comma-separated is what a person types into a dashboard field; the JSON
+        form is what pydantic-settings would otherwise have required, and is
+        still accepted so an existing deployment is not broken by this fix.
+        """
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        if text.startswith("["):
+            try:
+                return json.loads(text)
+            except ValueError:
+                pass  # fall through and treat it as a plain string
+        return [item.strip() for item in text.split(",") if item.strip()]
 
     @property
     def is_production(self) -> bool:
