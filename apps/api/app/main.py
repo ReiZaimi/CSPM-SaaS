@@ -34,18 +34,10 @@ log = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
 
-    # Refuse to serve a production deployment that is missing the secrets its
-    # security depends on. Each of these boots and looks healthy while being
-    # trivially exploitable, so a loud crash on deploy is the kind outcome --
-    # the alternative is a CSPM product that is itself insecure.
-    problems = settings.production_config_problems() if settings.is_production else []
-    if problems:
-        for problem in problems:
-            log.error("config.invalid", problem=problem)
-        raise RuntimeError(
-            "Refusing to start: insecure production configuration.\n  - "
-            + "\n  - ".join(problems)
-        )
+    # Configuration is validated at import (app.core.config.get_settings), so
+    # reaching this point already means the environment is complete. Logged so
+    # a healthy boot is visible in the deploy logs, not just a failed one.
+    log.info("config.validated", environment=settings.app_env)
 
     if settings.sentry_dsn:
         sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)

@@ -9,7 +9,10 @@
  * the user; the server decides which tenant that means.
  */
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// No fallback on purpose. There is no local API to fall back to, and a
+// silent localhost default would make every request fail from a visitor's
+// browser with no indication why. main.tsx refuses to render without it.
+const API_URL = import.meta.env.VITE_API_URL ?? "";
 const TOKEN_KEY = "cloudguard.token";
 const ORG_KEY = "cloudguard.org";
 
@@ -92,10 +95,3 @@ export const api = {
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   del: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
 };
-
-export const devSignIn = (email: string) =>
-  api.post<{ access_token: string; user: { id: string; email: string } }>(
-    "/api/v1/auth/dev-token",
-    { email },
-    { skipAuth: true },
-  );

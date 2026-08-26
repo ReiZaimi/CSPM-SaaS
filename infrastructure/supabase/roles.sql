@@ -9,8 +9,12 @@
 -- tables, so it is fully subject to the RLS policies the migrations create.
 -- See docs/DECISIONS.md #1 for why that ownership split is the whole point.
 --
--- CHANGE THE PASSWORD before running this. Whatever you set here goes into
--- Railway's DATABASE_URL as a secret, never committed to git.
+-- CHANGE THE PASSWORD when you paste this into the Supabase SQL Editor --
+-- in the editor, NOT in this file. Whatever you choose becomes a live database
+-- credential and belongs only in Railway's DATABASE_URL, never in git.
+--
+-- CI fails the build if the placeholder below has been edited, precisely
+-- because saving a real password here is an easy and expensive mistake.
 
 DO $$
 BEGIN

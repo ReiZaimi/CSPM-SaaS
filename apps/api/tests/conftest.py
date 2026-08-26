@@ -7,6 +7,18 @@ deliberately has no mock connector to stand in for one (AZURE_INTEGRATION.md
 section 1).
 """
 
+import os
+
+# app.core.config validates the environment at import and refuses to load
+# without a complete deployment configuration. The test suite runs against a
+# throwaway database with no Supabase project behind it, so declare the test
+# environment before any app module is imported. setdefault, so CI's own
+# APP_ENV=test still wins and nothing is silently overridden.
+os.environ.setdefault("APP_ENV", "test")
+# The app never mints tokens, only verifies them, so the suite signs its own
+# (tests/integration/test_api.py::issue_test_token) and needs a key to do it.
+os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret")
+
 import json
 from pathlib import Path
 from typing import Any

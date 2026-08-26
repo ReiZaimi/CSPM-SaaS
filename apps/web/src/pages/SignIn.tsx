@@ -1,49 +1,33 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { api, auth, devSignIn, ApiError } from "@/lib/api";
-import { signInWithMagicLink, supabaseConfigured } from "@/lib/supabase";
-import type { Organization } from "@/lib/types";
+import { signInWithMagicLink } from "@/lib/supabase";
 import { useT } from "@/i18n";
 import { Button, Field, Input } from "@/components/ui";
 
+/**
+ * Passwordless sign-in via Supabase.
+ *
+ * CloudGuard's own backend never authenticates anyone — Supabase emails a
+ * one-time link, and the API only ever *verifies* the token that produces
+ * (app/core/security.py::decode_token). There is no password for this
+ * application to mishandle, and no local sign-in path.
+ */
 export function SignInPage() {
   const t = useT();
-  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [linkSent, setLinkSent] = useState(false);
-
-  async function continueSession() {
-    const orgs = await api.get<Organization[]>("/api/v1/organizations");
-    if (orgs.data.length === 0) {
-      navigate("/onboarding", { replace: true });
-    } else {
-      auth.organizationId = orgs.data[0].id;
-      navigate("/", { replace: true });
-    }
-  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      if (supabaseConfigured) {
-        // Passwordless: Supabase emails a link, the click completes the
-        // session, and lib/supabase.ts's auth-state listener picks it up —
-        // CloudGuard's own backend never sees a password.
-        await signInWithMagicLink(email);
-        setLinkSent(true);
-        setBusy(false);
-        return;
-      }
-
-      const { data } = await devSignIn(email);
-      auth.token = data.access_token;
-      await continueSession();
+      await signInWithMagicLink(email);
+      setLinkSent(true);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not sign in");
+      setError(err instanceof Error ? err.message : "Could not send the sign-in link");
+    } finally {
       setBusy(false);
     }
   }
@@ -52,11 +36,16 @@ export function SignInPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-stone-50 px-6">
         <div className="w-full max-w-sm text-center">
-          <h1 className="text-xl font-semibold tracking-tight">Check your email</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t.auth.checkEmail}</h1>
           <p className="mt-2 text-sm text-stone-600">
-            We sent a sign-in link to <strong>{email}</strong>. Open it on this device to
-            continue.
+            {t.auth.linkSentTo} <strong>{email}</strong>. {t.auth.openOnThisDevice}
           </p>
+          <button
+            onClick={() => setLinkSent(false)}
+            className="mt-6 text-sm text-stone-500 underline underline-offset-2 hover:text-stone-900"
+          >
+            Use a different address
+          </button>
         </div>
       </div>
     );
@@ -88,15 +77,13 @@ export function SignInPage() {
           {error && <p className="mt-3 text-sm text-critical">{error}</p>}
 
           <Button type="submit" disabled={busy} className="mt-5 w-full">
-            {busy ? t.common.loading : supabaseConfigured ? "Send sign-in link" : t.auth.continue}
+            {busy ? t.common.loading : t.auth.sendLink}
           </Button>
         </form>
 
-        {!supabaseConfigured && (
-          <p className="mt-4 px-2 text-xs leading-relaxed text-stone-500">
-            {t.auth.devNotice}
-          </p>
-        )}
+        <p className="mt-4 px-2 text-xs leading-relaxed text-stone-500">
+          {t.auth.passwordNotice}
+        </p>
       </div>
     </div>
   );

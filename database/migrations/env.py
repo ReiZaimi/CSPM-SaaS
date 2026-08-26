@@ -12,7 +12,10 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.core.urls import to_sync_dsn
-from app.models import Base  # noqa: F401  -- registers all tables on the metadata
+
+# Importing Base also registers every table on its metadata, which is what
+# autogenerate compares against.
+from app.models import Base
 
 config = context.config
 if config.config_file_name is not None:

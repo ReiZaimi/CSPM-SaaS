@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { authReady, signInWithMagicLink, supabase, supabaseConfigured, supabaseSignOut } from "../supabase";
+import {
+  authReady,
+  signInWithMagicLink,
+  supabase,
+  supabaseConfigured,
+  supabaseSignOut,
+} from "../supabase";
 
 /**
- * The test environment sets neither VITE_SUPABASE_URL nor
- * VITE_SUPABASE_PUBLISHABLE_KEY, so this exercises the "not configured" path
- * — the same path local development takes before a Supabase project exists.
- * The configured path (real magic-link calls) is exercised manually against
- * a live Supabase project as part of the deploy checklist, not here.
+ * The test environment sets no Supabase variables, so this covers the
+ * unconfigured path — which in a cloud-only app is a misconfigured deployment
+ * rather than a normal development state. The configured path is exercised
+ * against a live Supabase project as part of the deploy checklist.
  */
 describe("supabase auth bridge, unconfigured", () => {
   it("reports itself as not configured", () => {

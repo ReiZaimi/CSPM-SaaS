@@ -7,7 +7,6 @@ plus RLS (database layer).
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import jwt
@@ -53,23 +52,3 @@ def decode_token(token: str) -> AuthenticatedUser:
         raise NotAuthenticated("Token subject is not a valid user id") from exc
 
     return AuthenticatedUser(id=user_id, email=claims.get("email"))
-
-
-def issue_local_token(user_id: UUID, email: str, ttl_hours: int = 12) -> str:
-    """Mint a token in Supabase's shape. Local development only.
-
-    Guarded by the caller (see ``app.api.routes.auth``), which refuses to expose
-    this outside a development environment. It exists so the full product loop
-    can be exercised before a Supabase project is provisioned -- it is not an
-    alternative authentication scheme.
-    """
-    now = datetime.now(UTC)
-    payload = {
-        "sub": str(user_id),
-        "email": email,
-        "aud": settings.jwt_audience,
-        "role": "authenticated",
-        "iat": now,
-        "exp": now + timedelta(hours=ttl_hours),
-    }
-    return jwt.encode(payload, settings.supabase_jwt_secret, algorithm=ALGORITHM)

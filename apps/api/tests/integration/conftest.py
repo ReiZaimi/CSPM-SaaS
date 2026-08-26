@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from app.core.db import app_engine, owner_engine, rls_session, service_session
+from app.core.db import get_app_engine, get_owner_engine, rls_session, service_session
 
 
 @pytest.fixture(scope="session")
@@ -47,5 +47,5 @@ async def _reset_connection_pools() -> AsyncIterator[None]:
     explodes when reused under the next, so the pool is drained after every test.
     """
     yield
-    await app_engine.dispose()
-    await owner_engine.dispose()
+    await get_app_engine().dispose()
+    await get_owner_engine().dispose()

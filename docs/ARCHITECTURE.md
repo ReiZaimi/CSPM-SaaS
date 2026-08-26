@@ -13,7 +13,7 @@ See `PRODUCT_SPEC.md` for vision/scope. This doc covers the technical shape: sta
 | Database / Auth | Supabase PostgreSQL + Supabase Auth + PostgreSQL Row-Level Security (a real security boundary, not a frontend convenience) |
 | Background jobs | Celery + Redis |
 | Cloud | Azure Resource Manager APIs, Azure SDK for Python, Microsoft Graph API, Microsoft Entra ID |
-| Infra | Docker, Docker Compose (local dev), GitHub Actions (CI) |
+| Infra | Docker image built by Railway, GitHub Actions (CI). No local runtime. |
 | Testing | Pytest, Vitest, Playwright |
 | Monitoring | Sentry now; OpenTelemetry later |
 | Reports | Jinja2 + WeasyPrint |
@@ -62,7 +62,7 @@ cloudguard/
 |-- database/{migrations/, seed/}
 |-- infrastructure/docker/
 |-- docs/
-|-- docker-compose.yml, .env.example, README.md
+|-- railway.json, vercel.json, README.md
 `-- .github/workflows/
 ```
 

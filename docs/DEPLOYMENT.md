@@ -1,7 +1,8 @@
 # CloudGuard — Deploying to the Web
 
-Companion to [`DECISIONS.md`](DECISIONS.md). Covers taking the app from
-`docker compose up` on your laptop to a real URL, using:
+Companion to [`DECISIONS.md`](DECISIONS.md). CloudGuard is cloud-only — there
+is no local development mode and no localhost defaults, and the API refuses to
+start without a complete deployment environment. Everything runs on:
 
 | Layer | Platform | Why |
 |---|---|---|
@@ -135,7 +136,7 @@ Node installed on your machine.
    `${{Redis.REDIS_URL}}` instead of copying the value):
 
    ```
-   APP_ENV=production
+   APP_ENV=staging
    APP_URL=https://<your-vercel-domain>              # step 3, frontend
    API_URL=https://<your-railway-api-domain>
    LOG_LEVEL=INFO
@@ -169,10 +170,13 @@ Node installed on your machine.
    SENTRY_DSN=
    ```
 
-   Note what's **not** here: `SUPABASE_URL` being set is exactly what turns off
-   the local dev-token sign-in route (`app/api/routes/auth.py`, gated in
-   `app/api/router.py`). Once it's set, the deployed API only accepts real
-   Supabase-issued tokens.
+   Start on `APP_ENV=staging` while you are still filling in URLs: every value
+   above is required, and on `staging` or `production` the API refuses to boot
+   until they are all present and none of them points at localhost. Switch to
+   `production` in step 4, once the Vercel domain is filled in.
+
+   There is no sign-in path other than Supabase — the API has no token-minting
+   code of its own, only verification.
 
 6. Push to `main` (or click **Deploy**) — Railway builds both services from the
    same Dockerfile and redeploys automatically on every push from here on.
@@ -204,7 +208,7 @@ Node installed on your machine.
    These are read at **build time**, not run time. Adding or changing one has
    no effect until you redeploy — Vite inlines them into the bundle. If any are
    missing, the deployed app renders a page naming the missing variable rather
-   than failing silently against `localhost:8000`.
+   than failing silently — there is no localhost fallback to mask it.
 
 4. Deploy. Vercel gives you a `*.vercel.app` domain — that's your `APP_URL`
    and `CORS_ORIGINS` value from step 2. Go back and set those on Railway if
@@ -217,16 +221,16 @@ Node installed on your machine.
 
 ### The API starts, then immediately crashes
 
-With `APP_ENV=production`, the API checks its own configuration on boot and
-**crashes with an explicit list** rather than serving traffic insecurely
-(`app/core/config.py::production_config_problems`). Every check covers
-something that would otherwise boot cleanly and look healthy while being
-trivially exploitable — a default JWT secret means anyone can mint a token for
-any user, so failing the deploy is the kinder outcome.
+The API validates its whole environment before it will serve anything
+(`app/core/config.py::config_problems`) and **crashes with an explicit list** of
+what is missing. Every check covers something that would otherwise boot cleanly
+and look healthy while being broken or exploitable — a missing JWT secret means
+no request can be authenticated at all, and a localhost URL means a real
+customer gets pointed at their own machine.
 
-Open the Railway deploy logs: the reason is spelled out in full, along with
-where to get the correct value. The usual cause is a variable left blank while
-waiting to learn your Vercel domain.
+Open the Railway deploy logs: every problem is listed at once, in plain
+language, with where to get the correct value. `APP_ENV=test` is the only value
+that skips these checks, and it exists for CI.
 
 ### `ModuleNotFoundError: No module named 'app'`
 
@@ -313,13 +317,16 @@ open the API service → the **shell** in its dashboard (or `railway run` with
 their CLI) and run:
 
 ```bash
-python /srv/database/seed/demo_environment.py
+python /srv/database/seed/demo_environment.py --email you@example.com
 ```
 
-Sign in as `founder@cloudguard.al`, then run it again with `--fix` to watch
-three findings auto-resolve and the score move. Note the seed refuses to run
-when `APP_ENV=production`; set it to `staging` on that service while you are
-demoing, or skip the seed and connect a real tenant instead.
+Sign in through the app **first** — Supabase creates your account when you use
+the magic link, and the demo organization attaches to that real account. Then
+run it again with `--fix` to watch three findings auto-resolve and the score
+move.
+
+The seed refuses to run when `APP_ENV=production`; set that service to
+`staging` while demoing, or skip the seed and connect a real tenant instead.
 
 ---
 

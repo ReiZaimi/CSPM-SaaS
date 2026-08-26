@@ -7,18 +7,42 @@ RLS-constrained session.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
+import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.security import issue_local_token
+from app.core.config import settings
 from app.main import app
 
 pytestmark = pytest.mark.integration
 
 
+def issue_test_token(user_id: uuid.UUID, email: str) -> str:
+    """Mint a token in the shape Supabase issues.
+
+    The application has no token-minting code of its own -- it only verifies
+    what Supabase signed -- so the test suite builds its own rather than the
+    product shipping a code path that hands out credentials.
+    """
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "email": email,
+            "aud": settings.jwt_audience,
+            "role": "authenticated",
+            "iat": now,
+            "exp": now + timedelta(hours=1),
+        },
+        settings.supabase_jwt_secret,
+        algorithm="HS256",
+    )
+
+
 def auth_header(user_id: uuid.UUID, email: str = "user@example.com") -> dict[str, str]:
-    return {"Authorization": f"Bearer {issue_local_token(user_id, email)}"}
+    return {"Authorization": f"Bearer {issue_test_token(user_id, email)}"}
 
 
 @pytest.fixture

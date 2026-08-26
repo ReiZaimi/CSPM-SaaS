@@ -2,24 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { configProblems } from "../config";
 
 /**
- * Vitest runs with import.meta.env.PROD false, so the default state exercises
- * the development path. The production cases stub PROD explicitly.
+ * There is no development exemption to test around: CloudGuard has one
+ * deployment target, so these checks apply to every build.
  */
 afterEach(() => vi.unstubAllEnvs());
 
 describe("frontend config checks", () => {
-  it("stays silent in development, where localhost fallbacks are intended", () => {
-    expect(configProblems()).toEqual([]);
-  });
-
-  it("flags a production build with no API URL", () => {
-    vi.stubEnv("PROD", true);
+  it("flags a build with no API URL", () => {
     const problems = configProblems();
     expect(problems.some((p) => p.variable === "VITE_API_URL")).toBe(true);
   });
 
-  it("flags a production build with no Supabase credentials", () => {
-    vi.stubEnv("PROD", true);
+  it("flags a build with no Supabase credentials", () => {
     vi.stubEnv("VITE_API_URL", "https://api.example.com");
     const problems = configProblems();
     expect(problems).toHaveLength(1);
@@ -28,7 +22,6 @@ describe("frontend config checks", () => {
 
   it("flags a half-configured Supabase setup", () => {
     // The nastiest case: sign-in appears to work and silently does nothing.
-    vi.stubEnv("PROD", true);
     vi.stubEnv("VITE_API_URL", "https://api.example.com");
     vi.stubEnv("VITE_SUPABASE_URL", "https://abc.supabase.co");
     const problems = configProblems();
@@ -36,8 +29,7 @@ describe("frontend config checks", () => {
     expect(problems[0].variable).toBe("VITE_SUPABASE_PUBLISHABLE_KEY");
   });
 
-  it("passes a fully configured production build", () => {
-    vi.stubEnv("PROD", true);
+  it("passes a fully configured build", () => {
     vi.stubEnv("VITE_API_URL", "https://api.example.com");
     vi.stubEnv("VITE_SUPABASE_URL", "https://abc.supabase.co");
     vi.stubEnv("VITE_SUPABASE_PUBLISHABLE_KEY", "anon-key");
@@ -45,7 +37,6 @@ describe("frontend config checks", () => {
   });
 
   it("explains the consequence, not just the variable name", () => {
-    vi.stubEnv("PROD", true);
     for (const problem of configProblems()) {
       expect(problem.detail.length).toBeGreaterThan(60);
     }

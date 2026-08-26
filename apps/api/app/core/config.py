@@ -1,4 +1,16 @@
-"""Application settings. Everything secret arrives via environment (SECURITY.md section 3)."""
+"""Application settings.
+
+CloudGuard runs in one place: a managed cloud environment (Supabase for
+PostgreSQL and Auth, Railway for the API and worker, Vercel for the frontend).
+There is deliberately no local-development mode and no localhost defaults --
+every value below has to be supplied by the environment, and the app refuses to
+start if any of them is missing or obviously wrong.
+
+That refusal is the point. Every setting checked here is one that would let the
+process boot, look healthy, and be trivially exploitable: a known JWT secret
+lets anyone mint a token for any user; a stale APP_URL strands a customer
+mid-consent. Failing the deploy is the kinder outcome for a security product.
+"""
 
 from functools import lru_cache
 from typing import Literal
@@ -6,45 +18,50 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Named so `production_config_problems()` can recognise them, rather than
-# repeating the literals in two places where they could drift apart.
-DEV_JWT_SECRET = "local-dev-jwt-secret-change-me"
-DEV_CONSENT_SECRET = "local-dev-consent-secret-change-me"
+
+class ConfigurationError(RuntimeError):
+    """Raised when the environment cannot support a running deployment."""
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
+    # No env_file: configuration comes from the platform's environment
+    # variables, never from a file sitting next to the code.
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
-    app_env: Literal["development", "test", "staging", "production"] = "development"
-    app_url: str = "http://localhost:5173"
-    api_url: str = "http://localhost:8000"
+    # Defaults to production so a forgotten variable fails closed rather than
+    # silently relaxing the checks below. "test" is the only value that skips
+    # them, and it exists for CI.
+    app_env: Literal["test", "staging", "production"] = "production"
+
+    app_url: str = ""
+    api_url: str = ""
     log_level: str = "INFO"
 
     # --- Supabase -----------------------------------------------------------
     supabase_url: str = ""
     supabase_publishable_key: str = ""
     supabase_secret_key: str = ""
-    supabase_jwt_secret: str = DEV_JWT_SECRET
+    supabase_jwt_secret: str = ""
     jwt_audience: str = "authenticated"
 
     # --- Database -----------------------------------------------------------
-    # app connection == RLS-constrained. owner connection == migrations + worker.
-    database_url: str = "postgresql+asyncpg://cloudguard_app:cloudguard_app@postgres:5432/cloudguard"
-    database_owner_url: str = "postgresql+asyncpg://cloudguard:cloudguard@postgres:5432/cloudguard"
+    # app connection == RLS-constrained. owner connection == migrations.
+    database_url: str = ""
+    database_owner_url: str = ""
     db_echo: bool = False
 
-    redis_url: str = "redis://redis:6379/0"
+    redis_url: str = ""
 
     # --- Azure: CloudGuard's own multi-tenant app identity ------------------
     azure_client_id: str = ""
     azure_client_secret: str = ""
     azure_tenant_id: str = ""
-    azure_redirect_uri: str = "http://localhost:8000/api/v1/cloud-accounts/azure/consent/callback"
-    azure_consent_state_secret: str = DEV_CONSENT_SECRET
+    azure_redirect_uri: str = ""
+    azure_consent_state_secret: str = ""
 
     sentry_dsn: str = ""
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(default_factory=list)
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -61,75 +78,126 @@ class Settings(BaseSettings):
     def azure_configured(self) -> bool:
         """True when CloudGuard's own Entra app identity is present.
 
-        Without it the consent flow cannot run -- the API says so explicitly
-        rather than failing deep inside a token request.
+        Optional: everything up to the Connections screen works without it, so
+        a deployment that has not reached the Entra registration step is not
+        broken, just not yet able to scan.
         """
         return bool(self.azure_client_id and self.azure_client_secret)
 
-    def production_config_problems(self) -> list[str]:
-        """Deployment mistakes that would leave a running server insecure.
+    def config_problems(self) -> list[str]:
+        """Everything wrong with this environment, in plain language.
 
-        Every item here is something that works perfectly in local development
-        and is a genuine vulnerability once the app is reachable from the
-        internet. They are checked rather than trusted because each one fails
-        *silently*: the server boots, the UI loads, and nothing looks wrong
-        until someone forges a token.
-
-        Returned rather than raised so the caller decides the severity --
-        ``main.py`` refuses to start on any of these in production.
+        Returned rather than raised so callers choose the severity, and so the
+        whole list surfaces at once -- finding four missing variables one
+        redeploy at a time is its own kind of cruelty.
         """
         problems: list[str] = []
 
-        if self.supabase_jwt_secret in {"", DEV_JWT_SECRET}:
+        def require(value: str, name: str, why: str) -> None:
+            if not value:
+                problems.append(f"{name} is not set. {why}")
+
+        require(
+            self.database_url,
+            "DATABASE_URL",
+            "This is the RLS-constrained connection every request uses. It must "
+            "authenticate as cloudguard_app, not postgres.",
+        )
+        require(
+            self.database_owner_url,
+            "DATABASE_OWNER_URL",
+            "Alembic needs the owning role to create tables and RLS policies. "
+            "This one authenticates as postgres.",
+        )
+        require(
+            self.redis_url,
+            "REDIS_URL",
+            "Celery uses it to queue scans; without it a scan can be requested "
+            "but never runs.",
+        )
+        require(
+            self.supabase_url,
+            "SUPABASE_URL",
+            "Your Supabase project URL, e.g. https://<ref>.supabase.co.",
+        )
+        require(
+            self.supabase_publishable_key,
+            "SUPABASE_PUBLISHABLE_KEY",
+            "The anon key from Supabase: Project Settings > API.",
+        )
+        require(
+            self.supabase_jwt_secret,
+            "SUPABASE_JWT_SECRET",
+            "Every request's identity is verified against it. Supabase: Project "
+            "Settings > API > JWT Settings.",
+        )
+        require(
+            self.azure_consent_state_secret,
+            "AZURE_CONSENT_STATE_SECRET",
+            "It signs the Entra consent round-trip, so it must be secret even "
+            "before a tenant is connected. Generate with: openssl rand -hex 32.",
+        )
+        require(
+            self.app_url,
+            "APP_URL",
+            "Your deployed frontend's URL. The Entra consent callback sends the "
+            "customer's browser back to it.",
+        )
+        if not self.cors_origins:
             problems.append(
-                "SUPABASE_JWT_SECRET is unset or still the development default. "
-                "Every request's identity is verified against it, so a known "
-                "value lets anyone mint a token for any user. Copy the real "
-                "secret from Supabase: Project Settings > API > JWT Settings."
+                "CORS_ORIGINS is not set. Set it to your deployed frontend's URL, "
+                "or the browser will block every API call."
             )
 
-        if self.azure_consent_state_secret in {"", DEV_CONSENT_SECRET}:
-            problems.append(
-                "AZURE_CONSENT_STATE_SECRET is unset or still the development "
-                "default. It signs the Entra consent round-trip, so a known "
-                "value lets an attacker bind their own tenant to someone "
-                "else's cloud account. Set it to a random 32+ character string."
-            )
+        # A localhost value here means a local default leaked into a deployment
+        # -- it would point a real customer at their own machine.
+        for name, value in (
+            ("APP_URL", self.app_url),
+            ("API_URL", self.api_url),
+            ("DATABASE_URL", self.database_url),
+            ("DATABASE_OWNER_URL", self.database_owner_url),
+            ("REDIS_URL", self.redis_url),
+        ):
+            if value and ("localhost" in value or "127.0.0.1" in value):
+                problems.append(
+                    f"{name} points at localhost. There is no local environment "
+                    "-- this must be the deployed address."
+                )
 
         if any("localhost" in origin for origin in self.cors_origins):
             problems.append(
-                "CORS_ORIGINS still contains localhost. Set it to your deployed "
-                "frontend's URL, or the browser will block every API call."
+                "CORS_ORIGINS contains localhost. Set it to your deployed "
+                "frontend's URL."
             )
 
-        if "localhost" in self.app_url:
+        if self.azure_configured and not self.azure_redirect_uri:
             problems.append(
-                "APP_URL still points at localhost. It is where the Entra admin "
-                "consent callback sends the customer's browser back to, so a "
-                "connected tenant would land on a dead link. Set it to your "
-                "deployed frontend's URL."
-            )
-
-        if self.azure_configured and "localhost" in self.azure_redirect_uri:
-            problems.append(
-                "AZURE_REDIRECT_URI still points at localhost while an Azure app "
-                "identity is configured. It must match the redirect URI "
-                "registered on the Entra app exactly, or consent will fail."
-            )
-
-        if not self.supabase_url:
-            problems.append(
-                "SUPABASE_URL is unset. Without it the development sign-in "
-                "route stays registered, which is not an authentication "
-                "mechanism -- it mints tokens for any email given to it."
+                "AZURE_REDIRECT_URI is not set while an Azure app identity is "
+                "configured. It must match the redirect URI registered on the "
+                "Entra app exactly, or consent will fail."
             )
 
         return problems
 
+    def raise_if_misconfigured(self) -> None:
+        if self.app_env == "test":
+            return
+        problems = self.config_problems()
+        if problems:
+            raise ConfigurationError(
+                "CloudGuard cannot start: the environment is incomplete.\n  - "
+                + "\n  - ".join(problems)
+            )
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    # Validated at import, before any database engine is constructed, so a
+    # missing variable produces this explanation rather than a connection error
+    # thrown from somewhere much less obvious.
+    settings.raise_if_misconfigured()
+    return settings
 
 
 settings = get_settings()

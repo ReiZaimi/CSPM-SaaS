@@ -37,6 +37,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Refuse a real credential in the Supabase role template
+        # That file is meant to be edited in Supabase's SQL Editor, not saved
+        # with a live password. Committing one here would publish a database
+        # credential to a public repository.
+        run: |
+          grep -q "CHANGE-ME-BEFORE-RUNNING" infrastructure/supabase/roles.sql || {
+            echo "::error file=infrastructure/supabase/roles.sql::Placeholder password was replaced. Restore it and keep the real password only in Railway's DATABASE_URL."
+            exit 1
+          }
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -51,7 +61,7 @@ jobs:
       - name: Create the RLS-constrained application role
         env:
           PGPASSWORD: cloudguard
-        run: psql -h localhost -U cloudguard -d cloudguard -f infrastructure/docker/postgres-init.sql
+        run: psql -h localhost -U cloudguard -d cloudguard -f infrastructure/ci/postgres-roles.sql
 
       - name: Migrate
         working-directory: apps/api

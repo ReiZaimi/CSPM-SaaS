@@ -14,74 +14,48 @@ The specification this is built from lives in [`docs/`](docs/); start with
 
 ## Running it
 
-**On the web**, deployed from this GitHub repo (Supabase + Railway + Vercel):
-see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+CloudGuard is cloud-only. There is no local development mode, no
+`docker-compose.yml`, and no localhost defaults anywhere in the configuration —
+the API refuses to start unless it has a complete deployment environment.
 
-**Locally**, requires Docker. Nothing else is installed on your machine.
-
-```bash
-cp .env.example .env
-docker compose up -d
-```
-
-| Service | URL |
+| Layer | Platform |
 |---|---|
-| Web | http://localhost:5173 |
-| API | http://localhost:8000 |
-| API docs | http://localhost:8000/docs |
+| PostgreSQL + Auth | Supabase |
+| API + Celery worker + Redis | Railway |
+| Frontend | Vercel |
 
-Migrations run automatically when the API container starts.
+Full walkthrough: **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)**. Both Railway
+and Vercel build directly from this repository and redeploy on every push to
+`main`.
 
-### Seeing the product loop without an Azure tenant
+### Seeing the product loop before Azure is registered
 
-Registering a multi-tenant Entra application is a prerequisite for scanning a
-real environment. Until that exists, the demo seed runs the **real** pipeline —
-real normalizer, real rules, real risk engine — against a recorded Azure
-snapshot:
-
-```bash
-docker compose exec api python /srv/database/seed/demo_environment.py
-```
-
-Sign in at http://localhost:5173 as `founder@cloudguard.al`. You will see six
-findings, scored and ranked.
-
-Then replay the same environment with two of the problems repaired:
+Scanning a real environment needs an Entra app registration
+([`docs/AZURE_INTEGRATION.md`](docs/AZURE_INTEGRATION.md) §2). Until then, the
+demo seed runs the **real** pipeline — real normalizer, real rules, real risk
+engine — against a recorded Azure snapshot. From the API service's shell on
+Railway, with `APP_ENV=staging`:
 
 ```bash
-docker compose exec api python /srv/database/seed/demo_environment.py --fix
+python /srv/database/seed/demo_environment.py --email you@example.com
 ```
 
-Three findings move to **Verified fixed**, stamped with the scan that proved it,
-and the security score moves. Nobody clicked "resolved" — that is the point.
-
-### Connecting a real Azure environment
-
-Set CloudGuard's own Entra application identity in `.env`:
-
-```
-AZURE_CLIENT_ID=
-AZURE_CLIENT_SECRET=
-AZURE_TENANT_ID=
-```
-
-Then, in the app: **Connections** → add a subscription → **Open admin consent**
-→ assign the Reader role in Azure → **Verify connection** → **Run scan**.
-
-The customer never gives CloudGuard a password, client secret, or certificate.
-CloudGuard authenticates as its own application against their directory, so
-there is no credential of theirs to store or leak.
+Sign in first so Supabase has created your account; the demo organization
+attaches to it. Then run it again with `--fix` to watch three findings
+auto-resolve and the security score move. Nobody clicks "resolved" — that is
+the point.
 
 ---
 
 ## Tests
 
-```bash
-docker compose exec api pytest -q          # 156 tests
-docker compose exec api ruff check .
-docker compose exec api mypy app
-docker compose exec web npm test           # 20 tests
-docker compose exec web npm run typecheck
+Tests run in CI on every push ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)),
+which provisions PostgreSQL and Redis as service containers. That is the
+supported way to run them.
+
+```
+backend    183 tests   pytest, ruff, mypy
+frontend    29 tests   vitest, tsc
 ```
 
 Rule tests run against fixture JSON in `apps/api/tests/fixtures/` — no database,
@@ -107,6 +81,7 @@ apps/api/app/
 
 apps/web/src/      React + TypeScript + Tailwind
 database/          migrations (with RLS policies) and the demo seed
+infrastructure/    Dockerfile, Railway + Supabase + CI setup
 docs/              the specification
 ```
 
@@ -134,3 +109,8 @@ database, and the finding detail page shows the arithmetic.
 **Remediation is verified by the scanner, not asserted by a human.** There is no
 "mark as fixed" button anywhere in the product, and the API refuses to set a
 finding to RESOLVED by hand.
+
+**CloudGuard never handles a password or a customer credential.** Sign-in is a
+Supabase magic link; the API only verifies the token. Azure access is a
+multi-tenant Entra app plus admin consent, so there is no per-customer secret
+to store or leak.

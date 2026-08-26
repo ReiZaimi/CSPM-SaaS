@@ -9,8 +9,12 @@ genuinely what CloudGuard computes, not fabricated rows.
 It is a development tool, not part of the application. Nothing imports it, and
 it refuses to run against a production environment.
 
-    docker compose exec api python /srv/database/seed/demo_environment.py
-    docker compose exec api python /srv/database/seed/demo_environment.py --fix
+    python /srv/database/seed/demo_environment.py --email you@example.com
+    python /srv/database/seed/demo_environment.py --email you@example.com --fix
+
+Run it from the API service's shell on Railway. The email must belong to
+someone who has already signed in at least once, so that Supabase has created
+their user record -- the demo organization is attached to that real account.
 
 ``--fix`` replays the scan with the RDP exposure and the open SQL firewall
 repaired, which is how you watch a finding auto-resolve and the score move.
@@ -27,23 +31,21 @@ from pathlib import Path
 
 sys.path.insert(0, "/srv/apps/api")
 
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import text
 
-from app.connectors.azure.normalizer import AzureNormalizer  # noqa: E402
-from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot  # noqa: E402
-from app.core.config import settings  # noqa: E402
-from app.core.db import service_session  # noqa: E402
-from app.core.enums import CloudAccountStatus, ConsentStatus, Provider, ScanStatus  # noqa: E402
-from app.models.cloud_account import CloudAccount  # noqa: E402
-from app.models.scan import Scan  # noqa: E402
-from app.services import scanner as scanner_module  # noqa: E402
-from app.services.rule_sync import sync_rules_to_database  # noqa: E402
-from app.services.scanner import ScanPipeline  # noqa: E402
+from app.connectors.azure.normalizer import AzureNormalizer
+from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
+from app.core.config import settings
+from app.core.db import service_session
+from app.core.enums import CloudAccountStatus, ConsentStatus, Provider, ScanStatus
+from app.models.cloud_account import CloudAccount
+from app.models.scan import Scan
+from app.services import scanner as scanner_module
+from app.services.rule_sync import sync_rules_to_database
+from app.services.scanner import ScanPipeline
 
 SNAPSHOT = Path("/srv/apps/api/tests/fixtures/azure_raw/snapshot_mixed.json")
-DEMO_EMAIL = "founder@cloudguard.al"
 DEMO_ORG = "Banka Kombetare (demo)"
-DEMO_NAMESPACE = uuid.UUID("00000000-0000-0000-0000-0000000c1a11")
 
 
 class ReplayConnector(CloudConnector):
@@ -83,13 +85,42 @@ def apply_fixes(payload: dict) -> dict:
     return fixed
 
 
-async def seed(fix: bool) -> None:
+async def resolve_user(email: str) -> uuid.UUID:
+    """Find the Supabase account this demo organization should belong to.
+
+    Supabase keeps its users in auth.users in the same database, so the owner
+    connection can read it directly. Inventing a user id instead would create
+    an organization that the person signing in could never see -- their real
+    Supabase id would not match it.
+    """
+    async with service_session() as session:
+        user_id = (
+            await session.execute(
+                text("SELECT id FROM auth.users WHERE lower(email) = lower(:e) LIMIT 1"),
+                {"e": email},
+            )
+        ).scalar_one_or_none()
+
+    if user_id is None:
+        raise SystemExit(
+            f"No Supabase user found for {email}.\n"
+            "Sign in through the app once first -- Supabase creates the account "
+            "when the magic link is used -- then run this again."
+        )
+    return user_id
+
+
+async def seed(email: str, fix: bool) -> None:
     if settings.is_production:
-        raise SystemExit("Refusing to seed demo data in a production environment")
+        raise SystemExit(
+            "Refusing to seed demo data into a production environment.\n"
+            "Set APP_ENV=staging on this service while demoing, or connect a "
+            "real Azure tenant instead."
+        )
 
     await sync_rules_to_database()
 
-    user_id = uuid.uuid5(DEMO_NAMESPACE, DEMO_EMAIL)
+    user_id = await resolve_user(email)
     payload = json.loads(SNAPSHOT.read_text())
     if fix:
         payload = apply_fixes(payload)
@@ -187,14 +218,20 @@ async def seed(fix: bool) -> None:
         f"scan {row[0]}: {row[1]} resources, {row[2]} rules, "
         f"{row[3]} open findings, {resolved} verified fixed"
     )
-    print(f"\nSign in at {settings.app_url} as {DEMO_EMAIL}")
+    print(f"\nOpen {settings.app_url} and sign in as {email}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--email",
+        required=True,
+        help="email of an existing Supabase user to attach the demo organization to",
+    )
+    parser.add_argument(
         "--fix",
         action="store_true",
         help="replay with the RDP and SQL exposures repaired, to watch findings auto-resolve",
     )
-    asyncio.run(seed(parser.parse_args().fix))
+    args = parser.parse_args()
+    asyncio.run(seed(args.email, args.fix))

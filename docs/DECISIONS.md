@@ -127,13 +127,14 @@ single rule. Fixing one thing frequently changes another — closing a public po
 may reroute traffic, disabling public network access may orphan a dependency —
 and a narrow re-check could report a fix that a wider view would contradict.
 
-## 11. A local development auth path exists, gated to non-production
+## 11. Authentication is Supabase only
 
-Production authentication is Supabase Auth; the API only ever *verifies* the
-JWT. `POST /api/v1/auth/dev-token` mints a token in the same shape so the
-product loop can be exercised before a Supabase project is provisioned. It
-refuses to run when `APP_ENV=production`, and the router does not register it at
-all when `SUPABASE_URL` is set.
+Production authentication is Supabase Auth: the browser completes a passwordless
+magic-link sign-in and sends the resulting JWT to this API, which only ever
+*verifies* it (`app/core/security.py`). CloudGuard never sees a password and has
+no token-minting code — the test suite signs its own tokens rather than the
+product shipping a code path that hands out credentials. See #13 for why the
+earlier development-only variant was deleted rather than gated.
 
 ## 12. shadcn/ui components are hand-written
 
@@ -144,6 +145,38 @@ not a dependency. The handful of primitives this prototype needs — badge, card
 button, field, empty state — are written directly in `src/components/ui.tsx` in
 the same style (Tailwind + `clsx` + `tailwind-merge`). Running the CLI later to
 add richer components remains possible.
+
+## 13. Cloud-only: no local development mode
+
+**Spec:** `ARCHITECTURE.md` §1 listed Docker Compose for local development.
+
+CloudGuard now targets exactly one environment — Supabase, Railway, Vercel —
+and cannot be run anywhere else. `docker-compose.yml` and `.env.example` are
+gone, there are no localhost defaults in `Settings`, and the API validates its
+entire environment at import and refuses to start if anything is missing.
+
+Three things follow, and the third is the point:
+
+* **The dev sign-in route is deleted**, not disabled. It minted a valid token
+  for any email address with no password. Gating it behind an environment check
+  meant one wrong variable turned it back on in a deployment — as nearly
+  happened when Railway's "suggested variables" pre-filled `APP_ENV=development`
+  from `.env.example`. Code that cannot be reached by accident is code that is
+  not there. `app/core/security.py` now only verifies tokens; the test suite
+  signs its own.
+* **`APP_ENV` defaults to `production`** and no longer accepts `development`.
+  A forgotten variable fails closed rather than silently relaxing every check.
+  `test` is the only exemption and exists for CI.
+* **Database engines are built lazily.** Removing the localhost defaults meant
+  `create_async_engine("")` ran at import and broke test collection. Importing a
+  module should not open a connection pool anyway, so `get_app_engine()` /
+  `get_owner_engine()` construct on first use.
+
+The cost is real and worth stating: there is no way to run CloudGuard offline,
+and the 45 integration tests need the PostgreSQL that CI provisions. The
+tradeoff is that a whole class of "worked locally, insecure in production" bug
+is now unrepresentable — which for a security product is the right side to
+err on.
 
 ---
 

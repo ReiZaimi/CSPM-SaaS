@@ -2,10 +2,10 @@
 
 Two connections, deliberately:
 
-* ``app_engine``  -- logs in as ``cloudguard_app``, which owns nothing and is
+* ``get_app_engine()``  -- logs in as ``cloudguard_app``, which owns nothing and is
   therefore fully subject to Row-Level Security. Every request-path query goes
   through here.
-* ``owner_engine`` -- the table owner. Used by migrations and by the Celery
+* ``get_owner_engine()`` -- the table owner. Used by migrations and by the Celery
   worker, which has no authenticated user to resolve policies against. Worker
   code must scope by ``organization_id`` explicitly, taken from the scan record
   it was handed -- never from client input.
@@ -19,31 +19,54 @@ against local PostgreSQL and against a real Supabase project.
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.core.config import settings
 
-app_engine = create_async_engine(
-    settings.database_url,
-    echo=settings.db_echo,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=5,
-)
 
-owner_engine = create_async_engine(
-    settings.database_owner_url,
-    echo=settings.db_echo,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=5,
-)
+# Engines are built on first use rather than at import. Importing a module
+# should not open a connection pool: it makes the whole package unimportable
+# wherever a database is not reachable -- including test collection, which
+# needs to read these files without touching PostgreSQL.
+@lru_cache
+def get_app_engine() -> AsyncEngine:
+    return create_async_engine(
+        settings.database_url,
+        echo=settings.db_echo,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=5,
+    )
 
-AppSessionFactory = async_sessionmaker(app_engine, expire_on_commit=False, class_=AsyncSession)
-OwnerSessionFactory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+
+@lru_cache
+def get_owner_engine() -> AsyncEngine:
+    return create_async_engine(
+        settings.database_owner_url,
+        echo=settings.db_echo,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+    )
+
+
+@lru_cache
+def _app_session_factory() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(get_app_engine(), expire_on_commit=False, class_=AsyncSession)
+
+
+@lru_cache
+def _owner_session_factory() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(get_owner_engine(), expire_on_commit=False, class_=AsyncSession)
 
 
 @asynccontextmanager
@@ -55,7 +78,7 @@ async def rls_session(user_id: UUID | str) -> AsyncIterator[AsyncSession]:
     connection.
     """
     claims = json.dumps({"sub": str(user_id), "role": "authenticated"})
-    session = AppSessionFactory()
+    session = _app_session_factory()()
     try:
         async with session.begin():
             await session.execute(
@@ -75,7 +98,7 @@ async def service_session() -> AsyncIterator[AsyncSession]:
     Anything called with this session is responsible for its own
     ``organization_id`` scoping.
     """
-    session = OwnerSessionFactory()
+    session = _owner_session_factory()()
     try:
         yield session
     finally:
@@ -83,6 +106,6 @@ async def service_session() -> AsyncIterator[AsyncSession]:
 
 
 async def ping() -> bool:
-    async with app_engine.connect() as conn:
+    async with get_app_engine().connect() as conn:
         await conn.execute(text("SELECT 1"))
     return True

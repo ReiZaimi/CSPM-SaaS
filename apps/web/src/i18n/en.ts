@@ -26,8 +26,12 @@ export const en = {
     signIn: "Sign in",
     email: "Email address",
     continue: "Continue",
-    devNotice:
-      "Local development mode. In production this screen is Supabase Auth — CloudGuard never handles your password.",
+    sendLink: "Send sign-in link",
+    checkEmail: "Check your email",
+    linkSentTo: "We sent a sign-in link to",
+    openOnThisDevice: "Open it on this device to continue.",
+    passwordNotice:
+      "CloudGuard never sees your password — Supabase handles sign-in, and this app only verifies the token it issues.",
   },
   onboarding: {
     createOrg: "Create your organization",
