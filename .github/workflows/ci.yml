@@ -78,11 +78,14 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: apps/web/package.json
+          cache-dependency-path: apps/web/package-lock.json
 
       - name: Install
         working-directory: apps/web
-        run: npm install
+        # ci, not install: it installs exactly the locked tree Vercel will build
+        # from, so a lockfile that drifted out of sync fails here rather than
+        # surfacing as a confusing deploy error.
+        run: npm ci
 
       - name: Type check
         working-directory: apps/web

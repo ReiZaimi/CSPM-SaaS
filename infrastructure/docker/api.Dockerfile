@@ -4,6 +4,14 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
+# PYTHONPATH belongs in the image, not only in docker-compose.yml. Without it,
+# `import app` depends on whichever entrypoint happens to add the working
+# directory to sys.path: uvicorn does (--app-dir defaults to "."), alembic does
+# (prepend_sys_path in alembic.ini), but Celery is not guaranteed to. That is
+# why the worker started locally -- where compose sets PYTHONPATH -- and would
+# fail on a host that doesn't.
+ENV PYTHONPATH=/srv/apps/api
+
 WORKDIR /srv
 
 RUN apt-get update \

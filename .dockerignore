@@ -1,0 +1,40 @@
+# Keeps the build context small. Railway (and any remote builder) uploads this
+# context before the first line of the Dockerfile runs, so excluding the
+# frontend and git history here is the difference between a fast deploy and a
+# slow one.
+#
+# Careful: apps/api, database/ and apps/api/tests MUST stay included. The
+# Dockerfile copies the first two, and database/seed/demo_environment.py reads
+# a recorded snapshot out of apps/api/tests/fixtures at runtime.
+
+.git
+.github
+
+# The API image has no use for the frontend.
+apps/web
+
+**/node_modules
+**/dist
+**/.vite
+
+# Secrets never belong in an image layer.
+**/.env
+**/.env.*
+!**/.env.example
+
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+**/*.egg-info
+
+**/.DS_Store
+**/.idea
+**/.vscode
+
+docs

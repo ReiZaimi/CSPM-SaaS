@@ -102,6 +102,21 @@ class Settings(BaseSettings):
                 "frontend's URL, or the browser will block every API call."
             )
 
+        if "localhost" in self.app_url:
+            problems.append(
+                "APP_URL still points at localhost. It is where the Entra admin "
+                "consent callback sends the customer's browser back to, so a "
+                "connected tenant would land on a dead link. Set it to your "
+                "deployed frontend's URL."
+            )
+
+        if self.azure_configured and "localhost" in self.azure_redirect_uri:
+            problems.append(
+                "AZURE_REDIRECT_URI still points at localhost while an Azure app "
+                "identity is configured. It must match the redirect URI "
+                "registered on the Entra app exactly, or consent will fail."
+            )
+
         if not self.supabase_url:
             problems.append(
                 "SUPABASE_URL is unset. Without it the development sign-in "

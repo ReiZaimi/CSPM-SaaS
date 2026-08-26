@@ -12,6 +12,7 @@ from app.core.config import DEV_CONSENT_SECRET, DEV_JWT_SECRET, Settings
 
 PRODUCTION_READY = {
     "app_env": "production",
+    "app_url": "https://cloudguard.example.com",
     "supabase_url": "https://abc.supabase.co",
     "supabase_jwt_secret": "a-real-secret-from-the-supabase-dashboard",
     "azure_consent_state_secret": "a-real-random-32-character-string-here",
@@ -51,6 +52,31 @@ class TestProductionGuard:
         ).production_config_problems()
         assert any("CORS_ORIGINS" in p for p in problems)
 
+    def test_localhost_app_url_is_rejected(self) -> None:
+        """APP_URL is where the Entra consent callback returns the customer's
+        browser -- pointing at localhost strands them on a dead link."""
+        problems = settings_with(
+            app_url="http://localhost:5173"
+        ).production_config_problems()
+        assert any("APP_URL" in p for p in problems)
+
+    def test_localhost_azure_redirect_is_rejected_only_when_azure_is_configured(
+        self,
+    ) -> None:
+        """Before an Entra app exists the redirect URI is unused, so flagging it
+        would be noise on a deploy that is otherwise correct."""
+        unconfigured = settings_with(
+            azure_redirect_uri="http://localhost:8000/callback"
+        ).production_config_problems()
+        assert not any("AZURE_REDIRECT_URI" in p for p in unconfigured)
+
+        configured = settings_with(
+            azure_redirect_uri="http://localhost:8000/callback",
+            azure_client_id="an-id",
+            azure_client_secret="a-secret",
+        ).production_config_problems()
+        assert any("AZURE_REDIRECT_URI" in p for p in configured)
+
     def test_missing_supabase_url_is_rejected(self) -> None:
         """Without it, the dev sign-in route stays registered in production --
         and that route mints a token for any email handed to it."""
@@ -64,10 +90,11 @@ class TestProductionGuard:
             supabase_jwt_secret=DEV_JWT_SECRET,
             azure_consent_state_secret=DEV_CONSENT_SECRET,
             supabase_url="",
+            app_url="http://localhost:5173",
             cors_origins=["http://localhost:5173"],
         ).production_config_problems()
 
-        assert len(problems) == 4
+        assert len(problems) == 5
         for problem in problems:
             assert len(problem) > 80, f"too terse to act on: {problem}"
 

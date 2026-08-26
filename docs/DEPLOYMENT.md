@@ -15,8 +15,8 @@ both connect to it directly, no separate upload step.
 Total setup time: roughly 30–45 minutes, most of it waiting for dashboards to
 provision. **I can't create these accounts or click through their dashboards
 for you** — account creation and OAuth authorization are things only you can
-do. What follows is the exact sequence; the commands you can hand me are
-called out separately.
+do. Everything below happens in a browser — nothing needs Docker, Python or
+Node installed on your machine.
 
 ---
 
@@ -97,19 +97,38 @@ called out separately.
    In its Settings:
    - **Root Directory**: `.` (repo root — the Dockerfile's build context needs
      to see both `apps/api` and `database`)
+   - **Config-as-code** → set the path to `infrastructure/railway/api.json`
+
+   That file already declares the Dockerfile, the start command (including the
+   migration) and the health check, so there is nothing else to fill in and
+   nothing to mistype. Then **Networking** → generate a public domain; that's
+   your `API_URL`.
+
+   <details><summary>If your Railway plan has no config-as-code field</summary>
+
+   Set these by hand instead:
    - **Dockerfile Path**: `infrastructure/docker/api.Dockerfile`
    - **Start Command**:
      ```
      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
      ```
-   - **Networking** → generate a public domain. That's your `API_URL`.
+   - **Health Check Path**: `/health`
+   </details>
 
 4. **Add the worker service**: **+ New** → **GitHub Repo** → same repo a third
-   time. Same Root Directory and Dockerfile Path as the API. **Start Command**:
+   time. Same **Root Directory** (`.`), but point config-as-code at
+   `infrastructure/railway/worker.json` — the worker runs Celery rather than
+   the web server, and takes no health check because nothing calls it over
+   HTTP. No public domain needed.
+
+   <details><summary>Manual equivalent</summary>
+
+   - **Dockerfile Path**: `infrastructure/docker/api.Dockerfile` (same image)
+   - **Start Command**:
      ```
      celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
      ```
-   No public domain needed — nothing calls the worker over HTTP.
+   </details>
 
 5. **Environment variables**, set on **both** the API and worker services
    (Railway lets you reference another service's variable with
@@ -164,9 +183,16 @@ called out separately.
 
 1. **Add New Project** at [vercel.com](https://vercel.com) → import
    `ReiZaimi/CSPM-SaaS`.
-2. **Root Directory**: `apps/web`. Vercel auto-detects the Vite framework
-   preset, build command (`npm run build`), and output directory (`dist`) —
-   no `vercel.json` needed.
+2. **Root Directory**: `apps/web` is the cleanest choice, but the repo now
+   carries a `vercel.json` at both the root and in `apps/web`, so the build
+   works either way — Vercel reads whichever matches the Root Directory you
+   set. Leave the build/output fields blank; the config file supplies them.
+
+   Both configs include the SPA rewrite that sends unmatched paths to
+   `index.html`. Without it the app loads at `/` but any deep link —
+   `/findings/<id>`, or just refreshing the page — returns a 404, because
+   those routes only exist client-side in React Router.
+
 3. **Environment variables**:
    ```
    VITE_API_URL=https://<your-railway-api-domain>
@@ -175,6 +201,11 @@ called out separately.
    ```
    Only the anon/publishable key goes here — never the service_role key
    (`SECURITY.md` §3: only the publishable key is safe client-side).
+   These are read at **build time**, not run time. Adding or changing one has
+   no effect until you redeploy — Vite inlines them into the bundle. If any are
+   missing, the deployed app renders a page naming the missing variable rather
+   than failing silently against `localhost:8000`.
+
 4. Deploy. Vercel gives you a `*.vercel.app` domain — that's your `APP_URL`
    and `CORS_ORIGINS` value from step 2. Go back and set those on Railway if
    you didn't know the domain yet, and add the same domain to Supabase's
@@ -182,7 +213,9 @@ called out separately.
 
 ---
 
-## 4. If the API refuses to start
+## 4. Troubleshooting
+
+### The API starts, then immediately crashes
 
 With `APP_ENV=production`, the API checks its own configuration on boot and
 **crashes with an explicit list** rather than serving traffic insecurely
@@ -191,9 +224,55 @@ something that would otherwise boot cleanly and look healthy while being
 trivially exploitable — a default JWT secret means anyone can mint a token for
 any user, so failing the deploy is the kinder outcome.
 
-If Railway shows a crash loop, open the deploy logs: the reason is spelled out
-in full, along with where to get the correct value. The usual cause is a
-variable you left blank while waiting to know your Vercel domain.
+Open the Railway deploy logs: the reason is spelled out in full, along with
+where to get the correct value. The usual cause is a variable left blank while
+waiting to learn your Vercel domain.
+
+### `ModuleNotFoundError: No module named 'app'`
+
+The image sets `PYTHONPATH=/srv/apps/api`, so this should not happen. If it
+does, the service is running a start command from the wrong working directory —
+check that **Root Directory** is `.` and not `apps/api`.
+
+### Railway builds the wrong thing, or fails to detect a Dockerfile
+
+Railway falls back to Nixpacks auto-detection when it cannot find a Dockerfile,
+and Nixpacks does not know how to build this repo. Point the service's
+config-as-code at `infrastructure/railway/api.json` (or set the Dockerfile path
+manually), and make sure Root Directory is the repo root.
+
+### The migration fails on deploy
+
+`alembic upgrade head` runs as part of the API start command using
+`DATABASE_OWNER_URL`. If it fails, that variable is wrong or the role lacks
+permission. It must be the **postgres** user (the table owner), not
+`cloudguard_app` — the app role deliberately owns nothing and cannot create
+tables. Also confirm you used the direct connection on port `5432`, not the
+`6543` pooler.
+
+### Vercel: "No Output Directory named 'dist' found"
+
+Vercel built from the wrong directory. Either set Root Directory to `apps/web`,
+or leave it at the repo root — both are covered by a `vercel.json` now, but
+only if the build/output fields in the dashboard are left **blank** so the
+config file is what applies. A value typed into the dashboard overrides the
+file.
+
+### The frontend loads but every request fails
+
+Two likely causes, and the app tells you which:
+
+- If it renders a **"deployed but not configured"** page, a `VITE_*` variable
+  is missing. Set it and redeploy — Vite inlines these at build time, so a
+  variable added without a rebuild changes nothing.
+- If it renders normally but requests fail with a CORS error, `CORS_ORIGINS`
+  on Railway does not match the Vercel domain exactly. It needs the scheme and
+  no trailing slash: `https://your-app.vercel.app`.
+
+### Deep links 404 but the home page works
+
+The SPA rewrite is not being applied — see the Vercel step above. `/` is a real
+file (`index.html`); `/findings/<id>` only exists inside React Router.
 
 ---
 
@@ -211,6 +290,21 @@ for testing, not for real traffic), create an organization, and go to
 Entra app registration from `AZURE_INTEGRATION.md` §2 — that's a separate
 setup, not a hosting one, and the app works fully up through the Connections
 screen without it.
+
+### Seeing the product loop before Azure is registered
+
+The demo seed runs the real pipeline against a recorded snapshot. On Railway,
+open the API service → the **shell** in its dashboard (or `railway run` with
+their CLI) and run:
+
+```bash
+python /srv/database/seed/demo_environment.py
+```
+
+Sign in as `founder@cloudguard.al`, then run it again with `--fix` to watch
+three findings auto-resolve and the score move. Note the seed refuses to run
+when `APP_ENV=production`; set it to `staging` on that service while you are
+demoing, or skip the seed and connect a real tenant instead.
 
 ---
 
