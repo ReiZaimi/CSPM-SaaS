@@ -94,19 +94,20 @@ Node installed on your machine.
    Railway provisions it and exposes `REDIS_URL` as a variable on that service.
 
 3. **Add the API service**: **+ New** → **GitHub Repo** → same repo again.
-   In its Settings:
-   - **Root Directory**: `.` (repo root — the Dockerfile's build context needs
-     to see both `apps/api` and `database`)
-   - **Config-as-code** → set the path to `infrastructure/railway/api.json`
 
-   That file already declares the Dockerfile, the start command (including the
-   migration) and the health check, so there is nothing else to fill in and
-   nothing to mistype. Then **Networking** → generate a public domain; that's
-   your `API_URL`.
+   **Leave Root Directory empty (the repo root).** This is the setting that
+   most often breaks the build: the Dockerfile copies `apps/api` *and*
+   `database`, so both must be inside the build context. Setting Root Directory
+   to `apps/api` makes `COPY apps/api/...` fail, because relative to that
+   context there is no `apps/api` folder.
 
-   <details><summary>If your Railway plan has no config-as-code field</summary>
+   Nothing else needs configuring. `railway.json` at the repo root is read
+   automatically and declares the Dockerfile path, the start command (including
+   the migration) and the health check. Then **Networking** → generate a public
+   domain; that's your `API_URL`.
 
-   Set these by hand instead:
+   <details><summary>Setting it by hand instead</summary>
+
    - **Dockerfile Path**: `infrastructure/docker/api.Dockerfile`
    - **Start Command**:
      ```
@@ -116,19 +117,18 @@ Node installed on your machine.
    </details>
 
 4. **Add the worker service**: **+ New** → **GitHub Repo** → same repo a third
-   time. Same **Root Directory** (`.`), but point config-as-code at
-   `infrastructure/railway/worker.json` — the worker runs Celery rather than
-   the web server, and takes no health check because nothing calls it over
-   HTTP. No public domain needed.
+   time, Root Directory again empty.
 
-   <details><summary>Manual equivalent</summary>
+   The worker runs Celery rather than the web server, so it needs a different
+   start command than the root `railway.json` provides. Either point its
+   **Config-as-code** field at `infrastructure/railway/worker.json`, or just
+   override the one field:
 
-   - **Dockerfile Path**: `infrastructure/docker/api.Dockerfile` (same image)
-   - **Start Command**:
-     ```
-     celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
-     ```
-   </details>
+   ```
+   celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+   ```
+
+   No public domain and no health check — nothing calls the worker over HTTP.
 
 5. **Environment variables**, set on **both** the API and worker services
    (Railway lets you reference another service's variable with
@@ -234,12 +234,27 @@ The image sets `PYTHONPATH=/srv/apps/api`, so this should not happen. If it
 does, the service is running a start command from the wrong working directory —
 check that **Root Directory** is `.` and not `apps/api`.
 
-### Railway builds the wrong thing, or fails to detect a Dockerfile
+### "Failed to build an image" within a few seconds
 
-Railway falls back to Nixpacks auto-detection when it cannot find a Dockerfile,
-and Nixpacks does not know how to build this repo. Point the service's
-config-as-code at `infrastructure/railway/api.json` (or set the Dockerfile path
-manually), and make sure Root Directory is the repo root.
+A build that dies in under ~10 seconds never got as far as installing anything,
+so the cause is almost always the build context rather than the code. In order
+of likelihood:
+
+1. **Root Directory is not the repo root.** Clear the field. The Dockerfile
+   does `COPY apps/api ...` and `COPY database ...`, both relative to the repo
+   root; any other root directory makes those paths nonexistent and COPY fails
+   immediately.
+2. **Railway fell back to Nixpacks.** If it cannot find a Dockerfile it tries
+   to auto-detect the project, and the repo root has no `package.json` or
+   `requirements.txt` for it to recognise, so it gives up fast. The root
+   `railway.json` prevents this — confirm the build logs say it is using the
+   Dockerfile builder.
+3. **A stale service config** from an earlier attempt overriding the file. A
+   value typed into the dashboard wins over `railway.json`; clear the Dockerfile
+   Path and Build Command fields so the file applies.
+
+The **Build Logs** tab shows which of these it was — the Details tab only says
+that the step failed.
 
 ### The migration fails on deploy
 
