@@ -219,6 +219,26 @@ Node installed on your machine.
 
 ## 4. Troubleshooting
 
+### "1/1 replicas never became healthy" — healthcheck failed
+
+The build succeeded and the container started, but nothing answered on
+`/health`. Two different causes, and the **Deploy Logs** tab tells you which
+(the Build Logs tab only covers the image build):
+
+* **The app never started.** The start command runs `alembic upgrade head`
+  before uvicorn, so a migration failure means the web server is never reached.
+  Look for an Alembic traceback — usually a database URL that is wrong or
+  unreachable. A configuration problem shows up the same way; see below.
+* **It was still starting.** A first deploy creates every table, RLS policy,
+  function and grant before serving anything. `railway.json` allows 300s for
+  this; if you overrode the healthcheck timeout in the dashboard to something
+  short, raise it.
+
+Migrations run in the start command, which means a failed migration crash-loops
+the service. If you would rather they run once per deploy instead, move
+`alembic upgrade head` to Railway's **Pre-Deploy Command** and reduce the start
+command to just the uvicorn line.
+
 ### The API starts, then immediately crashes
 
 The API validates its whole environment before it will serve anything
