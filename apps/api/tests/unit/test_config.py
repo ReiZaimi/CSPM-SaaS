@@ -65,7 +65,6 @@ class TestRequiredValues:
             ("redis_url", "REDIS_URL"),
             ("supabase_url", "SUPABASE_URL"),
             ("supabase_publishable_key", "SUPABASE_PUBLISHABLE_KEY"),
-            ("supabase_jwt_secret", "SUPABASE_JWT_SECRET"),
             ("azure_consent_state_secret", "AZURE_CONSENT_STATE_SECRET"),
             ("app_url", "APP_URL"),
         ],
@@ -81,10 +80,15 @@ class TestRequiredValues:
         assert any("CORS_ORIGINS" in p for p in problems)
 
     def test_an_empty_environment_reports_everything_at_once(self) -> None:
-        """Discovering nine missing variables one redeploy at a time is its own
+        """Discovering every missing variable one redeploy at a time is its own
         kind of cruelty."""
         problems = Settings(app_env="production").config_problems()
-        assert len(problems) >= 9
+        assert len(problems) >= 8
+
+    def test_jwt_secret_is_not_required(self) -> None:
+        """Supabase signs with asymmetric keys by default; those projects have
+        no shared secret, and the public keys come from JWKS instead."""
+        assert settings_with(supabase_jwt_secret="").config_problems() == []
 
 
 class TestNoLocalhostLeaks:
@@ -138,13 +142,13 @@ class TestAzureIsOptionalUntilConfigured:
 class TestStartupBehaviour:
     def test_an_incomplete_environment_refuses_to_start(self) -> None:
         with pytest.raises(ConfigurationError) as exc:
-            settings_with(supabase_jwt_secret="").raise_if_misconfigured()
-        assert "SUPABASE_JWT_SECRET" in str(exc.value)
+            settings_with(database_url="").raise_if_misconfigured()
+        assert "DATABASE_URL" in str(exc.value)
 
     def test_the_error_lists_every_problem_not_just_the_first(self) -> None:
         with pytest.raises(ConfigurationError) as exc:
             Settings(app_env="production").raise_if_misconfigured()
-        assert str(exc.value).count("\n  - ") >= 9
+        assert str(exc.value).count("\n  - ") >= 8
 
     def test_test_environment_is_exempt(self) -> None:
         """CI runs against a throwaway database with no Supabase project."""
