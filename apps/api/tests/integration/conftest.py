@@ -8,6 +8,7 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from app.core.db import get_app_engine, get_owner_engine, rls_session, service_session
+from app.services.rule_sync import sync_rules_to_database
 
 
 @pytest.fixture(scope="session")
@@ -49,3 +50,19 @@ async def _reset_connection_pools() -> AsyncIterator[None]:
     yield
     await get_app_engine().dispose()
     await get_owner_engine().dispose()
+
+
+@pytest_asyncio.fixture
+async def rule_catalogue() -> None:
+    """Populate the ``rules`` read-mirror from the Python registry.
+
+    In a running deployment the app's lifespan does this at startup, but httpx's
+    ASGITransport deliberately does not run lifespan events -- so a test that
+    reads the catalogue has to sync it itself.
+
+    Requested explicitly rather than made autouse: a test that depends on the
+    table being populated should say so in its signature. Relying on a server
+    having happened to start against the same database is how these two tests
+    passed locally while failing in CI.
+    """
+    await sync_rules_to_database()

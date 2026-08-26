@@ -178,7 +178,7 @@ class TestMembershipEscalation:
 
 
 class TestRuleCatalogueIsReadOnly:
-    async def test_rules_are_readable_by_everyone(self, two_orgs) -> None:
+    async def test_rules_are_readable_by_everyone(self, two_orgs, rule_catalogue) -> None:
         async with rls_session(USER_A) as session:
             count = (await session.execute(text("SELECT count(*) FROM rules"))).scalar_one()
         assert count > 0

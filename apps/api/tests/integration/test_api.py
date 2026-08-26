@@ -256,7 +256,7 @@ class TestScanGuards:
 
 class TestRuleCatalogue:
     async def test_rules_are_listed_with_compliance_mappings(
-        self, client, cleanup_orgs
+        self, client, cleanup_orgs, rule_catalogue
     ) -> None:
         user = uuid.uuid4()
         org = await make_org(client, user, "Rules Ltd")
