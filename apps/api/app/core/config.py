@@ -144,11 +144,12 @@ class Settings(BaseSettings):
             "SUPABASE_PUBLISHABLE_KEY",
             "The anon key from Supabase: Project Settings > API.",
         )
-        # Deliberately NOT required. Supabase signs with asymmetric keys
-        # (ES256/RS256) by default now, and those projects have no shared secret
-        # at all -- the public keys come from the JWKS endpoint derived from
-        # SUPABASE_URL. Only legacy HS256 projects need this, and
-        # app.core.security says so precisely if such a token arrives without it.
+        require(
+            self.supabase_jwt_secret,
+            "SUPABASE_JWT_SECRET",
+            "Every request's identity is verified against it. Supabase: Project "
+            "Settings > API > JWT Settings.",
+        )
         require(
             self.azure_consent_state_secret,
             "AZURE_CONSENT_STATE_SECRET",

@@ -76,11 +76,11 @@ Node installed on your machine.
    `SUPABASE_JWT_SECRET`. This is what `app/core/security.py::decode_token`
    verifies every request against.
 
-   > **`SUPABASE_JWT_SECRET` is optional.** Current Supabase projects sign
-   > tokens with asymmetric keys (ES256) and have no shared secret at all —
-   > the backend fetches the public keys from the project's JWKS endpoint,
-   > derived from `SUPABASE_URL`. Set this variable only if your project shows
-   > a legacy JWT secret; both signing schemes are supported.
+   > **If that screen shows only JWKS / asymmetric signing keys and no plain
+   > secret string** — some newer Supabase projects default to this — the
+   > backend's HS256 verification won't work as-is. Tell me and I'll switch
+   > `decode_token` to verify against Supabase's JWKS endpoint instead; it's a
+   > contained change (`PyJWKClient` from the `pyjwt` library already installed).
 
 6. **Enable email sign-in.** Authentication → Providers → **Email** should
    already be on by default with "Confirm email" and magic links enabled — the
@@ -327,21 +327,6 @@ Two likely causes, and the app tells you which:
 - If it renders normally but requests fail with a CORS error, `CORS_ORIGINS`
   on Railway does not match the Vercel domain exactly. It needs the scheme and
   no trailing slash: `https://your-app.vercel.app`.
-
-### The magic link lands on Supabase's own domain, or a dead page
-
-If the URL after clicking looks like
-`https://<ref>.supabase.co/yourapp.vercel.app#access_token=...`, then **Site URL
-is missing its `https://` scheme**. Supabase treats a scheme-less value as a
-relative path and appends it to its own origin.
-
-Note the `#access_token=` in that URL: authentication *succeeded*: the token was
-issued and only the destination was wrong. Fix Site URL to the full
-`https://your-domain` and request a fresh link.
-
-If the destination loads but 404s, Site URL points at a domain with no live
-deployment. Both fields must be the real production domain — see step 3 of the
-Vercel section.
 
 ### Deep links 404 but the home page works
 
