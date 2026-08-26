@@ -110,7 +110,9 @@ database, and the finding detail page shows the arithmetic.
 "mark as fixed" button anywhere in the product, and the API refuses to set a
 finding to RESOLVED by hand.
 
-**CloudGuard never handles a password or a customer credential.** Sign-in is a
-Supabase magic link; the API only verifies the token. Azure access is a
-multi-tenant Entra app plus admin consent, so there is no per-customer secret
-to store or leak.
+**CloudGuard's API never handles a password or a customer credential.** Sign-in
+is Supabase Auth — Microsoft (Entra ID), email and password, or a magic link.
+Whichever route someone takes, a password goes from their browser straight to
+Supabase and the API only ever verifies the JWT that comes back. Azure access is
+separately a multi-tenant Entra app plus admin consent, so there is no
+per-customer cloud secret to store or leak.

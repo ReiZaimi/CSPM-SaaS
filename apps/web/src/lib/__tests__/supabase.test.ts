@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   authReady,
+  sendPasswordReset,
   signInWithMagicLink,
+  signInWithMicrosoft,
+  signInWithPassword,
+  signUpWithPassword,
   supabase,
   supabaseConfigured,
   supabaseSignOut,
+  updatePassword,
 } from "../supabase";
 
 /**
@@ -29,5 +34,18 @@ describe("supabase auth bridge, unconfigured", () => {
 
   it("treats sign-out as a no-op rather than throwing", async () => {
     await expect(supabaseSignOut()).resolves.toBeUndefined();
+  });
+
+  // Every entry point fails loudly for the same reason: a sign-in button that
+  // silently does nothing is the single hardest misconfiguration to diagnose
+  // from a bug report, which is what config.ts exists to prevent.
+  it.each([
+    ["password sign-in", () => signInWithPassword("a@b.com", "correct horse battery")],
+    ["password sign-up", () => signUpWithPassword("a@b.com", "correct horse battery")],
+    ["password reset", () => sendPasswordReset("a@b.com")],
+    ["password update", () => updatePassword("correct horse battery")],
+    ["Microsoft sign-in", () => signInWithMicrosoft()],
+  ])("refuses %s instead of silently no-op'ing", async (_name, call) => {
+    await expect(call()).rejects.toThrow("not configured");
   });
 });

@@ -129,12 +129,24 @@ and a narrow re-check could report a fix that a wider view would contradict.
 
 ## 11. Authentication is Supabase only
 
-Production authentication is Supabase Auth: the browser completes a passwordless
-magic-link sign-in and sends the resulting JWT to this API, which only ever
-*verifies* it (`app/core/security.py`). CloudGuard never sees a password and has
-no token-minting code — the test suite signs its own tokens rather than the
-product shipping a code path that hands out credentials. See #13 for why the
-earlier development-only variant was deleted rather than gated.
+Production authentication is Supabase Auth. The browser signs in one of four
+ways — Microsoft (Entra ID), email and password, a magic link, or a password
+reset — and sends the resulting JWT to this API, which only ever *verifies* it
+(`app/core/security.py`). The API cannot tell the routes apart and does not need
+to: it checks the signature and reads the user id.
+
+Microsoft is offered first because this is an Azure-first product; the account
+someone signs in with is usually the same directory account that later grants
+admin consent. That sign-in grants CloudGuard no access to Azure *resources* —
+scanning access is the separate consent flow in `AZURE_INTEGRATION.md`.
+
+Passwords are Supabase's to hold. One typed into `SignInPage` is posted directly
+to Supabase's auth API over TLS; it never reaches this API, is never logged
+here, and there is no column for it in this schema. What remains true without
+qualification is that CloudGuard has no token-minting code — the test suite
+signs its own tokens rather than the product shipping a code path that hands out
+credentials. See #13 for why the earlier development-only variant was deleted
+rather than gated.
 
 ## 12. shadcn/ui components are hand-written
 

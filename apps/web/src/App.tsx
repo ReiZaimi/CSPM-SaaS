@@ -5,6 +5,7 @@ import { useAuthToken } from "@/lib/useAuth";
 import { authReady } from "@/lib/supabase";
 import { Spinner } from "@/components/ui";
 import { SignInPage } from "@/pages/SignIn";
+import { ResetPasswordPage } from "@/pages/ResetPassword";
 import { OnboardingPage } from "@/pages/Onboarding";
 import { ConnectPage } from "@/pages/Connect";
 import { ConnectResultPage } from "@/pages/ConnectResult";
@@ -52,6 +53,9 @@ export function App() {
   return (
     <Routes>
       <Route path="/sign-in" element={<SignInPage />} />
+      {/* Not behind RequireAuth: a recovery link carries its own session, and
+          an expired one needs to say so rather than bounce to sign-in. */}
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/onboarding" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
       <Route path="/connect/result" element={<ConnectResultPage />} />
 

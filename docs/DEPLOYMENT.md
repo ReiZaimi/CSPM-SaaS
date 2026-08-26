@@ -82,15 +82,31 @@ Node installed on your machine.
    > derived from `SUPABASE_URL`. Set this variable only if your project shows
    > a legacy JWT secret; both signing schemes are supported.
 
-6. **Enable email sign-in.** Authentication → Providers → **Email** should
-   already be on by default with "Confirm email" and magic links enabled — the
-   frontend uses `signInWithOtp` (`apps/web/src/lib/supabase.ts`), a
-   passwordless magic-link flow, so no password provider setup is needed.
+6. **Enable email sign-in.** Authentication → Providers → **Email** is on by
+   default. Leave both **Confirm email** and the email provider's password
+   support enabled: the sign-in screen offers magic links *and* email +
+   password, and sign-up shows a "check your email" screen when confirmation
+   is on (`apps/web/src/lib/supabase.ts`).
 
    Authentication → URL Configuration → set **Site URL** to your eventual
-   Vercel URL (you can update this after step 3 once you know it) and add it
-   under **Redirect URLs** too — Supabase refuses to redirect a magic-link
-   click anywhere not on that list.
+   Vercel URL (you can update this after step 3 once you know it). Under
+   **Redirect URLs** add both that URL and `<your-vercel-url>/reset-password` —
+   Supabase refuses to redirect a link click anywhere not on that list, and the
+   password-reset email lands on that second path.
+
+7. **Enable Microsoft (Entra ID) sign-in.** Authentication → Providers →
+   **Azure**. This is a *second, separate* Entra app registration from the one
+   that scans subscriptions — do not reuse the scanning app's credentials here.
+
+   In the Azure portal, register an app with the redirect URI Supabase shows on
+   that provider page (`https://<project-ref>.supabase.co/auth/v1/callback`,
+   type *Web*), add a client secret, and grant the delegated Microsoft Graph
+   permissions `openid`, `profile`, `email`, `User.Read`. Paste the
+   Application (client) ID and secret into Supabase.
+
+   Leave **Azure Tenant URL** blank to accept any Microsoft account, or set it
+   to `https://login.microsoftonline.com/<tenant-id>` to restrict sign-in to a
+   single directory.
 
 ---
 
