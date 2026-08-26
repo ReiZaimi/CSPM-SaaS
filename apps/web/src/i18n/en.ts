@@ -87,6 +87,10 @@ export const en = {
     noScansHelp: "Connect an Azure subscription and run your first scan to see your posture.",
     runFirstScan: "Run your first scan",
     allClear: "No open findings. Nice.",
+    couldNotLoad: "Couldn't load your dashboard",
+    signInAgain: "Sign in again",
+    openFindings: "Open findings",
+    lastScan: "Last scan",
   },
   findings: {
     title: "Findings",

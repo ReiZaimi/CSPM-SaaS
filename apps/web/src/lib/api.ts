@@ -32,26 +32,61 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Subscribers for `useAuthToken`.
+ *
+ * The token lives in localStorage so it survives a reload, but a plain getter
+ * is invisible to React: nothing re-renders when it changes. That mattered more
+ * than it sounds. Supabase can deliver a session through `onAuthStateChange`
+ * *after* the initial `getSession()` has already resolved empty — so the router
+ * had already rendered a redirect to /sign-in, and the user sat looking at the
+ * sign-in form while actually being signed in. Reloading "fixed" it, which is
+ * exactly what "it doesn't keep me logged in" looks like from outside.
+ */
+const listeners = new Set<() => void>();
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}
+
+export function subscribeToAuth(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 export const auth = {
   get token(): string | null {
     return localStorage.getItem(TOKEN_KEY);
   },
   set token(value: string | null) {
+    if (value === this.token) return; // no-op writes must not wake React
     if (value) localStorage.setItem(TOKEN_KEY, value);
     else localStorage.removeItem(TOKEN_KEY);
+    notify();
   },
   get organizationId(): string | null {
     return localStorage.getItem(ORG_KEY);
   },
   set organizationId(value: string | null) {
+    if (value === this.organizationId) return;
     if (value) localStorage.setItem(ORG_KEY, value);
     else localStorage.removeItem(ORG_KEY);
+    notify();
   },
   signOut() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(ORG_KEY);
+    notify();
   },
 };
+
+// Another tab signing in or out writes to the same localStorage keys. Without
+// this, one tab can sit on a stale session indefinitely.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === TOKEN_KEY || event.key === ORG_KEY) notify();
+  });
+}
 
 async function request<T>(
   path: string,

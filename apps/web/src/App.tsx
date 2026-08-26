@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "@/components/Shell";
-import { auth } from "@/lib/api";
+import { useAuthToken } from "@/lib/useAuth";
 import { authReady } from "@/lib/supabase";
 import { Spinner } from "@/components/ui";
 import { SignInPage } from "@/pages/SignIn";
@@ -19,7 +19,10 @@ import { RulesPage } from "@/pages/Rules";
 import { RemediationPage } from "@/pages/Remediation";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
-  return auth.token ? children : <Navigate to="/sign-in" replace />;
+  // Subscribed rather than read once, so a session that arrives late — or a
+  // token that refreshes an hour in — re-renders instead of stranding the user.
+  const token = useAuthToken();
+  return token ? children : <Navigate to="/sign-in" replace />;
 }
 
 /**

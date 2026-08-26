@@ -5,6 +5,7 @@ import { supabaseSignOut } from "@/lib/supabase";
 import type { Organization } from "@/lib/types";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/format";
+import { ShieldMark } from "@/components/Brand";
 
 export function Shell() {
   const t = useT();
@@ -86,32 +87,5 @@ export function Shell() {
         <Outlet />
       </main>
     </div>
-  );
-}
-
-function ShieldMark() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-7 w-7 text-stone-900" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M12 2 4 5.5v6c0 4.6 3.2 8.9 8 10.5 4.8-1.6 8-5.9 8-10.5v-6L12 2Z"
-        opacity="0.12"
-      />
-      <path
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-        d="M12 2.9 4.8 6.1v5.4c0 4.2 2.9 8.1 7.2 9.6 4.3-1.5 7.2-5.4 7.2-9.6V6.1L12 2.9Z"
-      />
-      <path
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="m8.8 12.2 2.2 2.2 4.2-4.4"
-      />
-    </svg>
   );
 }
