@@ -35,18 +35,28 @@ Node installed on your machine.
    **change the password on the `CREATE ROLE` line first**, and run it.
 
 3. **Get your connection strings.** Project Settings → Database → Connection
-   string. You want the **direct** connection (port `5432`, not the `6543`
-   pooler) — the pooler's transaction mode doesn't reliably support asyncpg's
-   prepared-statement caching, and at this scale there's no reason to take on
-   that complexity. You'll build two URLs from it:
+   string, and choose **Session pooler**.
+
+   Not the direct connection: on current Supabase projects `db.<ref>.supabase.co`
+   resolves to an **IPv6-only** address, and Railway cannot route IPv6. It fails
+   with `Network is unreachable` against an address like `2a05:d014:...`. The
+   Session pooler is IPv4 and behaves like a normal PostgreSQL connection.
+
+   Not the **Transaction** pooler on port `6543` either — that one does not
+   support prepared statements, which asyncpg relies on. You want **port 5432**.
+
+   The pooler puts the project ref in the username, as `<user>.<project-ref>`:
 
    ```
-   # Owner connection — runs migrations. Uses the postgres user Supabase gave you.
-   DATABASE_OWNER_URL=postgresql+asyncpg://postgres:<db-password>@db.<project-ref>.supabase.co:5432/postgres
+   # Owner connection — runs migrations, as the table owner.
+   DATABASE_OWNER_URL=postgresql+asyncpg://postgres.<project-ref>:<db-password>@aws-0-<region>.pooler.supabase.com:5432/postgres
 
-   # App connection — what the API uses for every request. RLS-constrained.
-   DATABASE_URL=postgresql+asyncpg://cloudguard_app:<the-password-you-set-in-step-2>@db.<project-ref>.supabase.co:5432/postgres
+   # App connection — every request. RLS-constrained, owns nothing.
+   DATABASE_URL=postgresql+asyncpg://cloudguard_app.<project-ref>:<the-password-you-set-in-step-2>@aws-0-<region>.pooler.supabase.com:5432/postgres
    ```
+
+   Copy the host and region from the Session pooler string Supabase shows you,
+   and remember to change `postgresql://` to `postgresql+asyncpg://`.
 
 4. **The schema migration needs no action here.** The Railway API service's
    start command (step 2.3) runs `alembic upgrade head` on every deploy, so
@@ -280,14 +290,24 @@ of likelihood:
 The **Build Logs** tab shows which of these it was — the Details tab only says
 that the step failed.
 
+### `Network is unreachable`, with an address like `2a05:d014:...`
+
+That is an IPv6 address. Supabase's **direct** connection hostname
+(`db.<ref>.supabase.co`) is IPv6-only on current projects, and Railway cannot
+route IPv6, so the connection never leaves the container.
+
+Switch both `DATABASE_URL` and `DATABASE_OWNER_URL` to the **Session pooler**
+(step 1.3): host `aws-0-<region>.pooler.supabase.com`, port **5432**, username
+`<user>.<project-ref>`. Port 6543 is the Transaction pooler and will break
+asyncpg's prepared statements — do not use it.
+
 ### The migration fails on deploy
 
 `alembic upgrade head` runs as part of the API start command using
 `DATABASE_OWNER_URL`. If it fails, that variable is wrong or the role lacks
 permission. It must be the **postgres** user (the table owner), not
 `cloudguard_app` — the app role deliberately owns nothing and cannot create
-tables. Also confirm you used the direct connection on port `5432`, not the
-`6543` pooler.
+tables.
 
 ### Vercel: "No Output Directory named 'dist' found"
 

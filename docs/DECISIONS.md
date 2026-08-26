@@ -199,6 +199,16 @@ Azure 2.0, ISO 27001 and NIST CSF control references in
 `rules.compliance_mappings`, surfaced read-only on the finding detail page. No
 business logic reads them, per requirement 15.
 
+**Supabase connections go through the Session pooler, not the direct host.**
+Current Supabase projects resolve `db.<ref>.supabase.co` to an IPv6-only
+address, and Railway cannot route IPv6 -- the connection fails with `Network is
+unreachable` before it leaves the container. The Session pooler
+(`aws-0-<region>.pooler.supabase.com`, port 5432) is IPv4 and behaves like a
+normal PostgreSQL connection, including the session-level `SET LOCAL ROLE` and
+`request.jwt.claims` that RLS depends on. The Transaction pooler on port 6543
+is not an option: it does not support prepared statements, which asyncpg
+requires.
+
 **Multi-subscription accounts.** `cloud_accounts` holds a single
 `subscription_id`, matching `DATABASE.md` §2. The child-table alternative the
 spec mentions is a migration away and no core logic assumes one subscription per
