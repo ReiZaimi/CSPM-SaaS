@@ -102,7 +102,6 @@ export function ConnectPage() {
  */
 function ConnectionCard({
   connection: initial,
-  defaultExpanded,
 }: {
   connection: CloudConnection;
   defaultExpanded: boolean;
