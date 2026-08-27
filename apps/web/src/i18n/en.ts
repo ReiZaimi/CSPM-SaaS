@@ -114,6 +114,7 @@ export const en = {
     managementGroupId: "Management group id",
     subscriptionId: "Subscription id",
     create: "Continue",
+    cannotDeployYet: "CloudGuard cannot generate the deployment yet",
     whoYouNeed: "Who you will need",
     whoYouNeedDetail:
       "Admin consent needs a work or school account that is a Global Administrator. A personal Microsoft account \u2014 outlook.com, hotmail.com, live.com \u2014 cannot grant it, even if that account owns the subscription. Granting read access then needs Owner or User Access Administrator on the scope you chose. These are different permissions, and often different people.",

@@ -160,6 +160,9 @@ async def _list_subscriptions(
     )
 
 
+READY_TO_DEPLOY = "Admin consent granted. Deploy the scanner role next."
+
+
 # ---------------------------------------------------------------------------
 # Consent callback
 # ---------------------------------------------------------------------------
@@ -180,10 +183,12 @@ async def record_consent(
     connection.consent_status = ConsentStatus.GRANTED
     connection.consented_at = datetime.now(UTC)
     connection.tenant_id = tenant_id or connection.tenant_id
-    connection.status_detail = "Admin consent granted. Deploy the scanner role next."
+    connection.status_detail = READY_TO_DEPLOY
 
     if connection.tenant_id:
-        await _resolve_service_principal(connection)
+        problem = await _resolve_service_principal(connection)
+        if problem and not connection.service_principal_object_id:
+            connection.status_detail = problem
 
     await session.commit()
     return connection
@@ -209,30 +214,75 @@ async def ensure_service_principal(
     if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
         return False
 
-    await _resolve_service_principal(connection)
+    problem = await _resolve_service_principal(connection)
     if connection.service_principal_object_id:
+        connection.status_detail = READY_TO_DEPLOY
         await session.commit()
         return True
+
+    # Committed so it survives the request and reaches the card. Without this
+    # the connection kept reporting the cheerful "deploy the scanner role next"
+    # under a spinner, while the thing that would let anyone deploy had failed.
+    if problem:
+        connection.status_detail = problem
+        await session.commit()
     return False
 
 
-async def _resolve_service_principal(connection: CloudConnection) -> None:
+async def _resolve_service_principal(connection: CloudConnection) -> str | None:
+    """Look the principal up. Returns None on success, or why it failed.
+
+    Returning the reason rather than swallowing it is the point. Every way this
+    can fail used to collapse into the same silent nothing, and the connection
+    card showed a spinner that would never stop -- identical whether Entra
+    needed another few seconds or the app registration had no permissions to
+    grant in the first place. Those need different actions from different
+    people, so they have to read differently.
+    """
     from app.connectors.azure.auth import TokenProvider
 
     if not connection.tenant_id:
-        return
+        return "No Entra tenant is bound to this connection yet."
+
     try:
         tokens = TokenProvider(connection.tenant_id)
         async with GraphClient(tokens) as graph:
             principal = await graph.find_service_principal(settings.azure_client_id)
-        if principal and principal.get("id"):
-            connection.service_principal_object_id = str(principal["id"])
+    except AzureApiError as exc:
+        log.warning(
+            "azure.service_principal_lookup_failed",
+            connection_id=str(connection.id),
+            status_code=exc.azure_status_code,
+            error=str(exc),
+        )
+        if exc.azure_status_code in (401, 403):
+            # The overwhelmingly likely cause, and not something the customer
+            # can fix in their own tenant: consent can only grant permissions
+            # the app registration actually declares, so a registration with
+            # none grants nothing and every Graph call is refused afterwards.
+            return (
+                "Microsoft Graph refused this lookup. CloudGuard's own app "
+                "registration is most likely missing its API permissions, so "
+                "admin consent had nothing to grant. This is a setup step on "
+                "CloudGuard's side (AZURE_INTEGRATION.md §2.1)."
+            )
+        return f"Microsoft Graph could not be read: {exc}"
     except Exception as exc:
         log.warning(
             "azure.service_principal_lookup_failed",
             connection_id=str(connection.id),
             error=str(exc),
         )
+        return f"Could not reach Microsoft Graph for this tenant: {exc}"
+
+    if principal and principal.get("id"):
+        connection.service_principal_object_id = str(principal["id"])
+        return None
+
+    return (
+        "Admin consent completed, but CloudGuard's service principal is not "
+        "visible in this directory yet. Entra can take a minute to publish it."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,11 +386,13 @@ async def try_auto_validate(
     if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
         return connection
 
-    # Retry service principal lookup if still missing
-    if not connection.service_principal_object_id:
-        await _resolve_service_principal(connection)
-        if not connection.service_principal_object_id:
-            return connection
+    # Retry the lookup if it is still missing, through the committing wrapper.
+    # The bare call left a resolved id in memory only: when the probe below
+    # then failed -- which it does every poll until the role is deployed --
+    # nothing committed, so the id was rediscovered from Graph on every single
+    # poll and never actually stored.
+    if not await ensure_service_principal(session, connection):
+        return connection
 
     # Attempt RBAC validation if not yet verified
     if not connection.rbac_verified_at:

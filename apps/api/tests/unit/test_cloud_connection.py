@@ -183,3 +183,55 @@ def test_no_template_url_rather_than_a_guessed_one() -> None:
         assert template_url(ready) is None
     finally:
         settings.api_url, settings.azure_redirect_uri = original
+
+
+# --- the lookup explains itself --------------------------------------------
+#
+# Every failure here used to return None and log a warning nobody reads, so
+# the connection card showed one spinner for four unrelated situations. These
+# pin the reasons apart, because they need different people to do different
+# things.
+
+
+async def resolve_with(monkeypatch, raises: Exception | None = None, found=None):
+    from app.connectors.azure import client as client_module
+    from app.services import cloud_connections as service
+
+    class FakeGraph:
+        def __init__(self, *a, **kw) -> None: ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a) -> None: ...
+        async def find_service_principal(self, app_id: str):
+            if raises:
+                raise raises
+            return found
+
+    monkeypatch.setattr(service, "GraphClient", FakeGraph)
+    monkeypatch.setattr(
+        "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
+    )
+    assert client_module  # imported for the AzureApiError type used by callers
+    return await service._resolve_service_principal(granted())
+
+
+async def test_a_refused_lookup_names_the_app_registration(monkeypatch) -> None:
+    """403 is not the customer's problem, and must not read like one."""
+    from app.connectors.azure.client import AzureApiError
+
+    problem = await resolve_with(monkeypatch, raises=AzureApiError("denied", 403))
+    assert problem is not None
+    assert "app registration" in problem
+    assert "CloudGuard's side" in problem
+
+
+async def test_an_unpublished_principal_says_to_wait(monkeypatch) -> None:
+    """Consent succeeded; Entra simply has not replicated yet. Different fix."""
+    problem = await resolve_with(monkeypatch, found=None)
+    assert problem is not None
+    assert "not visible in this directory yet" in problem
+
+
+async def test_a_successful_lookup_reports_no_problem(monkeypatch) -> None:
+    problem = await resolve_with(monkeypatch, found={"id": "spn-object-id"})
+    assert problem is None

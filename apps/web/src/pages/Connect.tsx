@@ -223,13 +223,20 @@ function ConnectionCard({
           </div>
         )}
 
-      {/* Waiting for consent — no deploy URL yet */}
+      {/* Consented, but no template to deploy — CloudGuard is blocked, not
+          waiting. A spinner here claimed progress that was not happening: the
+          only thing that advances this state is the message being read and
+          acted on, so it is shown as a problem with no spinner. */}
       {connection.consent_status === "GRANTED" &&
         !connection.rbac_verified_at &&
         !connection.template_url && (
-          <div className="mt-4">
-            <p className="text-sm text-stone-600">{connection.status_detail}</p>
-            <WaitingNote text={t.connection.waitingForAccess} />
+          <div className="mt-4 rounded-lg border border-high-border bg-high-bg px-4 py-3">
+            <p className="text-sm font-medium text-high">
+              {t.connection.cannotDeployYet}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-stone-700">
+              {connection.status_detail}
+            </p>
           </div>
         )}
 
