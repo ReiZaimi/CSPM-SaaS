@@ -102,8 +102,6 @@ export const en = {
     openConsent: "Open admin consent",
     verify: "Verify connection",
     verified: "Connection verified",
-    notConfigured:
-      "This CloudGuard server has no Azure application identity configured, so the consent flow cannot start. Set AZURE_CLIENT_ID and AZURE_CLIENT_SECRET.",
   },
   connection: {
     title: "Cloud connections",
@@ -189,7 +187,7 @@ export const en = {
     keep: "Keep it",
     notConfigured: "This CloudGuard deployment cannot connect Azure yet",
     notConfiguredDetail:
-      "The server has no Entra application identity, so it cannot start a consent flow. This is a setup step on CloudGuard's side, not yours \u2014 whoever operates this deployment needs to register the app and set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET and AZURE_REDIRECT_URI (docs/AZURE_INTEGRATION.md \u00a72.1).",
+      "This is a setup step on CloudGuard's side, not yours \u2014 whoever operates this deployment needs to register its Entra application (docs/AZURE_INTEGRATION.md \u00a72.1).",
   },
   dashboard: {
     title: "Security posture",
