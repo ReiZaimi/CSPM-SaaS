@@ -127,7 +127,12 @@ def arm_template(context: TemplateContext) -> str:
         else "managementGroup()"
     )
 
-    actions = [{"actions": list(ARM_READ_ACTIONS), "notActions": [], "dataActions": [], "notDataActions": []}]
+    actions = [{
+        "actions": list(ARM_READ_ACTIONS),
+        "notActions": [],
+        "dataActions": [],
+        "notDataActions": [],
+    }]
 
     template = {
         "$schema": "https://schema.management.azure.com/schemas/2019-08-01/managementGroupDeploymentTemplate.json#"
