@@ -5,12 +5,6 @@ parameterised one that could also match it is simply unreachable. That is a
 quiet failure: the request lands on the wrong handler and fails for the wrong
 reason.
 
-It bit the artifact endpoint, which is unauthenticated by design because a
-customer's Cloud Shell fetches it. Declared after ``/{connection_id}`` it was
-answered by that route instead, and the symptom was a 401 -- from a shell
-session that never had a CloudGuard session to present, on a URL where a 401
-makes no sense. Nothing in the message pointed at routing.
-
 This checks every router rather than the one that had the bug.
 """
 
@@ -37,8 +31,6 @@ def shadows(earlier: str, later: str) -> bool:
     matches_every_segment = all(
         early.startswith("{") or early == late for early, late in pairs
     )
-    # A path only *shadows* another if it is strictly more general somewhere;
-    # two identical literal paths are a different (and louder) problem.
     is_more_general = any(
         early.startswith("{") and not late.startswith("{") for early, late in pairs
     )
@@ -56,11 +48,11 @@ def test_no_route_is_unreachable() -> None:
     assert unreachable == []
 
 
-def test_shadows_detects_the_bug_it_was_written_for() -> None:
+def test_shadows_detects_parameterised_before_literal() -> None:
     """Guard the guard: a check that never fires proves nothing."""
-    assert shadows("/cloud-connections/{connection_id}", "/cloud-connections/artifact")
-    assert not shadows("/cloud-connections/artifact", "/cloud-connections/{id}")
-    assert not shadows("/cloud-connections/{id}", "/cloud-connections/{id}/validate")
+    assert shadows("/cloud-connections/{connection_id}", "/cloud-connections/literal")
+    assert not shadows("/cloud-connections/literal", "/cloud-connections/{id}")
+    assert not shadows("/cloud-connections/{id}", "/cloud-connections/{id}/subscriptions")
     assert not shadows("/a/{id}", "/b/literal")
 
 

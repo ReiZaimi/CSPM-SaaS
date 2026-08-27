@@ -1,31 +1,28 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
 import { useT } from "@/i18n";
 import { Button, Card, EmptyState, ErrorNote, Spinner, StatusPill } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
-import { ConnectWizard } from "@/components/ConnectWizard";
-
-interface Permissions {
-  graph_application_permissions: string[];
-  azure_rbac_role: string;
-  access_type: string;
-  writes_performed: string;
-}
+import { ConnectionForm } from "@/components/ConnectWizard";
 
 /**
- * The trust screen.
+ * The connections page.
  *
- * The customer is about to let a product they just met read their entire cloud
- * environment. This page's job is to make the exact scope of that legible
- * before they click anything, and to be honest that it is two separate grants —
- * the step customers most often miss is the second one.
+ * Lists existing connections with live status, and offers a form to create new
+ * ones. After consent, the callback redirects here with `?id=<connection_id>`,
+ * which auto-expands the matching card.
  */
 export function ConnectPage() {
   const t = useT();
   const queryClient = useQueryClient();
-  const [wizard, setWizard] = useState<{ connectionId: string | null } | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [showForm, setShowForm] = useState(false);
+
+  const consentError = searchParams.get("consent_error");
+  const expandedId = searchParams.get("id");
 
   const connections = useQuery({
     queryKey: ["cloud-connections"],
@@ -33,15 +30,15 @@ export function ConnectPage() {
       api.get<CloudConnection[]>("/api/v1/cloud-connections").then((r) => r.data),
   });
 
-  const permissions = useQuery({
-    queryKey: ["azure-permissions"],
-    queryFn: () =>
-      api.get<Permissions>("/api/v1/cloud-accounts/azure/permissions").then((r) => r.data),
-  });
-
-  function closeWizard() {
-    setWizard(null);
+  function handleCreated(id: string) {
+    setShowForm(false);
+    setSearchParams({ id });
     queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
+  }
+
+  function dismissError() {
+    searchParams.delete("consent_error");
+    setSearchParams(searchParams);
   }
 
   return (
@@ -51,30 +48,34 @@ export function ConnectPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t.connection.title}</h1>
           <p className="mt-1 max-w-3xl text-sm text-stone-600">{t.connection.intro}</p>
         </div>
-        {!wizard && (
-          <Button onClick={() => setWizard({ connectionId: null })}>
+        {!showForm && (
+          <Button onClick={() => setShowForm(true)}>
             {t.connection.connectAzure}
           </Button>
         )}
       </div>
 
-      {wizard && (
-        <ConnectWizard
-          connectionId={wizard.connectionId}
-          onCreated={(id) => setWizard({ connectionId: id })}
-          onClose={closeWizard}
+      {consentError && (
+        <ErrorNote
+          message={`Consent failed: ${consentError}`}
+          onRetry={dismissError}
         />
       )}
 
-      {permissions.data && <AccessSummary permissions={permissions.data} />}
+      {showForm && (
+        <ConnectionForm
+          onCreated={handleCreated}
+          onClose={() => setShowForm(false)}
+        />
+      )}
 
       {connections.isLoading && <Spinner text={t.common.loading} />}
-      {connections.data?.length === 0 && !wizard && (
+      {connections.data?.length === 0 && !showForm && (
         <EmptyState
           title={t.connection.noConnections}
           detail={t.connection.noConnectionsHelp}
           action={
-            <Button onClick={() => setWizard({ connectionId: null })}>
+            <Button onClick={() => setShowForm(true)}>
               {t.connection.connectAzure}
             </Button>
           }
@@ -85,80 +86,61 @@ export function ConnectPage() {
         <ConnectionCard
           key={connection.id}
           connection={connection}
-          onResume={() => setWizard({ connectionId: connection.id })}
+          defaultExpanded={connection.id === expandedId}
         />
       ))}
     </div>
   );
 }
 
-function AccessSummary({ permissions }: { permissions: Permissions }) {
-  const t = useT();
-  return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <Card title={t.connect.whatWeAccess}>
-        <ul className="space-y-2 text-sm text-stone-700">
-          {permissions.graph_application_permissions.map((permission) => (
-            <li key={permission} className="flex items-start gap-2">
-              <Dot className="text-ok" />
-              <code className="text-xs">{permission}</code>
-            </li>
-          ))}
-        </ul>
-        <div className="mt-4 rounded-lg bg-stone-50 p-3">
-          <p className="text-xs font-medium text-stone-700">{t.connect.whatWeCannot}</p>
-          <p className="mt-1 text-xs text-stone-600">
-            Create, modify, or delete anything. Read your data plane contents. Access
-            subscriptions you have not granted. Access is{" "}
-            <strong>{permissions.access_type}</strong> and writes performed are{" "}
-            <strong>{permissions.writes_performed}</strong>.
-          </p>
-        </div>
-      </Card>
-
-      <Card title="No credential required">
-        <p className="text-sm leading-relaxed text-stone-600">{t.connect.noSecrets}</p>
-        <p className="mt-3 text-sm leading-relaxed text-stone-600">
-          {t.connection.noGuidsNeeded}
-        </p>
-      </Card>
-    </div>
-  );
-}
-
+/**
+ * A single connection — live status, deploy button, subscription management.
+ *
+ * Polls the detail endpoint while the connection is not yet verified. The
+ * backend does auto-validation on each poll, so the card advances by itself
+ * once the customer completes the ARM deployment.
+ */
 function ConnectionCard({
-  connection,
-  onResume,
+  connection: initial,
 }: {
   connection: CloudConnection;
-  onResume: () => void;
+  defaultExpanded: boolean;
 }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [selection, setSelection] = useState<Record<string, boolean>>({});
 
-  const subscriptions = useQuery({
-    queryKey: ["connection-subscriptions", connection.id],
+  // Poll for live status — backend auto-validates on each GET
+  const detail = useQuery({
+    queryKey: ["cloud-connection", initial.id],
     queryFn: () =>
       api
-        .get<DiscoveredSubscription[]>(
-          `/api/v1/cloud-connections/${connection.id}/subscriptions`,
-        )
+        .get<CloudConnection>(`/api/v1/cloud-connections/${initial.id}`)
         .then((r) => r.data),
-    enabled: connection.is_verified,
+    initialData: initial,
+    refetchInterval: (query) => (query.state.data?.is_verified ? false : 5000),
+    refetchIntervalInBackground: true,
   });
 
-  const rediscover = useMutation({
+  const connection = detail.data ?? initial;
+  const subscriptions = connection.subscriptions ?? [];
+  const scoped = subscriptions.filter((s) => s.in_scope);
+
+  const saveScope = useMutation({
     mutationFn: () =>
-      api.post<DiscoveredSubscription[]>(
-        `/api/v1/cloud-connections/${connection.id}/discover`,
+      api.patch<DiscoveredSubscription[]>(
+        `/api/v1/cloud-connections/${connection.id}/subscriptions`,
+        { in_scope: selection },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["connection-subscriptions", connection.id] });
+      queryClient.invalidateQueries({ queryKey: ["cloud-connection", connection.id] });
       queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
+      setSelection({});
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Discovery failed"),
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : "Could not save scope"),
   });
 
   const remove = useMutation({
@@ -168,7 +150,9 @@ function ConnectionCard({
       setError(err instanceof Error ? err.message : "Could not remove the connection"),
   });
 
-  const scoped = subscriptions.data?.filter((s) => s.in_scope) ?? [];
+  const hasSelectionChanges = Object.keys(selection).length > 0;
+  const checked = (row: DiscoveredSubscription) =>
+    selection[row.subscription_id ?? ""] ?? row.in_scope;
 
   return (
     <Card
@@ -176,6 +160,7 @@ function ConnectionCard({
       subtitle={scopeSummary(connection)}
       action={<StatusPill status={connection.status} />}
     >
+      {/* Status signals */}
       <div className="flex flex-wrap items-center gap-6 text-sm">
         <Signal
           label={t.connection.consentSignal}
@@ -202,37 +187,107 @@ function ConnectionCard({
         />
       </div>
 
-      {connection.is_verified && (
-        <div className="mt-4 border-t border-stone-100 pt-3">
-          <p className="text-xs text-stone-500">
-            {scoped.length} of {subscriptions.data?.length ?? 0}{" "}
-            {t.connection.inScopeCount} · {t.connection.lastDiscovery}{" "}
-            {connection.last_discovery_at
-              ? formatDateTime(connection.last_discovery_at)
-              : t.connection.neverDiscovered}
-          </p>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
-            {subscriptions.data?.map((subscription) => (
-              <li
-                key={subscription.id}
-                className={
-                  subscription.in_scope
-                    ? "rounded-full border border-stone-200 bg-white px-2.5 py-0.5 text-xs text-stone-700"
-                    : "rounded-full border border-dashed border-stone-200 px-2.5 py-0.5 text-xs text-stone-400"
-                }
-              >
-                {subscription.display_name}
-              </li>
-            ))}
-          </ul>
+      {/* Consent step: not yet granted */}
+      {connection.consent_status !== "GRANTED" && connection.consent_url && (
+        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+          <p className="text-sm text-stone-700">{connection.status_detail}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <a
+              href={connection.consent_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Button>{t.connection.openConsent}</Button>
+            </a>
+            <CopyButton text={connection.consent_url} label={t.connection.copyConsentLink} />
+          </div>
         </div>
       )}
 
-      {error && <div className="mt-3"><ErrorNote message={error} /></div>}
-      {connection.status_detail && !error && (
-        <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
+      {/* Deploy step: consented but not yet verified */}
+      {connection.consent_status === "GRANTED" &&
+        !connection.rbac_verified_at &&
+        connection.template_url && (
+          <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+            <p className="text-sm text-stone-700">{connection.status_detail}</p>
+            <div className="mt-3">
+              <a
+                href={connection.template_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Button>Deploy to Azure</Button>
+              </a>
+            </div>
+            <WaitingNote text={t.connection.waitingForAccess} />
+          </div>
+        )}
+
+      {/* Waiting for consent — no deploy URL yet */}
+      {connection.consent_status === "GRANTED" &&
+        !connection.rbac_verified_at &&
+        !connection.template_url && (
+          <div className="mt-4">
+            <p className="text-sm text-stone-600">{connection.status_detail}</p>
+            <WaitingNote text={t.connection.waitingForAccess} />
+          </div>
+        )}
+
+      {/* Verified: show subscriptions */}
+      {connection.is_verified && subscriptions.length > 0 && (
+        <div className="mt-4 border-t border-stone-100 pt-3">
+          <p className="text-xs text-stone-500">
+            {scoped.length} of {subscriptions.length} {t.connection.inScopeCount}
+            {connection.last_discovery_at && (
+              <> · {t.connection.lastDiscovery} {formatDateTime(connection.last_discovery_at)}</>
+            )}
+          </p>
+          <ul className="mt-2 divide-y divide-stone-100 rounded-lg border border-stone-200">
+            {subscriptions.map((sub) => (
+              <li key={sub.id} className="flex items-center gap-3 px-4 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={checked(sub)}
+                  onChange={(e) =>
+                    setSelection({
+                      ...selection,
+                      [sub.subscription_id ?? ""]: e.target.checked,
+                    })
+                  }
+                  aria-label={`${t.connection.inScope}: ${sub.display_name}`}
+                />
+                <span className="flex-1">
+                  <span className="block text-sm text-stone-900">{sub.display_name}</span>
+                  <code className="text-[11px] text-stone-400">{sub.subscription_id}</code>
+                </span>
+              </li>
+            ))}
+          </ul>
+          {hasSelectionChanges && (
+            <Button
+              className="mt-3"
+              onClick={() => saveScope.mutate()}
+              disabled={saveScope.isPending}
+            >
+              {t.connection.saveScope}
+            </Button>
+          )}
+        </div>
       )}
 
+      {error && (
+        <div className="mt-3">
+          <ErrorNote message={error} />
+        </div>
+      )}
+      {connection.status_detail &&
+        !error &&
+        connection.consent_status === "GRANTED" &&
+        connection.rbac_verified_at && (
+          <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
+        )}
+
+      {/* Actions */}
       {confirmingRemove ? (
         <RemoveConfirm
           busy={remove.isPending}
@@ -241,23 +296,6 @@ function ConnectionCard({
         />
       ) : (
         <div className="mt-4 flex flex-wrap gap-2">
-          {!connection.is_verified && (
-            <Button onClick={onResume}>{t.connection.create}</Button>
-          )}
-          {connection.is_verified && (
-            <>
-              <Button
-                variant="secondary"
-                onClick={() => rediscover.mutate()}
-                disabled={rediscover.isPending}
-              >
-                {rediscover.isPending ? t.connection.discovering : t.connection.rediscover}
-              </Button>
-              <Button variant="ghost" onClick={onResume}>
-                {t.connection.stepSubscriptions}
-              </Button>
-            </>
-          )}
           <Button
             variant="ghost"
             className="ml-auto text-critical hover:bg-critical-bg"
@@ -271,14 +309,6 @@ function ConnectionCard({
   );
 }
 
-/**
- * Removal, with what it costs stated before it happens.
- *
- * Deleting a connection cascades: discovered subscriptions, their assets, scan
- * history and findings all go. The second note matters as much as the first —
- * removing the row here revokes nothing in Azure, and a customer who believes
- * it does will leave CloudGuard holding read access to their tenant.
- */
 function RemoveConfirm({
   busy,
   onConfirm,
@@ -317,12 +347,8 @@ function scopeSummary(connection: CloudConnection): string {
       : connection.scope_type === "MANAGEMENT_GROUP"
         ? `Management group ${connection.scope_id}`
         : `Subscription ${connection.scope_id}`;
-  const role =
-    connection.permission_mode === "READER"
-      ? "Reader"
-      : `Custom role ${connection.role_version}`;
   const tenant = connection.tenant_id ? ` · Tenant ${connection.tenant_id}` : "";
-  return `${scope} · ${role}${tenant}`;
+  return `${scope} · ${connection.role_version}${tenant}`;
 }
 
 function Signal({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
@@ -343,6 +369,29 @@ function Signal({ label, ok, detail }: { label: string; ok: boolean; detail: str
   );
 }
 
-function Dot({ className }: { className?: string }) {
-  return <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-current ${className}`} />;
+function WaitingNote({ text }: { text: string }) {
+  return (
+    <p className="mt-3 flex items-center gap-2 text-sm text-stone-500">
+      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-stone-300 border-t-stone-600" />
+      {text}
+    </p>
+  );
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <Button
+      variant="secondary"
+      onClick={() => {
+        void navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+    >
+      {copied ? t.connection.copied : label}
+    </Button>
+  );
 }

@@ -37,7 +37,7 @@ export function DashboardPage() {
         action={
           <Link to={hasConnection ? "/scans" : "/connections"}>
             <Button>
-              {hasConnection ? t.dashboard.runFirstScan : t.connect.createConnection}
+              {hasConnection ? t.dashboard.runFirstScan : t.connection.connectAzure}
             </Button>
           </Link>
         }

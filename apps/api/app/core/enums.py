@@ -125,18 +125,6 @@ class ConnectionScope(StrEnum):
     SUBSCRIPTION = "SUBSCRIPTION"
 
 
-class PermissionMode(StrEnum):
-    """Which RBAC role the customer grants.
-
-    READER is Azure's built-in ``*/read`` -- one line to grant, and it never
-    needs revisiting. CUSTOM_ROLE is the exact list of actions CloudGuard's
-    collector performs, which is far narrower but has to be redeployed whenever
-    a new rule reads a new resource type (app/connectors/azure/rbac.py).
-    """
-
-    READER = "READER"
-    CUSTOM_ROLE = "CUSTOM_ROLE"
-
 
 class ConsentStatus(StrEnum):
     PENDING = "PENDING"

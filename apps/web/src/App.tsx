@@ -8,7 +8,6 @@ import { SignInPage } from "@/pages/SignIn";
 import { ResetPasswordPage } from "@/pages/ResetPassword";
 import { OnboardingPage } from "@/pages/Onboarding";
 import { ConnectPage } from "@/pages/Connect";
-import { ConnectResultPage } from "@/pages/ConnectResult";
 import { DashboardPage } from "@/pages/Dashboard";
 import { AssetsPage } from "@/pages/Assets";
 import { AssetDetailPage } from "@/pages/AssetDetail";
@@ -59,8 +58,6 @@ export function App() {
           an expired one needs to say so rather than bounce to sign-in. */}
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/onboarding" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
-      <Route path="/connect/result" element={<ConnectResultPage />} />
-
       <Route
         element={
           <RequireAuth>
