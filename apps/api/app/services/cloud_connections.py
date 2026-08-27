@@ -49,11 +49,13 @@ TEMPLATE_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 async def create_connection(
     session: AsyncSession, tenant: TenantContext, payload: CloudConnectionCreate
-) -> tuple[CloudConnection, str]:
+) -> tuple[CloudConnection, str | None]:
     """Create a connection and return it with the consent redirect URL.
 
     One API call does both, so the frontend has everything it needs to
-    redirect the customer to Microsoft.
+    redirect the customer to Microsoft. The consent URL is best-effort:
+    if Azure is not configured on this deployment, the connection is still
+    created and the URL is None.
     """
     if payload.scope_type != ConnectionScope.TENANT_ROOT and not payload.scope_id:
         raise ValidationFailed(
@@ -78,15 +80,18 @@ async def create_connection(
     return connection, consent_url
 
 
-def _build_consent_url(connection: CloudConnection) -> str:
-    state = sign_state(
-        {
-            "cloud_connection_id": str(connection.id),
-            "organization_id": str(connection.organization_id),
-            "issued_at": time.time(),
-        }
-    )
-    return build_consent_url(state)
+def _build_consent_url(connection: CloudConnection) -> str | None:
+    try:
+        state = sign_state(
+            {
+                "cloud_connection_id": str(connection.id),
+                "organization_id": str(connection.organization_id),
+                "issued_at": time.time(),
+            }
+        )
+        return build_consent_url(state)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
