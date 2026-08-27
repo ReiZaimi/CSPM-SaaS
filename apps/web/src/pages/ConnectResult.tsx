@@ -27,7 +27,7 @@ export function ConnectResultPage() {
         </h1>
         <p className="mt-2 text-sm text-stone-600">
           {granted
-            ? "One step left: assign CloudGuard the Reader role on the subscription you want scanned, then verify the connection."
+            ? "One step left. CloudGuard has generated a script that grants read access at the scope you chose — return to the connection to run it."
             : message || "You can close this window and try again."}
         </p>
         <Link to="/connections">

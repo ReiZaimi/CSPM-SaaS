@@ -54,7 +54,7 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    203 tests   pytest, ruff, mypy
+backend    241 tests   pytest, ruff, mypy
 frontend    37 tests   vitest, tsc
 ```
 
@@ -71,7 +71,7 @@ the test suite and the demo seed.
 apps/api/app/
 ├── core/          config, RLS-scoped sessions, auth, errors, enums
 ├── domain/        cloud-neutral resource model the rules operate on
-├── connectors/    base contract + azure/ (auth, client, collector, normalizer)
+├── connectors/    base contract + azure/ (auth, client, collector, normalizer, rbac)
 ├── rules/         base contract, registry, engine, azure/<category>/
 ├── risk/          scoring config and scorer
 ├── compliance/    framework catalogue and per-control coverage
@@ -110,6 +110,21 @@ database, and the finding detail page shows the arithmetic.
 **Remediation is verified by the scanner, not asserted by a human.** There is no
 "mark as fixed" button anywhere in the product, and the API refuses to set a
 finding to RESOLVED by hand.
+
+**A connection is a tenant, and subscriptions are discovered beneath it.** The
+customer picks a scope and never types a GUID — not the tenant id, not a
+subscription id. Entra reports which directory consented, and that report is the
+only thing that ever writes `tenant_id`, which is what binds a connection to a
+directory rather than to a claim. Subscriptions are then found by asking Azure,
+so one created next month gets scanned instead of quietly missed.
+
+**The read access grant is generated, not described.** After consent CloudGuard
+knows its own service principal's object id in the customer's tenant, so it
+hands them a Cloud Shell script, Bicep, or Terraform with every parameter
+already filled in. Customers who want more than Azure's `Reader` can take the
+CloudGuard custom role instead: exactly the read operations the collector
+performs, no `*/action` entries at all, generated from the connector so a test
+fails if the two ever disagree.
 
 **Compliance is evidence, never a verdict.** The `/compliance` view maps rules
 to CIS Azure 2.0, ISO 27001, GDPR and NIST CSF controls — including the controls

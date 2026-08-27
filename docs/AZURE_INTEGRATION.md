@@ -29,13 +29,56 @@ An earlier draft of the build spec described the connection screen asking for Te
 
 ## 3. Onboarding Flow
 
+A customer connects a **tenant or management group**, not a subscription.
+Subscriptions beneath it are discovered. The five steps each derive their
+completion from server state, because consent happens in another browser tab and
+the access grant frequently happens on another person's machine.
+
 ```
-Landing → Create account → Create organization → Choose cloud
-  → Connect Azure (Entra admin consent) → Assign RBAC Reader role
-  → Verify connection → Run first scan → Dashboard
+Create organization
+  → 1. Choose scope + permission mode        (no GUIDs are typed)
+  → 2. Entra admin consent                   (Entra reports the tenant id)
+  → 3. Run the generated access artifact     (CLI / Bicep / Terraform)
+  → 4. Verify — both grants proven by use
+  → 5. Confirm discovered subscriptions      → first scan → Dashboard
 ```
 
-The connection screen explains plainly: *"CloudGuard requires read-only access to assess your Azure environment,"* then walks through the two-step consent above.
+**Nothing is asked for that can be derived.** The consent link targets
+`organizations` rather than a named tenant, so the administrator simply signs in
+and Entra's callback reports which directory consented. That is the only place
+`cloud_connections.tenant_id` is ever written, and it is what binds a connection
+to a directory — see `DECISIONS.md`.
+
+**Steps 2 and 3 poll.** Both open something in another tab, so the wizard
+advances by itself instead of asking anyone to come back and press a button.
+Polling continues while the tab is backgrounded, which is precisely when it
+matters.
+
+### The artifact
+
+After consent, CloudGuard reads its own service principal's object id back from
+Graph, which is what a role assignment must point at. The artifact is then
+generated per connection with nothing left to fill in, in three formats:
+Cloud Shell script, Bicep, and Terraform.
+
+A **shell script, not just a template**, because ARM cannot reach Entra — it
+deploys resources, and a service principal is not one. The template covers the
+RBAC half for customers whose change process requires one.
+
+Note the two grants need *different* permissions from different people: admin
+consent needs a **Global Administrator**, and the role assignment needs **Owner
+or User Access Administrator** on the chosen scope. The wizard says so before it
+sends anyone anywhere.
+
+### Permission modes
+
+`Reader` (`*/read`) is the default: one line, never needs revisiting. The
+**CloudGuard custom role** is the alternative — exactly the read operations the
+collector performs and no `*/action` entries at all, enumerated in
+`app/connectors/azure/rbac.py`. A test asserts every `ArmClient` method has a
+matching action and vice versa, so the role cannot silently drift from the code.
+The trade is maintenance: a rule reading a new resource type needs a new action
+and a customer redeploy, which is what `role_version` tracks.
 
 ---
 

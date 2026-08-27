@@ -230,6 +230,39 @@ Three choices there are worth keeping:
   is excluded — the same reason UNKNOWN is never PASS in the rule engine, except
   that here the misreading would end up in front of an auditor.
 
+**A connection is a tenant or management group; subscriptions are discovered.**
+`cloud_accounts` used to *be* the connection — one row per subscription, tenant
+id typed in by hand. That had two problems.
+
+The first was a blind spot. A subscription created after onboarding was invisible
+to CloudGuard, because nobody had registered it. An environment that is never
+scanned produces no findings, and no findings reads as safe. Everywhere else this
+product refuses that trade — UNKNOWN is never PASS, gaps are recorded rather than
+dropped — and the connection layer quietly violated it.
+
+The second was a tenant-binding hole. `cloud_accounts.tenant_id` came from the
+request body, and validation only checked whether Azure answered. But CloudGuard's
+service principal exists in *every* tenant that has ever consented, so naming one
+of those tenants on a fresh connection and clicking verify succeeded — the probe
+passes, because the access is genuinely there — and the caller was reading an
+environment belonging to somebody else. This is the confused-deputy problem AWS
+integrations use an ExternalId for.
+
+Both are fixed by the same change. `cloud_connections.tenant_id` is nullable and
+written in exactly one place: the consent callback, from the tenant Entra itself
+reports. Validation refuses any connection whose own consent has not completed.
+A per-connection nonce additionally rides in the deployment artifact and is read
+back from the role assignment's description — defence in depth, not the primary
+control, since it is consent that binds the tenant.
+
+`scope_type` keeps the narrow option first-class: `SUBSCRIPTION` behaves exactly
+as the old model did. The coverage-versus-least-privilege trade is the customer's
+to make, and a tenant-wide grant is genuinely broader than they may want.
+
+Everything below a cloud account — scans, resources, findings, risk, compliance —
+is untouched by this. Discovered subscriptions are still `cloud_accounts` rows,
+so the pipeline never learned that anything changed.
+
 **Supabase connections go through the Session pooler, not the direct host.**
 Current Supabase projects resolve `db.<ref>.supabase.co` to an IPv6-only
 address, and Railway cannot route IPv6 -- the connection fails with `Network is

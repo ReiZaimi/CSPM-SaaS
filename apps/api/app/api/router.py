@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     assets,
     cloud_accounts,
+    cloud_connections,
     compliance,
     dashboard,
     findings,
@@ -19,6 +20,7 @@ api_router = APIRouter(prefix="/api/v1")
 
 api_router.include_router(organizations.router)
 api_router.include_router(cloud_accounts.router)
+api_router.include_router(cloud_connections.router)
 api_router.include_router(scans.router)
 api_router.include_router(assets.router)
 api_router.include_router(findings.router)

@@ -153,7 +153,7 @@ class TestTenantIsolationOverHttp:
         assert body["meta"]["total"] == 0
 
 
-class TestCloudAccounts:
+class TestCloudConnections:
     async def test_connection_screen_never_asks_for_a_credential(self, client) -> None:
         """The published contract: read-only, no customer secret."""
         body = (await client.get("/api/v1/cloud-accounts/azure/permissions")).json()
@@ -161,20 +161,26 @@ class TestCloudAccounts:
         assert body["data"]["writes_performed"] == "none"
         assert body["data"]["azure_rbac_role"] == "Reader"
 
-    async def test_create_cloud_account_takes_no_secret_fields(
+    async def test_creating_a_connection_takes_no_tenant_and_no_secret(
         self, client, cleanup_orgs
     ) -> None:
+        """The customer supplies a name and a scope. Nothing else is accepted.
+
+        The tenant id in particular is not an input -- it is written later, from
+        what Entra reports on the consent callback. Supplying one here must not
+        bind the connection to it.
+        """
         user = uuid.uuid4()
         org = await make_org(client, user, "Connect Ltd")
         cleanup_orgs.append(uuid.UUID(org))
 
         response = await client.post(
-            "/api/v1/cloud-accounts",
+            "/api/v1/cloud-connections",
             json={
-                "account_name": "Production",
-                "tenant_id": "aaaa-bbbb",
-                "subscription_id": "sub-1",
-                # Deliberately supplied and deliberately ignored.
+                "name": "Production",
+                "scope_type": "TENANT_ROOT",
+                # All deliberately supplied and all deliberately ignored.
+                "tenant_id": "someone-elses-tenant",
                 "client_secret": "hunter2",
                 "organization_id": str(uuid.uuid4()),
             },
@@ -182,56 +188,113 @@ class TestCloudAccounts:
         )
         assert response.status_code == 201
         data = response.json()["data"]
+        assert data["tenant_id"] is None
         assert "client_secret" not in data
-        # organization_id came from the membership, not from the request body.
-        assert data["is_scannable"] is False
         assert data["consent_status"] == "PENDING"
+        assert data["is_verified"] is False
+        # An unguessable nonce is minted per connection, and never echoed back.
+        assert "external_id" not in data
 
-    async def test_duplicate_connection_is_rejected(self, client, cleanup_orgs) -> None:
-        user = uuid.uuid4()
-        org = await make_org(client, user, "Dupe Ltd")
-        cleanup_orgs.append(uuid.UUID(org))
-        payload = {
-            "account_name": "Production",
-            "tenant_id": "tenant-dup",
-            "subscription_id": "sub-dup",
-        }
-        assert (
-            await client.post(
-                "/api/v1/cloud-accounts", json=payload, headers=auth_header(user)
-            )
-        ).status_code == 201
-        second = await client.post(
-            "/api/v1/cloud-accounts", json=payload, headers=auth_header(user)
-        )
-        assert second.status_code == 409
-
-
-class TestScanGuards:
-    async def test_cannot_scan_an_unverified_connection(
+    async def test_validation_is_refused_before_consent(
         self, client, cleanup_orgs
     ) -> None:
-        """Consent alone is not enough -- the Reader role must be proven too."""
+        """The tenant-binding guard.
+
+        CloudGuard's service principal exists in every tenant that has ever
+        consented. Without this refusal, a connection could name one of those
+        tenants and validate successfully against an environment belonging to
+        somebody else -- the probe would pass, because the access is genuinely
+        there. Consent for *this* connection is the only thing that binds it.
+        """
         user = uuid.uuid4()
-        org = await make_org(client, user, "Unverified Ltd")
+        org = await make_org(client, user, "Impatient Ltd")
         cleanup_orgs.append(uuid.UUID(org))
 
         created = await client.post(
-            "/api/v1/cloud-accounts",
-            json={"account_name": "Prod", "tenant_id": "t-1", "subscription_id": "s-1"},
+            "/api/v1/cloud-connections",
+            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
             headers=auth_header(user),
         )
-        account_id = created.json()["data"]["id"]
+        connection_id = created.json()["data"]["id"]
 
         response = await client.post(
-            "/api/v1/scans",
-            json={"cloud_account_id": account_id},
+            f"/api/v1/cloud-connections/{connection_id}/validate",
             headers=auth_header(user),
         )
         assert response.status_code == 422
-        assert "not ready to scan" in response.json()["error"]["message"]
+        assert "consent" in response.json()["error"]["message"].lower()
 
-    async def test_cannot_scan_another_tenants_connection(
+    async def test_scoped_connection_requires_a_scope_id(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Scoped Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.post(
+            "/api/v1/cloud-connections",
+            json={"name": "One sub", "scope_type": "SUBSCRIPTION"},
+            headers=auth_header(user),
+        )
+        assert response.status_code == 422
+
+    async def test_options_describe_both_permission_modes(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Options Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        data = (
+            await client.get(
+                "/api/v1/cloud-connections/options", headers=auth_header(user)
+            )
+        ).json()["data"]
+
+        assert {s["value"] for s in data["scopes"]} == {
+            "TENANT_ROOT",
+            "MANAGEMENT_GROUP",
+            "SUBSCRIPTION",
+        }
+        assert {m["value"] for m in data["permission_modes"]} == {"READER", "CUSTOM_ROLE"}
+        # The custom role's actions are published, not summarised.
+        assert data["arm_actions"]
+        assert all(action.endswith("/read") for action in data["arm_actions"])
+
+    async def test_artifact_link_needs_consent_first(
+        self, client, cleanup_orgs
+    ) -> None:
+        """Before consent there is no service principal to grant a role to."""
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Early Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        created = await client.post(
+            "/api/v1/cloud-connections",
+            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
+            headers=auth_header(user),
+        )
+        connection_id = created.json()["data"]["id"]
+
+        links = (
+            await client.get(
+                f"/api/v1/cloud-connections/{connection_id}/artifacts",
+                headers=auth_header(user),
+            )
+        ).json()["data"]
+        assert links["principal_id"] is None
+
+        # The signed URL exists but the artifact itself refuses to render.
+        artifact = await client.get(links["formats"]["cli"].replace("http://test", ""))
+        assert artifact.status_code == 422
+
+    async def test_artifact_token_must_be_signed(self, client) -> None:
+        response = await client.get(
+            "/api/v1/cloud-connections/artifact?token=forged.deadbeef&format=cli"
+        )
+        assert response.status_code == 400
+
+    async def test_a_user_cannot_read_another_orgs_connection(
         self, client, cleanup_orgs
     ) -> None:
         user_a, user_b = uuid.uuid4(), uuid.uuid4()
@@ -240,15 +303,30 @@ class TestScanGuards:
         cleanup_orgs.extend([uuid.UUID(org_a), uuid.UUID(org_b)])
 
         created = await client.post(
-            "/api/v1/cloud-accounts",
-            json={"account_name": "Prod", "tenant_id": "t-x", "subscription_id": "s-x"},
+            "/api/v1/cloud-connections",
+            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
             headers=auth_header(user_a),
         )
-        account_id = created.json()["data"]["id"]
+        connection_id = created.json()["data"]["id"]
+
+        response = await client.get(
+            f"/api/v1/cloud-connections/{connection_id}", headers=auth_header(user_b)
+        )
+        assert response.status_code == 404
+
+
+class TestScanGuards:
+    async def test_cannot_scan_another_tenants_account(
+        self, client, cleanup_orgs
+    ) -> None:
+        user_a, user_b = uuid.uuid4(), uuid.uuid4()
+        org_a = await make_org(client, user_a, "Scan Owner Ltd")
+        org_b = await make_org(client, user_b, "Scan Outsider Ltd")
+        cleanup_orgs.extend([uuid.UUID(org_a), uuid.UUID(org_b)])
 
         response = await client.post(
             "/api/v1/scans",
-            json={"cloud_account_id": account_id},
+            json={"cloud_account_id": str(uuid.uuid4())},
             headers=auth_header(user_b),
         )
         assert response.status_code == 404

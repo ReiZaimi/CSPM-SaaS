@@ -111,6 +111,33 @@ class Priority(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+class ConnectionScope(StrEnum):
+    """How much of a customer's cloud one connection covers.
+
+    The choice is a real trade between coverage and least privilege, and it is
+    the customer's to make: TENANT_ROOT sees every subscription that exists now
+    or later and needs a correspondingly broad grant, while SUBSCRIPTION is the
+    narrowest thing that works. CloudGuard does not pick for them.
+    """
+
+    TENANT_ROOT = "TENANT_ROOT"
+    MANAGEMENT_GROUP = "MANAGEMENT_GROUP"
+    SUBSCRIPTION = "SUBSCRIPTION"
+
+
+class PermissionMode(StrEnum):
+    """Which RBAC role the customer grants.
+
+    READER is Azure's built-in ``*/read`` -- one line to grant, and it never
+    needs revisiting. CUSTOM_ROLE is the exact list of actions CloudGuard's
+    collector performs, which is far narrower but has to be redeployed whenever
+    a new rule reads a new resource type (app/connectors/azure/rbac.py).
+    """
+
+    READER = "READER"
+    CUSTOM_ROLE = "CUSTOM_ROLE"
+
+
 class ConsentStatus(StrEnum):
     PENDING = "PENDING"
     GRANTED = "GRANTED"

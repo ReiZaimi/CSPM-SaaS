@@ -180,6 +180,18 @@ class ArmClient(_BaseClient):
             "/roleAssignments?api-version=2022-04-01"
         )
 
+    async def list_role_assignments_at_scope(self, scope: str) -> list[dict[str, Any]]:
+        """Assignments at an arbitrary scope -- a management group, typically.
+
+        Separate from ``list_role_assignments`` because a tenant-scoped
+        connection's grant lives above any subscription, so there is no
+        subscription to ask about when confirming it.
+        """
+        return await self.get_all(
+            f"{scope}/providers/Microsoft.Authorization"
+            "/roleAssignments?api-version=2022-04-01"
+        )
+
     async def list_role_definitions(self, subscription_id: str) -> list[dict[str, Any]]:
         return await self.get_all(
             f"/subscriptions/{subscription_id}/providers/Microsoft.Authorization"
@@ -211,3 +223,16 @@ class GraphClient(_BaseClient):
 
     async def get_organization(self) -> list[dict[str, Any]]:
         return await self.get_all("/organization")
+
+    async def find_service_principal(self, app_id: str) -> dict[str, Any] | None:
+        """CloudGuard's own service principal, as it exists in this tenant.
+
+        Consent creates it; this reads back its object id. That id is what a
+        customer's role assignment has to point at, and knowing it is the
+        difference between "find CloudGuard in the portal" and a command with
+        nothing left to fill in.
+        """
+        results = await self.get_all(
+            f"/servicePrincipals?$filter=appId eq '{app_id}'&$select=id,appId,displayName"
+        )
+        return results[0] if results else None
