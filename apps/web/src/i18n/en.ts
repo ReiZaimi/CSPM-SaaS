@@ -116,7 +116,7 @@ export const en = {
     create: "Continue",
     whoYouNeed: "Who you will need",
     whoYouNeedDetail:
-      "Admin consent needs a Global Administrator. Granting read access needs Owner or User Access Administrator on the scope you chose. These are different permissions, and often different people.",
+      "Admin consent needs a work or school account that is a Global Administrator. A personal Microsoft account \u2014 outlook.com, hotmail.com, live.com \u2014 cannot grant it, even if that account owns the subscription. Granting read access then needs Owner or User Access Administrator on the scope you chose. These are different permissions, and often different people.",
     noGuidsNeeded:
       "You will not be asked for your tenant id. Entra reports it when your administrator consents, which is also what binds this connection to your directory.",
     openConsent: "Open admin consent",

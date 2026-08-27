@@ -121,6 +121,25 @@ consent needs a **Global Administrator**, and the role assignment needs **Owner
 or User Access Administrator** on the chosen scope. The wizard says so before it
 sends anyone anywhere.
 
+It also needs a *work or school* account, which is a separate requirement from
+the role and the one people hit first. The consent link targets the
+`organizations` endpoint, so Entra refuses a personal Microsoft account
+(outlook.com, hotmail.com, live.com) with:
+
+> You can't sign in here with a personal account. Use your work or school
+> account instead.
+
+That refusal is correct rather than a misconfiguration. Tenant-wide admin
+consent is a directory operation, and a personal account is not a member of the
+directory even when it is the account that pays for the subscription beneath it
+— a subscription created with a personal account still gets its own Entra
+tenant, and the personal account sits outside it.
+
+The way through is a member account in that tenant, usually
+`admin@<tenant>.onmicrosoft.com`, granted Global Administrator. Create it under
+Entra ID → Users → New user, assign the role, sign in as that account, and
+consent again.
+
 ### Permission modes
 
 `Reader` (`*/read`) is the default: one line, never needs revisiting. The
