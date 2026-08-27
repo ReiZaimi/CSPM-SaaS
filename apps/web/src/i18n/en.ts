@@ -160,6 +160,23 @@ export const en = {
       "No write actions and no data-plane access. CloudGuard cannot modify anything, and cannot read the contents of your storage or databases.",
     principalId: "Service principal",
     scopePath: "Scope",
+    cancel: "Cancel",
+    cancelSetup: "Cancel setup",
+    close: "Close",
+    finishLater: "Finish later",
+    discard: "Discard connection",
+    discarding: "Discarding\u2026",
+    discardTitle: "Discard this half-finished connection?",
+    discardDetail:
+      "Nothing has been scanned yet, so there is nothing to lose. You can also leave it and pick up where you left off.",
+    remove: "Remove connection",
+    removing: "Removing\u2026",
+    removeTitle: "Remove this connection?",
+    removeDetail:
+      "Its discovered subscriptions, their assets, scan history and findings are deleted with it. This cannot be undone.",
+    removeAzureNote:
+      "This does not revoke anything in Azure. To withdraw the access you granted, remove CloudGuard from Enterprise applications in Entra ID and delete its role assignment.",
+    keep: "Keep it",
     notConfigured: "This CloudGuard deployment cannot connect Azure yet",
     notConfiguredDetail:
       "The server has no Entra application identity, so it cannot start a consent flow. This is a setup step on CloudGuard's side, not yours \u2014 whoever operates this deployment needs to register the app and set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET and AZURE_REDIRECT_URI (docs/AZURE_INTEGRATION.md \u00a72.1).",

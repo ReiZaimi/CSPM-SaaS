@@ -42,6 +42,16 @@ export function ConnectWizard({
   onClose: () => void;
 }) {
   const t = useT();
+  const queryClient = useQueryClient();
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+
+  const discard = useMutation({
+    mutationFn: () => api.del(`/api/v1/cloud-connections/${connectionId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
+      onClose();
+    },
+  });
 
   const options = useQuery({
     queryKey: ["connection-options"],
@@ -68,12 +78,24 @@ export function ConnectWizard({
 
   const step = currentStep(connection.data);
 
+  // Nothing exists to discard until step 1 has been submitted, and once a
+  // connection is verified it is no longer "setup in progress" — throwing it
+  // away then is a heavier action that belongs on the connection's own card,
+  // with the fuller warning about what goes with it.
+  const canDiscard = Boolean(connectionId) && !connection.data?.is_verified;
+
+  function requestCancel() {
+    if (canDiscard) setConfirmingCancel(true);
+    else onClose();
+  }
+
   return (
     <Card
       title={`${t.connection.step} ${step} ${t.connection.of} ${STEP_COUNT} · ${stepTitle(step, t)}`}
       action={
         <button
-          onClick={onClose}
+          onClick={requestCancel}
+          aria-label={t.connection.cancelSetup}
           className="text-sm text-stone-500 transition hover:text-stone-900"
         >
           ✕
@@ -95,6 +117,50 @@ export function ConnectWizard({
       {step === 5 && connection.data && (
         <SubscriptionsStep connection={connection.data} onClose={onClose} />
       )}
+
+      <div className="mt-5 border-t border-stone-100 pt-4">
+        {confirmingCancel ? (
+          <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+            <p className="text-sm font-medium text-stone-900">
+              {t.connection.discardTitle}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-stone-600">
+              {t.connection.discardDetail}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="danger"
+                onClick={() => discard.mutate()}
+                disabled={discard.isPending}
+              >
+                {discard.isPending ? t.connection.discarding : t.connection.discard}
+              </Button>
+              <Button variant="secondary" onClick={onClose}>
+                {t.connection.finishLater}
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirmingCancel(false)}>
+                {t.common.back}
+              </Button>
+            </div>
+            {discard.isError && (
+              <div className="mt-3">
+                <ErrorNote message={t.common.error} />
+              </div>
+            )}
+          </div>
+        ) : (
+          <Button variant="ghost" onClick={requestCancel}>
+            {/* Three different situations, not two: nothing created yet is a
+                plain cancel, a half-finished connection is setup to abandon,
+                and a verified one is simply a panel to close. */}
+            {!connectionId
+              ? t.connection.cancel
+              : canDiscard
+                ? t.connection.cancelSetup
+                : t.connection.close}
+          </Button>
+        )}
+      </div>
     </Card>
   );
 }

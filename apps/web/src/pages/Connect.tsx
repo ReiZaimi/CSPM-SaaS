@@ -136,6 +136,7 @@ function ConnectionCard({
   const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   const subscriptions = useQuery({
     queryKey: ["connection-subscriptions", connection.id],
@@ -158,6 +159,13 @@ function ConnectionCard({
       queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Discovery failed"),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api.del(`/api/v1/cloud-connections/${connection.id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cloud-connections"] }),
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : "Could not remove the connection"),
   });
 
   const scoped = subscriptions.data?.filter((s) => s.in_scope) ?? [];
@@ -225,26 +233,80 @@ function ConnectionCard({
         <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2">
-        {!connection.is_verified && (
-          <Button onClick={onResume}>{t.connection.create}</Button>
-        )}
-        {connection.is_verified && (
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => rediscover.mutate()}
-              disabled={rediscover.isPending}
-            >
-              {rediscover.isPending ? t.connection.discovering : t.connection.rediscover}
-            </Button>
-            <Button variant="ghost" onClick={onResume}>
-              {t.connection.stepSubscriptions}
-            </Button>
-          </>
-        )}
-      </div>
+      {confirmingRemove ? (
+        <RemoveConfirm
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => setConfirmingRemove(false)}
+        />
+      ) : (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {!connection.is_verified && (
+            <Button onClick={onResume}>{t.connection.create}</Button>
+          )}
+          {connection.is_verified && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => rediscover.mutate()}
+                disabled={rediscover.isPending}
+              >
+                {rediscover.isPending ? t.connection.discovering : t.connection.rediscover}
+              </Button>
+              <Button variant="ghost" onClick={onResume}>
+                {t.connection.stepSubscriptions}
+              </Button>
+            </>
+          )}
+          <Button
+            variant="ghost"
+            className="ml-auto text-critical hover:bg-critical-bg"
+            onClick={() => setConfirmingRemove(true)}
+          >
+            {t.connection.remove}
+          </Button>
+        </div>
+      )}
     </Card>
+  );
+}
+
+/**
+ * Removal, with what it costs stated before it happens.
+ *
+ * Deleting a connection cascades: discovered subscriptions, their assets, scan
+ * history and findings all go. The second note matters as much as the first —
+ * removing the row here revokes nothing in Azure, and a customer who believes
+ * it does will leave CloudGuard holding read access to their tenant.
+ */
+function RemoveConfirm({
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  return (
+    <div className="mt-4 rounded-lg border border-critical-border bg-critical-bg px-4 py-3">
+      <p className="text-sm font-medium text-critical">{t.connection.removeTitle}</p>
+      <p className="mt-1 text-xs leading-relaxed text-stone-700">
+        {t.connection.removeDetail}
+      </p>
+      <p className="mt-2 text-xs leading-relaxed text-stone-700">
+        {t.connection.removeAzureNote}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button variant="danger" onClick={onConfirm} disabled={busy}>
+          {busy ? t.connection.removing : t.connection.remove}
+        </Button>
+        <Button variant="secondary" onClick={onCancel}>
+          {t.connection.keep}
+        </Button>
+      </div>
+    </div>
   );
 }
 
