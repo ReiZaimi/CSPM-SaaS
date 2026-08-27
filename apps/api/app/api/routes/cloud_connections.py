@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Query, status
 from fastapi.responses import PlainTextResponse, RedirectResponse
 from sqlalchemy import func, select
 
@@ -190,19 +190,26 @@ async def consent_url(connection_id: UUID, session: DbSession, tenant: Tenant) -
 
 @router.get("/{connection_id}/artifacts")
 async def artifact_links(
-    connection_id: UUID, request: Request, session: DbSession, tenant: Tenant
+    connection_id: UUID, session: DbSession, tenant: Tenant
 ) -> dict:
     """Where to fetch each deployment format for this connection.
 
-    The URLs themselves are unauthenticated and signed -- Cloud Shell, Terraform
-    and the portal all fetch them without a CloudGuard session.
+    Paths, not absolute URLs, and that distinction is load-bearing. This
+    previously returned ``request.base_url``, which is whatever scheme and host
+    uvicorn saw on the connection -- and behind a TLS-terminating proxy that is
+    ``http://`` on an internal hostname. The browser, on an https page, refused
+    the result as mixed content, so every artifact failed to load with a network
+    error that said nothing about why.
+
+    The client already knows where the API lives; it reached this endpoint. So
+    it composes the URL from the same base as every other request, and the
+    server never has to guess its own public address.
     """
     connection = await service.get_connection(session, tenant, connection_id)
     token = service.artifact_token(connection)
-    base = str(request.base_url).rstrip("/")
 
     formats = {
-        fmt: f"{base}/api/v1/cloud-connections/artifact?token={token}&format={fmt}"
+        fmt: f"/api/v1/cloud-connections/artifact?token={token}&format={fmt}"
         for fmt in ARTIFACT_FORMATS
     }
     return envelope(

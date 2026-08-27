@@ -289,8 +289,15 @@ class TestCloudConnections:
         ).json()["data"]
         assert links["principal_id"] is None
 
+        # API-relative, so the client composes it from the base it already uses.
+        # An absolute URL here would be the server guessing its own public
+        # scheme and host, which behind a TLS-terminating proxy it gets wrong --
+        # and an http:// link on an https page is refused as mixed content.
+        for path in links["formats"].values():
+            assert path.startswith("/api/v1/cloud-connections/artifact?")
+
         # The signed URL exists but the artifact itself refuses to render.
-        artifact = await client.get(links["formats"]["cli"].replace("http://test", ""))
+        artifact = await client.get(links["formats"]["cli"])
         assert artifact.status_code == 422
 
     async def test_artifact_token_must_be_signed(self, client) -> None:

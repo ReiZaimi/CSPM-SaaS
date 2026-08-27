@@ -77,6 +77,9 @@ class ScopeSelection(BaseModel):
 class ArtifactLinks(BaseModel):
     """Where to fetch each deployment format, and what it will grant."""
 
+    # API-relative paths. The client prefixes its own API base rather than the
+    # server guessing its public scheme and host, which it cannot do correctly
+    # from behind a proxy.
     formats: dict[str, str]
     expires_in_seconds: int
     scope_path: str | None = None

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "@/lib/api";
+import { api, API_URL, ApiError } from "@/lib/api";
 import type {
   ArtifactFormat,
   ArtifactLinks,
@@ -439,8 +439,12 @@ function AccessStep({ connection }: { connection: CloudConnection }) {
         .then((r) => r.data),
   });
 
-  const url = links.data?.formats[format];
-  const body = useArtifact(url);
+  // The server returns an API-relative path; the base is the client's, the same
+  // one every other request already uses.
+  const path = links.data?.formats[format];
+  const { body, error: artifactError, reload } = useArtifact(
+    path ? `${API_URL}${path}` : undefined,
+  );
 
   const labels: Record<ArtifactFormat, string> = {
     cli: t.connection.formatCli,
@@ -476,7 +480,9 @@ function AccessStep({ connection }: { connection: CloudConnection }) {
         ))}
       </div>
 
-      {body === null ? (
+      {artifactError ? (
+        <ErrorNote message={artifactError} onRetry={reload} />
+      ) : body === null ? (
         <Spinner />
       ) : (
         <pre className="max-h-72 overflow-auto rounded-lg bg-stone-900 p-4 text-[11px] leading-relaxed text-stone-100">
@@ -503,28 +509,50 @@ function AccessStep({ connection }: { connection: CloudConnection }) {
  *
  * Outside react-query because the response is a shell script or a Bicep file,
  * not the JSON envelope `api.get` unwraps.
+ *
+ * A failure used to be rendered *as the artifact* -- a comment line inside the
+ * code block, indistinguishable at a glance from a script that had loaded. It
+ * is an error now, with a retry, and an HTTP status is reported separately from
+ * a network failure because the two have completely different causes.
  */
-function useArtifact(url: string | undefined): string | null {
+function useArtifact(url: string | undefined): {
+  body: string | null;
+  error: string | null;
+  reload: () => void;
+} {
   const [body, setBody] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!url) return;
     let cancelled = false;
     setBody(null);
+    setError(null);
+
     fetch(url)
-      .then((r) => r.text())
-      .then((text) => {
-        if (!cancelled) setBody(text);
+      .then(async (response) => {
+        if (cancelled) return;
+        const text = await response.text();
+        if (cancelled) return;
+        if (!response.ok) {
+          setError(`The server could not build this artifact (${response.status}).`);
+          return;
+        }
+        setBody(text);
       })
       .catch(() => {
-        if (!cancelled) setBody("# Could not load this artifact. Try again.");
+        if (!cancelled) {
+          setError("Could not reach the API to load this artifact.");
+        }
       });
+
     return () => {
       cancelled = true;
     };
-  }, [url]);
+  }, [url, attempt]);
 
-  return body;
+  return { body, error, reload: () => setAttempt((n) => n + 1) };
 }
 
 /* -------------------------------------------------------------------------- */

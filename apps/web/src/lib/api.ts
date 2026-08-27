@@ -12,7 +12,7 @@
 // No fallback on purpose. There is no local API to fall back to, and a
 // silent localhost default would make every request fail from a visitor's
 // browser with no indication why. main.tsx refuses to render without it.
-const API_URL = import.meta.env.VITE_API_URL ?? "";
+export const API_URL = import.meta.env.VITE_API_URL ?? "";
 const TOKEN_KEY = "cloudguard.token";
 const ORG_KEY = "cloudguard.org";
 
