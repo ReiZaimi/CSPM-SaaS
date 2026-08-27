@@ -19,7 +19,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.azure.auth import build_consent_url, sign_state, verify_state
+from app.connectors.azure.auth import build_consent_url, sign_state
 from app.connectors.azure.client import ArmClient, AzureApiError, GraphClient
 from app.connectors.azure.rbac import ARM_READ_ACTIONS, ROLE_VERSION, TemplateContext, arm_template
 from app.connectors.base import ConnectionCheck
@@ -29,7 +29,6 @@ from app.core.enums import (
     CloudAccountStatus,
     ConnectionScope,
     ConsentStatus,
-    Provider,
 )
 from app.core.errors import CloudAccountNotFound, ValidationFailed
 from app.core.logging import get_logger
