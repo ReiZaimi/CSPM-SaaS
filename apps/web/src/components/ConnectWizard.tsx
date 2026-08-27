@@ -536,7 +536,11 @@ function useArtifact(url: string | undefined): {
         const text = await response.text();
         if (cancelled) return;
         if (!response.ok) {
-          setError(`The server could not build this artifact (${response.status}).`);
+          // The server explains itself — that consent has not published the
+          // service principal yet, say, which is both the actual cause and a
+          // reason to retry. A bare status code discards all of that and
+          // leaves the reader with nothing to act on.
+          setError(errorMessage(text) ?? `The server could not build this artifact (${response.status}).`);
           return;
         }
         setBody(text);
@@ -553,6 +557,25 @@ function useArtifact(url: string | undefined): {
   }, [url, attempt]);
 
   return { body, error, reload: () => setAttempt((n) => n + 1) };
+}
+
+/**
+ * Pull the message out of an error envelope.
+ *
+ * This endpoint answers in two shapes: the standard JSON envelope for
+ * application errors, and a plain `# comment` line for a bad token, because
+ * that response also has to be readable when curled into a shell.
+ */
+function errorMessage(text: string): string | null {
+  try {
+    const body = JSON.parse(text) as { error?: { message?: unknown } };
+    const message = body.error?.message;
+    if (typeof message === "string" && message) return message;
+  } catch {
+    const comment = text.trim();
+    if (comment.startsWith("#")) return comment.replace(/^#\s*/, "");
+  }
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */

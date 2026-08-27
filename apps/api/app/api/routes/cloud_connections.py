@@ -78,6 +78,9 @@ async def artifact(
         connection = await session.get(CloudConnection, connection_id)
         if connection is None:
             raise CloudAccountNotFound("Connection not found")
+        # The object id may not have been queryable when consent completed.
+        # Retrying here is what turns "try again" into a real remedy.
+        await service.ensure_service_principal(session, connection)
         content_type, filename, body = service.render_artifact(connection, format)
 
     return PlainTextResponse(
@@ -206,6 +209,7 @@ async def artifact_links(
     server never has to guess its own public address.
     """
     connection = await service.get_connection(session, tenant, connection_id)
+    await service.ensure_service_principal(session, connection)
     token = service.artifact_token(connection)
 
     formats = {

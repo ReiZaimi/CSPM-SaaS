@@ -7,8 +7,12 @@ pinning independently of the service that uses them.
 
 from datetime import UTC, datetime
 
+import pytest
+
 from app.core.enums import ConnectionScope, ConsentStatus
+from app.core.errors import ValidationFailed
 from app.models.cloud_connection import CloudConnection
+from app.services.cloud_connections import render_artifact
 
 
 def connection(**kwargs: object) -> CloudConnection:
@@ -88,3 +92,48 @@ def test_subscription_scope_is_the_narrowest_grant() -> None:
 def test_subscription_scope_without_an_id_has_no_path() -> None:
     c = connection(scope_type=ConnectionScope.SUBSCRIPTION)
     assert c.scope_path is None
+
+
+# --- artifact preconditions ------------------------------------------------
+#
+# The artifact step sits between consent and validation, and it is the only
+# step that needs the service principal's object id. Consent resolves that id
+# on a best-effort basis, because Entra does not always publish the principal
+# by the time the callback fires. So the failure below is a real state a real
+# customer reaches, and what it *says* is the whole remedy: retry.
+
+
+def granted(**kwargs: object) -> CloudConnection:
+    return connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        **kwargs,
+    )
+
+
+def test_artifact_refuses_before_a_scope_exists() -> None:
+    with pytest.raises(ValidationFailed, match="admin consent"):
+        render_artifact(connection(), "cli")
+
+
+def test_artifact_refuses_while_the_principal_is_unpublished() -> None:
+    """Distinct from the scope case: consent *has* completed here.
+
+    Telling this customer that consent is incomplete would send them back to a
+    step they already finished. The directory simply has not caught up.
+    """
+    with pytest.raises(ValidationFailed, match="try again shortly"):
+        render_artifact(granted(), "cli")
+
+
+def test_artifact_renders_once_the_principal_is_known() -> None:
+    body = render_artifact(
+        granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"),
+        "cli",
+    )[2]
+    assert "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9" in body
+
+
+def test_unknown_format_is_refused_by_name() -> None:
+    with pytest.raises(ValidationFailed, match="Unknown format"):
+        render_artifact(granted(service_principal_object_id="abc"), "powershell")

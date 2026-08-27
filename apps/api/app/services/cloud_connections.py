@@ -154,10 +154,16 @@ def render_artifact(connection: CloudConnection, fmt: str) -> tuple[str, str, st
         raise ValidationFailed(
             f"Unknown format '{fmt}'. Expected one of: {', '.join(ARTIFACT_FORMATS)}"
         )
-    if not connection.service_principal_object_id or not connection.scope_path:
+    if not connection.scope_path:
         raise ValidationFailed(
-            "Admin consent has not completed yet, so there is no service "
-            "principal to grant access to."
+            "This connection has no scope to grant access at yet. Complete "
+            "admin consent first."
+        )
+    if not connection.service_principal_object_id:
+        raise ValidationFailed(
+            "CloudGuard cannot yet see its own service principal in your "
+            "directory. Entra usually takes a moment to publish it after "
+            "consent \u2014 try again shortly."
         )
 
     content_type, filename, render = entry
@@ -201,6 +207,33 @@ async def record_consent(
 
     await session.commit()
     return connection
+
+
+async def ensure_service_principal(
+    session: AsyncSession, connection: CloudConnection
+) -> bool:
+    """Resolve the service principal now if consent has not yielded one yet.
+
+    Entra creates the principal during consent, but it is not always queryable
+    by the time the callback fires a moment later -- directory replication gets
+    there when it gets there. The callback therefore treats the lookup as best
+    effort, which left a hole: the artifact step needs that object id, comes
+    *before* validation, and validation was the only thing that retried. A
+    customer whose lookup lost that race had no way forward at all.
+
+    So the artifact endpoints resolve on demand. Retrying is the fix, and this
+    is what makes retrying do something.
+    """
+    if connection.service_principal_object_id:
+        return True
+    if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
+        return False
+
+    await _resolve_service_principal(connection)
+    if connection.service_principal_object_id:
+        await session.commit()
+        return True
+    return False
 
 
 async def _resolve_service_principal(connection: CloudConnection) -> None:
