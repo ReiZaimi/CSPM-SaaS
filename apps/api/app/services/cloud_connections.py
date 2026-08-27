@@ -184,6 +184,33 @@ async def record_consent(
     return connection
 
 
+async def ensure_service_principal(
+    session: AsyncSession, connection: CloudConnection
+) -> bool:
+    """Resolve the service principal now if consent has not yielded one yet.
+
+    Entra creates the principal during consent, but it is not always queryable
+    by the time the callback fires a moment later -- directory replication gets
+    there when it gets there. The callback therefore treats the lookup as best
+    effort, which left a hole: the artifact step needs that object id, comes
+    *before* validation, and validation was the only thing that retried. A
+    customer whose lookup lost that race had no way forward at all.
+
+    So the artifact endpoints resolve on demand. Retrying is the fix, and this
+    is what makes retrying do something.
+    """
+    if connection.service_principal_object_id:
+        return True
+    if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
+        return False
+
+    await _resolve_service_principal(connection)
+    if connection.service_principal_object_id:
+        await session.commit()
+        return True
+    return False
+
+
 async def _resolve_service_principal(connection: CloudConnection) -> None:
     from app.connectors.azure.auth import TokenProvider
 
