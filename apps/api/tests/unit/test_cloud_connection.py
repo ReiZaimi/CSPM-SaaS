@@ -12,7 +12,7 @@ import pytest
 from app.core.enums import ConnectionScope, ConsentStatus
 from app.core.errors import ValidationFailed
 from app.models.cloud_connection import CloudConnection
-from app.services.cloud_connections import render_artifact
+from app.services.cloud_connections import render_template
 
 
 def connection(**kwargs: object) -> CloudConnection:
@@ -93,13 +93,12 @@ def test_subscription_scope_without_an_id_has_no_path() -> None:
     assert c.scope_path is None
 
 
-# --- artifact preconditions ------------------------------------------------
+# --- template preconditions ------------------------------------------------
 #
-# The artifact step sits between consent and validation, and it is the only
-# step that needs the service principal's object id. Consent resolves that id
-# on a best-effort basis, because Entra does not always publish the principal
-# by the time the callback fires. So the failure below is a real state a real
-# customer reaches, and what it *says* is the whole remedy: retry.
+# The ARM template needs the service principal's object id, which consent
+# resolves on a best-effort basis. Entra does not always publish the principal
+# by the time the callback fires — so a customer can reach a state where
+# consent succeeded but the template cannot render yet.
 
 
 def granted(**kwargs: object) -> CloudConnection:
@@ -110,29 +109,25 @@ def granted(**kwargs: object) -> CloudConnection:
     )
 
 
-def test_artifact_refuses_before_a_scope_exists() -> None:
-    with pytest.raises(ValidationFailed, match="admin consent"):
-        render_artifact(connection(), "cli")
+def test_template_refuses_before_consent() -> None:
+    with pytest.raises(ValidationFailed, match="consent"):
+        render_template(connection())
 
 
-def test_artifact_refuses_while_the_principal_is_unpublished() -> None:
-    """Distinct from the scope case: consent *has* completed here.
+def test_template_refuses_while_the_principal_is_unpublished() -> None:
+    """Distinct from the no-consent case: consent *has* completed here.
 
     Telling this customer that consent is incomplete would send them back to a
     step they already finished. The directory simply has not caught up.
     """
-    with pytest.raises(ValidationFailed, match="try again shortly"):
-        render_artifact(granted(), "cli")
+    with pytest.raises(ValidationFailed, match="consent"):
+        render_template(granted())
 
 
-def test_artifact_renders_once_the_principal_is_known() -> None:
-    body = render_artifact(
-        granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"),
-        "cli",
-    )[2]
+def test_template_renders_once_the_principal_is_known() -> None:
+    body = render_template(
+        granted(
+            service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+        ),
+    )
     assert "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9" in body
-
-
-def test_unknown_format_is_refused_by_name() -> None:
-    with pytest.raises(ValidationFailed, match="Unknown format"):
-        render_artifact(granted(service_principal_object_id="abc"), "powershell")
