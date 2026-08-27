@@ -1,16 +1,12 @@
-import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy import DateTime, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import (
     CloudAccountStatus,
     ConnectionScope,
     ConsentStatus,
-    PermissionMode,
     Provider,
 )
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
@@ -63,9 +59,6 @@ class CloudConnection(Base, UUIDPrimaryKey, TenantOwned, Timestamps):
     # and so is not known until consent completes.
     scope_id: Mapped[str | None] = mapped_column(String(200))
 
-    permission_mode: Mapped[PermissionMode] = mapped_column(
-        StrEnumType(PermissionMode, 16), nullable=False, default=PermissionMode.READER
-    )
     # Which generation of the custom role the artifact was built from, so the UI
     # can tell a customer their deployed role predates a rule that needs more.
     role_version: Mapped[str] = mapped_column(String(16), nullable=False, default="v1")
@@ -73,24 +66,14 @@ class CloudConnection(Base, UUIDPrimaryKey, TenantOwned, Timestamps):
     tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
     service_principal_object_id: Mapped[str | None] = mapped_column(String(64))
 
-    # Carried into the deployment artifact and read back during validation.
-    # Defence in depth rather than the primary control: proof of consent already
-    # binds the tenant, and this additionally evidences control of the scope.
-    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
-
     consent_status: Mapped[ConsentStatus] = mapped_column(
         StrEnumType(ConsentStatus, 16), nullable=False, default=ConsentStatus.PENDING
     )
-    consented_scopes: Mapped[dict | None] = mapped_column(JSONB)
-    consented_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Proof the RBAC grant works, from a live call -- never from the customer
     # telling us they did it.
     rbac_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    external_id_verified: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
 
     status: Mapped[CloudAccountStatus] = mapped_column(
         StrEnumType(CloudAccountStatus, 16), nullable=False, default=CloudAccountStatus.PENDING

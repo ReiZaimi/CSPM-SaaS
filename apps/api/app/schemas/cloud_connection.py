@@ -7,7 +7,6 @@ from app.core.enums import (
     CloudAccountStatus,
     ConnectionScope,
     ConsentStatus,
-    PermissionMode,
     Provider,
 )
 
@@ -27,7 +26,6 @@ class CloudConnectionCreate(BaseModel):
     # Required for MANAGEMENT_GROUP and SUBSCRIPTION; meaningless for
     # TENANT_ROOT, whose scope is not knowable until consent completes.
     scope_id: str | None = Field(default=None, max_length=200)
-    permission_mode: PermissionMode = PermissionMode.READER
 
 
 class CloudConnectionOut(BaseModel):
@@ -39,20 +37,21 @@ class CloudConnectionOut(BaseModel):
     scope_type: ConnectionScope
     scope_id: str | None = None
     scope_path: str | None = None
-    permission_mode: PermissionMode
     role_version: str
     tenant_id: str | None = None
     service_principal_object_id: str | None = None
     consent_status: ConsentStatus
     consented_at: datetime | None = None
     rbac_verified_at: datetime | None = None
-    external_id_verified: bool = False
     status: CloudAccountStatus
     status_detail: str | None = None
     last_discovery_at: datetime | None = None
     created_at: datetime
     is_verified: bool = False
     subscription_count: int = 0
+    subscriptions: list["DiscoveredSubscription"] = Field(default_factory=list)
+    consent_url: str | None = None
+    template_url: str | None = None
 
 
 class DiscoveredSubscription(BaseModel):
@@ -72,15 +71,3 @@ class ScopeSelection(BaseModel):
     """Which discovered subscriptions to actually scan, keyed by subscription id."""
 
     in_scope: dict[str, bool]
-
-
-class ArtifactLinks(BaseModel):
-    """Where to fetch each deployment format, and what it will grant."""
-
-    formats: dict[str, str]
-    expires_in_seconds: int
-    scope_path: str | None = None
-    principal_id: str | None = None
-    permission_mode: PermissionMode
-    arm_actions: list[str] = Field(default_factory=list)
-    cloud_shell_url: str

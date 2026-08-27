@@ -15,7 +15,6 @@ def connection(**kwargs: object) -> CloudConnection:
     defaults: dict = {
         "name": "Production",
         "scope_type": ConnectionScope.TENANT_ROOT,
-        "external_id": "deadbeef",
         "consent_status": ConsentStatus.PENDING,
     }
     return CloudConnection(**{**defaults, **kwargs})

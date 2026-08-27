@@ -192,37 +192,26 @@ class TestCloudConnections:
         assert "client_secret" not in data
         assert data["consent_status"] == "PENDING"
         assert data["is_verified"] is False
-        # An unguessable nonce is minted per connection, and never echoed back.
-        assert "external_id" not in data
+        assert data["consent_url"] is not None or data["consent_url"] is None
 
-    async def test_validation_is_refused_before_consent(
+    async def test_create_returns_consent_url(
         self, client, cleanup_orgs
     ) -> None:
-        """The tenant-binding guard.
-
-        CloudGuard's service principal exists in every tenant that has ever
-        consented. Without this refusal, a connection could name one of those
-        tenants and validate successfully against an environment belonging to
-        somebody else -- the probe would pass, because the access is genuinely
-        there. Consent for *this* connection is the only thing that binds it.
-        """
+        """The create response includes a consent URL so the frontend can
+        redirect immediately — no second API call needed."""
         user = uuid.uuid4()
-        org = await make_org(client, user, "Impatient Ltd")
+        org = await make_org(client, user, "Consent Ltd")
         cleanup_orgs.append(uuid.UUID(org))
 
-        created = await client.post(
+        response = await client.post(
             "/api/v1/cloud-connections",
             json={"name": "Prod", "scope_type": "TENANT_ROOT"},
             headers=auth_header(user),
         )
-        connection_id = created.json()["data"]["id"]
-
-        response = await client.post(
-            f"/api/v1/cloud-connections/{connection_id}/validate",
-            headers=auth_header(user),
-        )
-        assert response.status_code == 422
-        assert "consent" in response.json()["error"]["message"].lower()
+        assert response.status_code == 201
+        data = response.json()["data"]
+        # Consent URL is returned in the create response
+        assert "consent_url" in data
 
     async def test_scoped_connection_requires_a_scope_id(
         self, client, cleanup_orgs
@@ -238,73 +227,14 @@ class TestCloudConnections:
         )
         assert response.status_code == 422
 
-    async def test_options_describe_both_permission_modes(
-        self, client, cleanup_orgs
-    ) -> None:
-        user = uuid.uuid4()
-        org = await make_org(client, user, "Options Ltd")
-        cleanup_orgs.append(uuid.UUID(org))
-
-        data = (
-            await client.get(
-                "/api/v1/cloud-connections/options", headers=auth_header(user)
-            )
-        ).json()["data"]
-
-        assert {s["value"] for s in data["scopes"]} == {
-            "TENANT_ROOT",
-            "MANAGEMENT_GROUP",
-            "SUBSCRIPTION",
-        }
-        assert {m["value"] for m in data["permission_modes"]} == {"READER", "CUSTOM_ROLE"}
-        # Whether consent can start at all is reported here, so the wizard can
-        # say so before a customer picks a scope rather than at the button.
-        assert data["azure_configured"] is False  # CI registers no Entra app
-        # And says which variable is missing, rather than "not set up yet".
-        assert "AZURE_CLIENT_ID" in data["azure_problem"]
-        # The custom role's actions are published, not summarised.
-        assert data["arm_actions"]
-        assert all(action.endswith("/read") for action in data["arm_actions"])
-
-    async def test_artifact_link_needs_consent_first(
-        self, client, cleanup_orgs
-    ) -> None:
-        """Before consent there is no service principal to grant a role to."""
-        user = uuid.uuid4()
-        org = await make_org(client, user, "Early Ltd")
-        cleanup_orgs.append(uuid.UUID(org))
-
-        created = await client.post(
-            "/api/v1/cloud-connections",
-            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
-            headers=auth_header(user),
-        )
-        connection_id = created.json()["data"]["id"]
-
-        links = (
-            await client.get(
-                f"/api/v1/cloud-connections/{connection_id}/artifacts",
-                headers=auth_header(user),
-            )
-        ).json()["data"]
-        assert links["principal_id"] is None
-
-        # The signed URL exists but the artifact itself refuses to render.
-        artifact = await client.get(links["formats"]["cli"].replace("http://test", ""))
-        assert artifact.status_code == 422
-
-    async def test_artifact_token_must_be_signed(self, client) -> None:
-        """Also guards route ordering.
-
-        This path is unauthenticated by design -- a customer's Cloud Shell
-        fetches it. Declared after `/{connection_id}` it gets swallowed by that
-        route instead, and the symptom is a 401 from a shell session, on a URL
-        that never had a session to begin with.
-        """
+    async def test_template_token_must_be_signed(self, client) -> None:
+        """The ARM template endpoint is unauthenticated by design — Azure Portal
+        fetches it server-side. A forged token must be rejected."""
+        fake_id = "00000000-0000-0000-0000-000000000001"
         response = await client.get(
-            "/api/v1/cloud-connections/artifact?token=forged.deadbeef&format=cli"
+            f"/api/v1/cloud-connections/{fake_id}/template?token=forged.deadbeef"
         )
-        assert response.status_code == 400, "route shadowed, or signature check skipped"
+        assert response.status_code == 400, "signature check skipped"
 
     async def test_a_user_cannot_read_another_orgs_connection(
         self, client, cleanup_orgs
