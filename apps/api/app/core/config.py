@@ -13,6 +13,7 @@ mid-consent. Failing the deploy is the kinder outcome for a security product.
 """
 
 import json
+import re
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -23,6 +24,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # URI check below is the only thing that can catch a mismatch before a customer
 # is already standing on Microsoft's error page; tests/unit/test_route_table.py
 # asserts the API really does serve it.
+_GUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 CONSENT_CALLBACK_PATH = "/api/v1/cloud-connections/azure/consent/callback"
 
 
@@ -127,6 +129,28 @@ class Settings(BaseSettings):
                 "The server has no Entra application identity. Set "
                 "AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
                 "(docs/AZURE_INTEGRATION.md 2.1)."
+            )
+
+        # Azure Portal lists a secret's Value and its Secret ID side by side,
+        # and copies the ID far more readily: the Value is shown once, at
+        # creation, and is never recoverable afterwards. Pasting the ID is
+        # therefore the single easiest mistake to make here, and Entra only
+        # says so as AADSTS7000215 -- deep inside a token request, long after
+        # a customer has already involved their Global Administrator. A secret
+        # value is never a bare GUID, so this is decidable before anyone is
+        # sent anywhere.
+        if _GUID.fullmatch(self.azure_client_secret.strip()):
+            return (
+                "AZURE_CLIENT_SECRET looks like a Secret ID, not a secret "
+                "value. In Azure Portal the Value column is the one to copy, "
+                "and it is only shown when the secret is created -- if it has "
+                "been lost, add a new client secret and copy its Value."
+            )
+        if not _GUID.fullmatch(self.azure_client_id.strip()):
+            return (
+                f'AZURE_CLIENT_ID is "{self.azure_client_id}", which is not a '
+                "GUID. It should be the Application (client) ID from the app "
+                "registration's Overview page."
             )
 
         uri = self.azure_redirect_uri

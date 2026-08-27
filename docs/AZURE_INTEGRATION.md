@@ -59,10 +59,19 @@ one reads customers' environments. Separate trust boundaries, separate apps.
 
    ```
    AZURE_CLIENT_ID=<application (client) id>
-   AZURE_CLIENT_SECRET=<the secret value, not its id>
+   AZURE_CLIENT_SECRET=<the secret VALUE, not the Secret ID>
    AZURE_TENANT_ID=<your own directory id>
    AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-connections/azure/consent/callback
    ```
+
+The portal lists a secret's **Value** and its **Secret ID** side by side, and
+only the Secret ID survives past the moment of creation — so the ID is what is
+still on screen when people come back to copy it. Pasting it yields
+`AADSTS7000215: Invalid client secret provided` from inside a token request,
+*after* consent has already succeeded. CloudGuard now refuses to start a consent
+flow when `AZURE_CLIENT_SECRET` is GUID-shaped, since a secret value never is.
+If the Value has been lost it cannot be recovered: add a new client secret and
+copy its Value.
 
 `AZURE_REDIRECT_URI` must match the registered value exactly — Entra compares
 it character for character and refuses the round-trip otherwise. The path
