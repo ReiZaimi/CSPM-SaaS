@@ -131,3 +131,55 @@ def test_template_renders_once_the_principal_is_known() -> None:
         ),
     )
     assert "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9" in body
+
+
+# --- the template URL points at the API, not the frontend ------------------
+
+
+def test_template_url_prefers_the_api_url() -> None:
+    from app.core.config import settings
+    from app.services.cloud_connections import public_api_base
+
+    original = (settings.api_url, settings.azure_redirect_uri)
+    try:
+        settings.api_url = "https://api.example.com/"
+        settings.azure_redirect_uri = "https://other.example.com/callback"
+        assert public_api_base() == "https://api.example.com"
+    finally:
+        settings.api_url, settings.azure_redirect_uri = original
+
+
+def test_template_url_falls_back_to_the_consent_callback_origin() -> None:
+    """API_URL is not a required variable, so it is often unset.
+
+    The redirect URI is the dependable stand-in: Entra compares it character
+    for character, so a deployment that has completed consent is proof that
+    this value names the API's real public origin.
+    """
+    from app.core.config import settings
+    from app.services.cloud_connections import public_api_base
+
+    original = (settings.api_url, settings.azure_redirect_uri)
+    try:
+        settings.api_url = ""
+        settings.azure_redirect_uri = (
+            "https://api.up.railway.app/api/v1/cloud-connections/azure/consent/callback"
+        )
+        assert public_api_base() == "https://api.up.railway.app"
+    finally:
+        settings.api_url, settings.azure_redirect_uri = original
+
+
+def test_no_template_url_rather_than_a_guessed_one() -> None:
+    """A hidden button is recoverable; a link to the wrong host is not."""
+    from app.core.config import settings
+    from app.services.cloud_connections import template_url
+
+    original = (settings.api_url, settings.azure_redirect_uri)
+    try:
+        settings.api_url = ""
+        settings.azure_redirect_uri = ""
+        ready = granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9")
+        assert template_url(ready) is None
+    finally:
+        settings.api_url, settings.azure_redirect_uri = original

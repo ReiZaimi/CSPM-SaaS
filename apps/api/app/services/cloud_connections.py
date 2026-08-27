@@ -14,6 +14,7 @@ discovers subscriptions once it detects access.
 
 import time
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -254,12 +255,41 @@ def template_token(connection: CloudConnection) -> str:
     )
 
 
+def public_api_base() -> str | None:
+    """The API's own public origin, for a URL Azure Portal will fetch.
+
+    Not ``app_url``: that is the *frontend*, and the two are separate hosts in
+    this deployment (Vercel and Railway). Pointing a template URL at the
+    frontend returns the SPA's index.html, and Azure Portal fails to parse it
+    as ARM -- a failure that reads as a broken template rather than a wrong
+    host.
+
+    ``API_URL`` is the direct answer but is not a required variable, so it may
+    be unset. ``AZURE_REDIRECT_URI`` is the reliable fallback: it is this API's
+    own public callback URL, and it cannot be subtly wrong, because Entra
+    compares it character for character and consent fails outright otherwise.
+    Anything reaching this function has already completed consent.
+
+    None rather than a guess when neither is available -- a hidden button is
+    recoverable, a link to the wrong host is a support ticket.
+    """
+    if settings.api_url:
+        return settings.api_url.rstrip("/")
+    if settings.azure_redirect_uri:
+        parts = urlsplit(settings.azure_redirect_uri)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    return None
+
+
 def template_url(connection: CloudConnection) -> str | None:
     """The full URL for the ARM template endpoint, or None if not ready."""
     if not connection.service_principal_object_id or not connection.scope_path:
         return None
+    base = public_api_base()
+    if not base:
+        return None
     token = template_token(connection)
-    base = settings.app_url.rstrip("/")
     return f"{base}/api/v1/cloud-connections/{connection.id}/template?token={token}"
 
 
