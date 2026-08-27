@@ -4,13 +4,21 @@ Architecturally anticipated, **not implemented in the MVP** — extension points
 
 ---
 
-## Compliance
+## Compliance — **partly built**
 
-`rules.compliance_mappings` JSONB (see `DATABASE.md`) already supports framework/control tagging (ISO 27001, NIST, CIS, NIS2, Albanian requirements). No framework logic hardcoded into rules. CloudGuard presents evidence, never legal-compliance claims:
+The chain below is implemented for CIS Azure 2.0, ISO 27001, GDPR and NIST CSF:
+`app/compliance/catalog.py` (frameworks and controls, as data),
+`app/services/compliance.py` (coverage against the latest scan), and the
+`/compliance` screens. See `DECISIONS.md` §"Compliance mappings drive a coverage
+view".
 
 ```
 Technical Control → Evidence → Requirement → Framework
 ```
+
+Still roadmap: NIS2 and Albanian requirements; per-control evidence export for
+auditors; and framework selection per organization, so a customer reporting only
+against ISO does not have to read past three others.
 
 ---
 

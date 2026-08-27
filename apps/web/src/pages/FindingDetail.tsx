@@ -259,9 +259,12 @@ export function FindingDetailPage() {
               <ul className="space-y-2">
                 {Object.entries(data.compliance_mappings).map(([framework, controls]) => (
                   <li key={framework} className="text-xs">
-                    <span className="font-medium text-stone-700">
+                    <Link
+                      to={`/compliance/${encodeURIComponent(framework)}`}
+                      className="font-medium text-stone-700 underline underline-offset-2 hover:text-stone-900"
+                    >
                       {framework.replace(/_/g, " ")}
-                    </span>
+                    </Link>
                     <span className="ml-2 text-stone-500">{controls.join(", ")}</span>
                   </li>
                 ))}

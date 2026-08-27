@@ -45,6 +45,7 @@ class AzureLoggingRule(SecurityRule):
         "CIS_AZURE_2.0": ["5.1.1", "5.3"],
         "ISO_27001": ["A.8.15", "A.8.16"],
         "NIST_CSF": ["DE.AE-3", "PR.PT-1"],
+        "GDPR": ["5(2)", "32(1)(d)", "33"],
     }
 
     def evaluate(

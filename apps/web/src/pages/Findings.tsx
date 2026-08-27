@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Finding } from "@/lib/types";
@@ -12,12 +12,25 @@ export function FindingsPage() {
   const [severity, setSeverity] = useState("");
   const [status, setStatus] = useState("OPEN");
 
+  // The rule filter lives in the URL rather than in state: it is arrived at
+  // from elsewhere — a compliance control's evidence list, a rule page — so it
+  // has to survive being linked to, shared, and navigated back to.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const ruleId = searchParams.get("rule_id") ?? "";
+
   const params = new URLSearchParams();
   if (severity) params.set("severity", severity);
   if (status) params.set("status", status);
+  if (ruleId) params.set("rule_id", ruleId);
+
+  function clearRuleFilter() {
+    const next = new URLSearchParams(searchParams);
+    next.delete("rule_id");
+    setSearchParams(next, { replace: true });
+  }
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["findings", severity, status],
+    queryKey: ["findings", severity, status, ruleId],
     queryFn: () =>
       api.get<Finding[]>(`/api/v1/findings?${params.toString()}`).then((r) => r.data),
   });
@@ -43,6 +56,21 @@ export function FindingsPage() {
           </Select>
         </div>
       </div>
+
+      {ruleId && (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="inline-flex items-center gap-2 rounded-full border border-stone-300 bg-stone-50 px-3 py-1 text-xs text-stone-700">
+            Rule <code className="font-medium">{ruleId}</code>
+            <button
+              onClick={clearRuleFilter}
+              aria-label="Clear rule filter"
+              className="text-stone-400 transition hover:text-stone-900"
+            >
+              ×
+            </button>
+          </span>
+        </div>
+      )}
 
       {isLoading && <Spinner text={t.common.loading} />}
       {error && <ErrorNote message={t.common.error} onRetry={() => refetch()} />}

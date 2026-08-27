@@ -47,6 +47,7 @@ class AzurePublicDatabaseRule(SecurityRule):
         "CIS_AZURE_2.0": ["4.1.1", "4.1.2"],
         "ISO_27001": ["A.8.20", "A.8.22"],
         "NIST_CSF": ["PR.AC-3", "PR.AC-5", "PR.DS-5"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
     }
 
     # Azure's own "allow all" firewall shape.

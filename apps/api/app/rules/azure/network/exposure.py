@@ -168,6 +168,7 @@ class AzurePublicRdpRule(_PublicPortRule):
         "CIS_AZURE_2.0": ["6.1"],
         "ISO_27001": ["A.8.20", "A.8.23"],
         "NIST_CSF": ["PR.AC-5"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
     }
 
 
@@ -200,6 +201,7 @@ class AzurePublicSshRule(_PublicPortRule):
         "CIS_AZURE_2.0": ["6.2"],
         "ISO_27001": ["A.8.20"],
         "NIST_CSF": ["PR.AC-5"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
     }
 
 
@@ -241,6 +243,7 @@ class AzureOpenNsgRule(SecurityRule):
         "CIS_AZURE_2.0": ["6.5"],
         "ISO_27001": ["A.8.20", "A.8.22"],
         "NIST_CSF": ["PR.AC-5", "PR.PT-4"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
     }
 
     # Ports whose exposure is a finding in its own right. 80/443 are absent on

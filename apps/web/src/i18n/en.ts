@@ -20,6 +20,7 @@ export const en = {
     scans: "Scans",
     rules: "Rules",
     connections: "Connections",
+    compliance: "Compliance",
     signOut: "Sign out",
   },
   auth: {
@@ -159,6 +160,37 @@ export const en = {
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
   rules: { title: "Rule library", empty: "No rules loaded." },
+  compliance: {
+    title: "Compliance",
+    intro:
+      "What CloudGuard's checks can evidence against the frameworks you report on \u2014 and, just as importantly, what they cannot.",
+    notALegalClaim:
+      "This is evidence, not a compliance verdict. A green control means specific misconfigurations were absent at the last scan; it is not a statement that a requirement is met in law or that an audit would pass.",
+    coverage: "Assessable coverage",
+    coverageHelp:
+      "Share of the catalogued controls CloudGuard reached a conclusion on \u2014 pass or fail. Controls nothing checks, and controls it could not read, are excluded rather than counted as met.",
+    controls: "controls",
+    openFindings: "open findings",
+    viewFramework: "View controls",
+    scopeNote: "What this covers",
+    ownWording:
+      "Control titles are CloudGuard's own wording, not the published text. Follow the source link for authoritative definitions.",
+    source: "Official source",
+    noRules: "No rule checks this.",
+    notAssessable: "Not observable by a scanner",
+    notAssessableHelp:
+      "This requirement is organizational, procedural or physical. No cloud posture scan can produce evidence for it.",
+    evidenceFrom: "Evidence from",
+    empty: "No frameworks in the catalogue.",
+    backToFrameworks: "All frameworks",
+    statusHelp: {
+      FAILING: "At least one mapped rule is currently failing.",
+      INCONCLUSIVE: "Nothing failing, but a mapped rule could not be evaluated. Not a pass.",
+      PASSING: "Every mapped rule was evaluated conclusively and none is failing.",
+      NOT_ASSESSED: "Rules map here, but no scan has produced a result yet.",
+      NOT_COVERED: "No rule maps here. CloudGuard has nothing to say about it.",
+    },
+  },
   remediation: { title: "Remediation", empty: "No remediation tasks yet." },
   common: {
     loading: "Loading…",

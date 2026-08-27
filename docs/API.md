@@ -21,9 +21,19 @@ POST   /api/v1/remediation                 PATCH /api/v1/remediation/{id}
 POST   /api/v1/findings/{id}/accept-risk
 POST   /api/v1/findings/{id}/rescan
 
+GET    /api/v1/rules                       GET  /api/v1/rules/{rule_id}
+GET    /api/v1/compliance                  GET  /api/v1/compliance/{framework_id}
+
 GET    /api/v1/dashboard
 GET    /api/v1/reports                     POST /api/v1/reports
 ```
+
+`/compliance` reads the rule catalogue's `compliance_mappings` against the
+framework catalogue in `app/compliance/catalog.py` and this organization's
+latest scan. Each control resolves to FAILING, INCONCLUSIVE, PASSING,
+NOT_ASSESSED or NOT_COVERED — and `coverage_ratio` counts conclusions
+(pass **or** fail), never passes, because a share-of-passing figure would be a
+compliance score and this API does not issue those.
 
 ---
 

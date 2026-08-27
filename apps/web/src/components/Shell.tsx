@@ -34,6 +34,7 @@ export function Shell() {
     { to: "/remediation", label: t.nav.remediation },
     { to: "/scans", label: t.nav.scans },
     { to: "/rules", label: t.nav.rules },
+    { to: "/compliance", label: t.nav.compliance },
     { to: "/connections", label: t.nav.connections },
   ];
 

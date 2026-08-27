@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import type { Level } from "./types";
+import type { ControlStatus, Level } from "./types";
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
@@ -46,7 +46,34 @@ export const STATUS_LABELS: Record<string, string> = {
   CANCELLED: "Cancelled",
   TODO: "To do",
   DONE: "Done",
+  FAILING: "Failing",
+  INCONCLUSIVE: "Inconclusive",
+  PASSING: "Passing",
+  NOT_ASSESSED: "Not assessed",
+  NOT_COVERED: "Not covered",
 };
+
+/**
+ * Compliance control colours.
+ *
+ * INCONCLUSIVE borrows UNKNOWN's dashed treatment rather than a green or a
+ * grey, for the same reason UNKNOWN does: a control CloudGuard could not
+ * evaluate must never look like one it cleared. NOT_COVERED is quieter still —
+ * it is a statement about this product, not about the user's environment.
+ */
+const CONTROL_STATUS_STYLES: Record<ControlStatus, string> = {
+  PASSING: "bg-ok-bg text-ok border-ok-border",
+  FAILING: "bg-critical-bg text-critical border-critical-border",
+  INCONCLUSIVE: "bg-unknown-bg text-unknown border-unknown-border border-dashed",
+  NOT_ASSESSED: "bg-stone-50 text-stone-500 border-stone-200",
+  NOT_COVERED: "bg-white text-stone-400 border-stone-200 border-dashed",
+};
+
+export const controlStatusStyle = (status: string) =>
+  CONTROL_STATUS_STYLES[status as ControlStatus] ?? CONTROL_STATUS_STYLES.NOT_COVERED;
+
+export const formatPercent = (ratio: number | null) =>
+  ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
 
 export const label = (value: string) =>
   STATUS_LABELS[value] ??

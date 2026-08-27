@@ -41,6 +41,7 @@ class AzurePublicStorageRule(SecurityRule):
         "CIS_AZURE_2.0": ["3.7", "3.8"],
         "ISO_27001": ["A.5.10", "A.8.3"],
         "NIST_CSF": ["PR.AC-3", "PR.DS-5"],
+        "GDPR": ["5(1)(f)", "25", "32(1)(b)"],
     }
 
     def evaluate(
@@ -121,6 +122,7 @@ class AzureStorageEncryptionRule(SecurityRule):
         "CIS_AZURE_2.0": ["3.1", "3.15"],
         "ISO_27001": ["A.8.24"],
         "NIST_CSF": ["PR.DS-2"],
+        "GDPR": ["5(1)(f)", "32(1)(a)"],
     }
 
     ACCEPTABLE_TLS: ClassVar[set[str]] = {"tls1_2", "tls1_3"}

@@ -45,9 +45,10 @@ class AzureExposedComputeRule(SecurityRule):
         "Microsoft Defender for Cloud so the port opens only on approved request."
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
-        "CIS_AZURE_2.0": ["6.1", "6.2", "7.1"],
+        "CIS_AZURE_2.0": ["6.1", "6.2"],
         "ISO_27001": ["A.8.20", "A.8.22"],
         "NIST_CSF": ["PR.AC-3", "PR.AC-5"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
     }
 
     def evaluate(

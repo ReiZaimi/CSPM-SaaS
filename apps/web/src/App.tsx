@@ -17,6 +17,8 @@ import { FindingDetailPage } from "@/pages/FindingDetail";
 import { RisksPage } from "@/pages/Risks";
 import { ScansPage } from "@/pages/Scans";
 import { RulesPage } from "@/pages/Rules";
+import { CompliancePage } from "@/pages/Compliance";
+import { ComplianceFrameworkPage } from "@/pages/ComplianceFramework";
 import { RemediationPage } from "@/pages/Remediation";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -75,6 +77,8 @@ export function App() {
         <Route path="/remediation" element={<RemediationPage />} />
         <Route path="/scans" element={<ScansPage />} />
         <Route path="/rules" element={<RulesPage />} />
+        <Route path="/compliance" element={<CompliancePage />} />
+        <Route path="/compliance/:frameworkId" element={<ComplianceFrameworkPage />} />
         <Route path="/connections" element={<ConnectPage />} />
       </Route>
 

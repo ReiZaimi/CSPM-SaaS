@@ -206,10 +206,29 @@ read 0. The spec anticipates tuning these values against real environments;
 ends at verified resolution, and PDF generation sits outside that loop.
 `jinja2` is installed; WeasyPrint and the report routes are not.
 
-**Compliance mappings are populated but unused.** Every rule carries CIS
-Azure 2.0, ISO 27001 and NIST CSF control references in
-`rules.compliance_mappings`, surfaced read-only on the finding detail page. No
-business logic reads them, per requirement 15.
+**Compliance mappings drive a coverage view, still without framework logic.**
+Every rule carries CIS Azure 2.0, ISO 27001, GDPR and NIST CSF control
+references in `rules.compliance_mappings`. `app/compliance/catalog.py` supplies
+the other half — what those identifiers mean — as data, and
+`app/services/compliance.py` joins the two against the latest scan. Requirement
+15 still holds: no rule imports the catalogue, and nothing anywhere branches on
+a framework name.
+
+Three choices there are worth keeping:
+
+* **Control titles are CloudGuard's own wording.** CIS Benchmarks and ISO/IEC
+  27001 are copyrighted under licences restricting redistribution of their text.
+  The identifiers are reproduced; the prose is not. Every framework carries a
+  link to its authoritative source.
+* **The catalogue lists controls no rule covers.** A catalogue of only what
+  CloudGuard checks would report full coverage forever. A test asserts each
+  framework has at least one uncovered control, and another asserts every
+  control a rule references actually exists — a typo in a mapping would
+  otherwise produce evidence that silently goes nowhere.
+* **Coverage counts conclusions, not passes.** `coverage_ratio` is the share of
+  controls CloudGuard reached a verdict on. UNKNOWN resolves to INCONCLUSIVE and
+  is excluded — the same reason UNKNOWN is never PASS in the rule engine, except
+  that here the misreading would end up in front of an auditor.
 
 **Supabase connections go through the Session pooler, not the direct host.**
 Current Supabase projects resolve `db.<ref>.supabase.co` to an IPv6-only

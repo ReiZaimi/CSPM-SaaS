@@ -160,3 +160,52 @@ export interface RemediationTask {
   completed_at: string | null;
   created_at: string;
 }
+
+/** Compliance coverage. Mirrors app/compliance/coverage.py::ControlStatus. */
+export type ControlStatus =
+  | "FAILING"
+  | "INCONCLUSIVE"
+  | "PASSING"
+  | "NOT_ASSESSED"
+  | "NOT_COVERED";
+
+export interface ControlRuleEvidence {
+  rule_id: string;
+  name: string;
+  severity: string;
+  open_finding_count: number;
+  unknown_count: number;
+  evaluated: boolean;
+}
+
+export interface ComplianceControl {
+  id: string;
+  title: string;
+  group: string;
+  /** False where the requirement is organizational — no scanner can observe it. */
+  technically_assessable: boolean;
+  status: ControlStatus;
+  open_finding_count: number;
+  rules: ControlRuleEvidence[];
+}
+
+export interface ComplianceFramework {
+  id: string;
+  name: string;
+  short_name: string;
+  version: string;
+  authority: string;
+  url: string;
+  summary: string;
+  scope_note: string;
+  control_count: number;
+  status_counts: Record<ControlStatus, number>;
+  /** Share of catalogued controls CloudGuard reached a conclusion on. */
+  coverage_ratio: number | null;
+  open_finding_count: number;
+}
+
+export interface ComplianceFrameworkDetail extends ComplianceFramework {
+  assessed: boolean;
+  controls: ComplianceControl[];
+}

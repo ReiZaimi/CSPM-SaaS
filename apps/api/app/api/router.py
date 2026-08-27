@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     assets,
     cloud_accounts,
+    compliance,
     dashboard,
     findings,
     organizations,
@@ -24,4 +25,5 @@ api_router.include_router(findings.router)
 api_router.include_router(risks.router)
 api_router.include_router(remediation.router)
 api_router.include_router(rules.router)
+api_router.include_router(compliance.router)
 api_router.include_router(dashboard.router)

@@ -54,8 +54,8 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    183 tests   pytest, ruff, mypy
-frontend    29 tests   vitest, tsc
+backend    203 tests   pytest, ruff, mypy
+frontend    37 tests   vitest, tsc
 ```
 
 Rule tests run against fixture JSON in `apps/api/tests/fixtures/` — no database,
@@ -74,6 +74,7 @@ apps/api/app/
 ├── connectors/    base contract + azure/ (auth, client, collector, normalizer)
 ├── rules/         base contract, registry, engine, azure/<category>/
 ├── risk/          scoring config and scorer
+├── compliance/    framework catalogue and per-control coverage
 ├── services/      scanner pipeline, findings, dashboard, cloud accounts
 ├── models/        SQLAlchemy tables
 ├── api/routes/    HTTP surface
@@ -109,6 +110,13 @@ database, and the finding detail page shows the arithmetic.
 **Remediation is verified by the scanner, not asserted by a human.** There is no
 "mark as fixed" button anywhere in the product, and the API refuses to set a
 finding to RESOLVED by hand.
+
+**Compliance is evidence, never a verdict.** The `/compliance` view maps rules
+to CIS Azure 2.0, ISO 27001, GDPR and NIST CSF controls — including the controls
+nothing checks, so coverage cannot read 100% by omission. A control whose rules
+returned UNKNOWN is *inconclusive*, not passing, and the headline figure counts
+conclusions rather than passes. "78% GDPR compliant" is a sentence this product
+must never produce.
 
 **CloudGuard's API never handles a password or a customer credential.** Sign-in
 is Supabase Auth — Microsoft (Entra ID), email and password, or a magic link.

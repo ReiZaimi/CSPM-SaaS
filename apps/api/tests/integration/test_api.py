@@ -270,6 +270,51 @@ class TestRuleCatalogue:
         assert rules["AZ-ID-002"]["scope"] == "aggregate"
 
 
+class TestCompliance:
+    async def test_frameworks_are_listed_with_coverage(
+        self, client, cleanup_orgs, rule_catalogue
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Compliant Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        body = (await client.get("/api/v1/compliance", headers=auth_header(user))).json()
+        frameworks = {f["id"]: f for f in body["data"]}
+        assert {"CIS_AZURE_2.0", "ISO_27001", "GDPR"} <= set(frameworks)
+        for framework in frameworks.values():
+            assert framework["control_count"] > 0
+            assert framework["url"].startswith("https://")
+
+    async def test_unscanned_org_claims_nothing(
+        self, client, cleanup_orgs, rule_catalogue
+    ) -> None:
+        """The important case. With no scan, every mapped control must read as
+        NOT_ASSESSED -- never as passing, and never as a coverage figure."""
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Unscanned Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        data = (
+            await client.get("/api/v1/compliance/GDPR", headers=auth_header(user))
+        ).json()["data"]
+
+        assert data["assessed"] is False
+        assert data["status_counts"]["PASSING"] == 0
+        assert data["coverage_ratio"] == 0.0
+        statuses = {c["status"] for c in data["controls"]}
+        assert statuses <= {"NOT_ASSESSED", "NOT_COVERED"}
+
+    async def test_unknown_framework_is_a_404(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Curious Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/compliance/SOC2", headers=auth_header(user)
+        )
+        assert response.status_code == 404
+
+
 class TestDashboard:
     async def test_empty_org_scores_100_with_no_coverage_claim(
         self, client, cleanup_orgs

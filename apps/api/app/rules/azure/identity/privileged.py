@@ -43,9 +43,10 @@ class AzurePrivilegedUserRule(SecurityRule):
         "recommends fewer than five) plus one break-glass account."
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
-        "CIS_AZURE_2.0": ["1.1.3", "1.21"],
+        "CIS_AZURE_2.0": ["1.21"],
         "ISO_27001": ["A.5.15", "A.5.18"],
         "NIST_CSF": ["PR.AC-4"],
+        "GDPR": ["25", "32(1)(b)"],
     }
 
     # Below this, "too many admins" is not a meaningful claim -- a two-person
