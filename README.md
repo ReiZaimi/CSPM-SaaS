@@ -54,7 +54,7 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    251 tests   pytest, ruff, mypy
+backend    259 tests   pytest, ruff, mypy
 frontend    37 tests   vitest, tsc
 ```
 

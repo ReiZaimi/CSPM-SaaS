@@ -65,6 +65,20 @@ def build_consent_url(state: str, tenant_hint: str = "organizations") -> str:
 
     ``/adminconsent`` grants the app's application permissions tenant-wide, so
     individual users never see a consent prompt.
+
+    ``scope`` is required on the **v2.0** admin-consent endpoint -- omitting it
+    is rejected with ``AADSTS900144`` before the admin sees anything to approve.
+    (The older v1 endpoint takes no scope, which is the source of most examples
+    that leave it out.)
+
+    The value is Graph's ``/.default``, which means "every application
+    permission already configured on this app registration" rather than a list
+    repeated here. That is deliberate: ``REQUIRED_GRAPH_PERMISSIONS`` documents
+    what the registration should hold, but the registration is the authority,
+    and a list duplicated in the URL could quietly disagree with it.
+
+    Only Graph is consented. ARM needs no consent at all -- subscription access
+    comes from the RBAC role assignment, which is the separate second grant.
     """
     # Checked here rather than left to Entra. A malformed redirect URI comes
     # back as AADSTS90013 on Microsoft's domain, after the administrator has
@@ -74,6 +88,7 @@ def build_consent_url(state: str, tenant_hint: str = "organizations") -> str:
         raise NotConfigured(problem)
     params = {
         "client_id": settings.azure_client_id,
+        "scope": GRAPH_SCOPE,
         "redirect_uri": settings.azure_redirect_uri,
         "state": state,
     }

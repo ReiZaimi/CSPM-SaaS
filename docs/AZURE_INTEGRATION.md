@@ -44,6 +44,12 @@ one reads customers' environments. Separate trust boundaries, separate apps.
    (`REQUIRED_GRAPH_PERMISSIONS`). Do **not** grant admin consent in your own
    tenant — each customer's administrator grants it in theirs.
 
+   The consent request asks for `https://graph.microsoft.com/.default`, which
+   means *whatever application permissions this registration holds*. So this
+   step is not merely documentation: a permission missing here is a permission
+   no customer will ever be asked to grant, and the rules that need it degrade
+   to UNKNOWN with nothing on the consent screen to explain why.
+
 3. **Certificates & secrets → New client secret.** Copy the *value*
    immediately; the portal will not show it again.
 
