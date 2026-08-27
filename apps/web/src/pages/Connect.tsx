@@ -187,6 +187,21 @@ function ConnectionCard({
         />
       </div>
 
+      {/* Not consented and no link to offer — the deployment cannot start a
+          consent flow. Previously this rendered nothing at all: a card with
+          three grey ticks and no explanation or button, which is the same
+          dead end whether the cause is fixable or not. */}
+      {connection.consent_status !== "GRANTED" && !connection.consent_url && (
+        <div className="mt-4 rounded-lg border border-high-border bg-high-bg px-4 py-3">
+          <p className="text-sm font-medium text-high">
+            {t.connection.cannotStartConsent}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+            {connection.status_detail}
+          </p>
+        </div>
+      )}
+
       {/* Consent step: not yet granted */}
       {connection.consent_status !== "GRANTED" && connection.consent_url && (
         <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">

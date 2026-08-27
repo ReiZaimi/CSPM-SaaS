@@ -235,3 +235,58 @@ async def test_an_unpublished_principal_says_to_wait(monkeypatch) -> None:
 async def test_a_successful_lookup_reports_no_problem(monkeypatch) -> None:
     problem = await resolve_with(monkeypatch, found={"id": "spn-object-id"})
     assert problem is None
+
+
+# --- the consent link must survive a page reload ---------------------------
+
+
+def test_consent_url_is_regenerated_not_stored(monkeypatch) -> None:
+    """The link was previously returned only from the create response.
+
+    A reload lost the button, leaving the connection in PENDING with no route
+    forward but deletion. The signed state also expires in 30 minutes, so a
+    stored one would usually be dead by the time an administrator looked.
+    """
+    from app.connectors.azure import auth
+    from app.core.config import Settings
+    from app.services.cloud_connections import consent_url_for
+
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            azure_client_id="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+            azure_client_secret="aBc7Q~exampleSecretValue.With-Punctuation_123",
+            azure_redirect_uri=(
+                "https://api.example.com/api/v1/cloud-connections/azure/consent/callback"
+            ),
+            azure_consent_state_secret="a-real-random-32-character-string-here",
+        ),
+    )
+    url, problem = consent_url_for(connection())
+    assert problem is None
+    assert url is not None and url.startswith("https://login.microsoftonline.com/")
+
+
+def test_a_misconfigured_deployment_returns_the_reason(monkeypatch) -> None:
+    """Not None-and-silence: without the reason the card renders empty."""
+    from app.connectors.azure import auth
+    from app.core.config import Settings
+    from app.services.cloud_connections import consent_url_for
+
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            azure_client_id="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+            # The Secret ID rather than the value.
+            azure_client_secret="1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901",
+            azure_redirect_uri=(
+                "https://api.example.com/api/v1/cloud-connections/azure/consent/callback"
+            ),
+            azure_consent_state_secret="a-real-random-32-character-string-here",
+        ),
+    )
+    url, problem = consent_url_for(connection())
+    assert url is None
+    assert problem is not None and "Secret ID" in problem

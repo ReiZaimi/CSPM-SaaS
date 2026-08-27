@@ -31,7 +31,7 @@ from app.core.enums import (
     ConnectionScope,
     ConsentStatus,
 )
-from app.core.errors import CloudAccountNotFound, ValidationFailed
+from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
 from app.core.logging import get_logger
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
@@ -77,11 +77,26 @@ async def create_connection(
     session.add(connection)
     await session.flush()
 
-    consent_url = _build_consent_url(connection)
+    consent_url, problem = consent_url_for(connection)
+    if problem:
+        connection.status_detail = problem
     return connection, consent_url
 
 
-def _build_consent_url(connection: CloudConnection) -> str | None:
+def consent_url_for(connection: CloudConnection) -> tuple[str | None, str | None]:
+    """A fresh consent link, or the reason there cannot be one.
+
+    Regenerated on every read rather than stored, for two reasons. The state is
+    signed with a 30-minute TTL, so a URL persisted at creation would be dead
+    long before most customers get their administrator's attention. And it used
+    to be returned *only* from the create response, which meant a page reload
+    lost the consent button entirely and stranded the connection in PENDING
+    with no way forward but deleting it.
+
+    The failure reason is returned rather than swallowed. A deployment whose
+    Entra credentials are wrong cannot produce this URL at all, and the
+    customer needs to see that instead of a card with nothing on it.
+    """
     try:
         state = sign_state(
             {
@@ -90,9 +105,14 @@ def _build_consent_url(connection: CloudConnection) -> str | None:
                 "issued_at": time.time(),
             }
         )
-        return build_consent_url(state)
-    except Exception:
-        return None
+        return build_consent_url(state), None
+    except NotConfigured as exc:
+        return None, str(exc)
+    except Exception as exc:  # pragma: no cover -- signing failure is unexpected
+        log.warning(
+            "azure.consent_url_failed", connection_id=str(connection.id), error=str(exc)
+        )
+        return None, f"Could not build a consent link: {exc}"
 
 
 # ---------------------------------------------------------------------------

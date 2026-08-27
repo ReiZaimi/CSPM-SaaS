@@ -114,6 +114,7 @@ export const en = {
     managementGroupId: "Management group id",
     subscriptionId: "Subscription id",
     create: "Continue",
+    cannotStartConsent: "CloudGuard cannot start the consent flow",
     cannotDeployYet: "CloudGuard cannot generate the deployment yet",
     whoYouNeed: "Who you will need",
     whoYouNeedDetail:

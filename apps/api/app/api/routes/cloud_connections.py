@@ -8,7 +8,7 @@ from app.connectors.azure.auth import ConsentStateError, verify_state
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.deps import DbSession, Tenant
-from app.core.enums import Role
+from app.core.enums import ConsentStatus, Role
 from app.core.errors import CloudAccountNotFound, envelope
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
@@ -34,6 +34,16 @@ def _serialize(
     data["scope_path"] = connection.scope_path
     data["subscription_count"] = subscription_count
     data["template_url"] = service.deploy_to_azure_url(connection)
+
+    # Regenerated on every read, not just on create. Returning it only from the
+    # create response meant a page reload lost the consent button and left the
+    # connection stuck in PENDING with no route forward. The signed state also
+    # expires in 30 minutes, so a stored one would usually be dead anyway.
+    if connection.consent_status != ConsentStatus.GRANTED:
+        fresh, problem = service.consent_url_for(connection)
+        consent_url = consent_url or fresh
+        if problem:
+            data["status_detail"] = problem
     if consent_url:
         data["consent_url"] = consent_url
     if subscriptions is not None:
