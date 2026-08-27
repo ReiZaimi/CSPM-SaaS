@@ -66,10 +66,12 @@ def build_consent_url(state: str, tenant_hint: str = "organizations") -> str:
     ``/adminconsent`` grants the app's application permissions tenant-wide, so
     individual users never see a consent prompt.
     """
-    if not settings.azure_configured:
-        raise NotConfigured(
-            "CloudGuard's Azure application identity is not configured on this server"
-        )
+    # Checked here rather than left to Entra. A malformed redirect URI comes
+    # back as AADSTS90013 on Microsoft's domain, after the administrator has
+    # already been sent away, naming neither the parameter nor the deployment.
+    problem = settings.azure_consent_problem
+    if problem:
+        raise NotConfigured(problem)
     params = {
         "client_id": settings.azure_client_id,
         "redirect_uri": settings.azure_redirect_uri,

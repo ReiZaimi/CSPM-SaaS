@@ -106,7 +106,9 @@ export function ConnectWizard({
 
       {options.isLoading && <Spinner />}
 
-      {options.data && !options.data.azure_configured && <NotConfiguredNote />}
+      {options.data && !options.data.azure_configured && (
+        <NotConfiguredNote detail={options.data.azure_problem} />
+      )}
 
       {step === 1 && options.data && (
         <ScopeStep options={options.data} onCreated={onCreated} />
@@ -403,7 +405,7 @@ function ConsentStep({ connection }: { connection: CloudConnection }) {
         {t.connection.whoYouNeedDetail}
       </p>
 
-      {!configured && <NotConfiguredNote />}
+      {!configured && <NotConfiguredNote detail={options.data?.azure_problem} />}
 
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => link.mutate()} disabled={link.isPending || !configured}>
@@ -669,12 +671,17 @@ function SubscriptionsStep({
  * runs CloudGuard. Presenting it as a failed action would send them looking
  * through their own Azure tenant for a cause that is not there.
  */
-function NotConfiguredNote() {
+function NotConfiguredNote({ detail }: { detail?: string | null }) {
   const t = useT();
   return (
     <div className="mb-4 rounded-lg border border-medium-border bg-medium-bg px-4 py-3">
       <p className="text-sm font-medium text-medium">{t.connection.notConfigured}</p>
-      <p className="mt-1 text-xs leading-relaxed text-stone-700">
+      {/* The server's own diagnosis when it has one — it names the variable at
+          fault, which a generic message cannot. */}
+      {detail && (
+        <p className="mt-1 font-mono text-xs leading-relaxed text-stone-700">{detail}</p>
+      )}
+      <p className="mt-2 text-xs leading-relaxed text-stone-700">
         {t.connection.notConfiguredDetail}
       </p>
     </div>

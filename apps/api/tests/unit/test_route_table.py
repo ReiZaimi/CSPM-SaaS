@@ -14,6 +14,7 @@ makes no sense. Nothing in the message pointed at routing.
 This checks every router rather than the one that had the bug.
 """
 
+from app.core.config import CONSENT_CALLBACK_PATH
 from app.main import app
 
 
@@ -61,3 +62,11 @@ def test_shadows_detects_the_bug_it_was_written_for() -> None:
     assert not shadows("/cloud-connections/artifact", "/cloud-connections/{id}")
     assert not shadows("/cloud-connections/{id}", "/cloud-connections/{id}/validate")
     assert not shadows("/a/{id}", "/b/literal")
+
+
+def test_the_consent_callback_path_is_actually_served() -> None:
+    """`CONSENT_CALLBACK_PATH` is what AZURE_REDIRECT_URI is validated against,
+    and what customers register with Entra. If the router moves and that
+    constant does not, the check passes a URI Entra will send to a 404 -- and
+    the failure lands after consent has already been granted."""
+    assert any(path == CONSENT_CALLBACK_PATH for path, _ in declared_routes())

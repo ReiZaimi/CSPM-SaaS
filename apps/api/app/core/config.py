@@ -19,6 +19,12 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# Where Entra must send the browser back. Declared here because the redirect
+# URI check below is the only thing that can catch a mismatch before a customer
+# is already standing on Microsoft's error page; tests/unit/test_route_table.py
+# asserts the API really does serve it.
+CONSENT_CALLBACK_PATH = "/api/v1/cloud-connections/azure/consent/callback"
+
 
 class ConfigurationError(RuntimeError):
     """Raised when the environment cannot support a running deployment."""
@@ -102,6 +108,54 @@ class Settings(BaseSettings):
         broken, just not yet able to scan.
         """
         return bool(self.azure_client_id and self.azure_client_secret)
+
+    @property
+    def azure_consent_problem(self) -> str | None:
+        """Why this deployment cannot start a consent flow, if it cannot.
+
+        Separate from ``azure_configured`` because having an app identity is
+        not the same as being able to use it. The redirect URI is checked here
+        rather than left to Entra, which rejects a malformed one with
+        ``AADSTS90013: Invalid input received from the user`` -- a message that
+        names neither the parameter nor the deployment, on Microsoft's domain,
+        after the administrator has already been sent away. The single most
+        common cause is a value pasted from the deployment guide with its
+        ``<your-railway-api-domain>`` placeholder still in it.
+        """
+        if not self.azure_configured:
+            return (
+                "The server has no Entra application identity. Set "
+                "AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
+                "(docs/AZURE_INTEGRATION.md 2.1)."
+            )
+
+        uri = self.azure_redirect_uri
+        if not uri:
+            return (
+                "AZURE_REDIRECT_URI is not set. It must match the redirect URI "
+                "registered on the Entra app exactly."
+            )
+        if "<" in uri or ">" in uri:
+            return (
+                f'AZURE_REDIRECT_URI still contains a placeholder ("{uri}"). '
+                "Replace it with this API's real public URL."
+            )
+        if not uri.startswith("https://"):
+            return (
+                f'AZURE_REDIRECT_URI is "{uri}", which is not an https:// URL. '
+                "Entra refuses any other scheme for a Web redirect."
+            )
+        if not uri.endswith(CONSENT_CALLBACK_PATH):
+            return (
+                f'AZURE_REDIRECT_URI is "{uri}", which does not end in '
+                f"{CONSENT_CALLBACK_PATH}. Consent will return to a path this "
+                "API does not serve."
+            )
+        return None
+
+    @property
+    def azure_consent_ready(self) -> bool:
+        return self.azure_consent_problem is None
 
     def config_problems(self) -> list[str]:
         """Everything wrong with this environment, in plain language.
@@ -188,6 +242,12 @@ class Settings(BaseSettings):
                 "frontend's URL."
             )
 
+        # Only the *missing* case is fatal, as it always has been: an Azure
+        # identity with no redirect URI is an incomplete deployment. A malformed
+        # one is reported through `azure_consent_problem` and surfaced in the
+        # connection wizard instead -- it breaks consent and nothing else, and
+        # refusing to boot over it would cost a customer their whole dashboard
+        # to fix one button.
         if self.azure_configured and not self.azure_redirect_uri:
             problems.append(
                 "AZURE_REDIRECT_URI is not set while an Azure app identity is "

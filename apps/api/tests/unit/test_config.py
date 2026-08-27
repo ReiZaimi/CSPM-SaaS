@@ -11,7 +11,7 @@ integration suite) cannot mask a missing-value assertion.
 
 import pytest
 
-from app.core.config import ConfigurationError, Settings
+from app.core.config import CONSENT_CALLBACK_PATH, ConfigurationError, Settings
 
 ENV_VARS = [
     "APP_ENV", "APP_URL", "API_URL", "LOG_LEVEL",
@@ -230,3 +230,53 @@ class TestEnvironmentParsing:
         assert settings.config_problems() == []
         assert settings.app_env == "production"
         assert settings.database_url.startswith("postgresql+asyncpg://cloudguard_app:")
+
+
+class TestAzureConsentReadiness:
+    """The redirect URI is checked here so a customer never meets AADSTS90013.
+
+    Entra rejects a malformed redirect_uri with "Invalid input received from
+    the user" -- on Microsoft's domain, naming neither the parameter nor the
+    deployment, after the administrator has already been sent away. Every case
+    below produced exactly that, indistinguishably.
+    """
+
+    def azure(self, uri: str) -> Settings:
+        return settings_with(
+            azure_client_id="app-id",
+            azure_client_secret="secret",
+            azure_redirect_uri=uri,
+        )
+
+    def test_a_correct_redirect_uri_is_ready(self) -> None:
+        s = self.azure(f"https://api.example.com{CONSENT_CALLBACK_PATH}")
+        assert s.azure_consent_problem is None
+        assert s.azure_consent_ready is True
+
+    def test_an_unsubstituted_placeholder_is_caught(self) -> None:
+        """The most common failure: the deployment guide's own example, pasted
+        with `<your-railway-api-domain>` left in it."""
+        s = self.azure(f"https://<your-railway-api-domain>{CONSENT_CALLBACK_PATH}")
+        assert "placeholder" in (s.azure_consent_problem or "")
+
+    def test_a_non_https_uri_is_caught(self) -> None:
+        s = self.azure(f"http://api.example.com{CONSENT_CALLBACK_PATH}")
+        assert "https://" in (s.azure_consent_problem or "")
+
+    def test_the_pre_connections_callback_path_is_caught(self) -> None:
+        """The path moved when connections replaced per-subscription accounts.
+        A deployment still on the old value would fail only at consent time."""
+        s = self.azure(
+            "https://api.example.com/api/v1/cloud-accounts/azure/consent/callback"
+        )
+        assert CONSENT_CALLBACK_PATH in (s.azure_consent_problem or "")
+
+    def test_a_missing_identity_is_reported_before_the_uri(self) -> None:
+        assert "AZURE_CLIENT_ID" in (settings_with().azure_consent_problem or "")
+
+    def test_a_malformed_uri_does_not_stop_the_api_booting(self) -> None:
+        """It breaks consent and nothing else. Refusing to boot would cost a
+        customer their dashboard to fix one button."""
+        s = self.azure(f"https://<placeholder>{CONSENT_CALLBACK_PATH}")
+        assert s.azure_consent_problem is not None
+        assert not [p for p in s.config_problems() if "AZURE_REDIRECT_URI" in p]

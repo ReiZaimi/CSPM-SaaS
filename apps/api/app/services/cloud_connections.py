@@ -240,10 +240,8 @@ async def validate_connection(
             "Complete the consent step first."
         )
 
-    if not settings.azure_configured:
-        raise NotConfigured(
-            "CloudGuard's Azure application identity is not configured on this server"
-        )
+    if problem := settings.azure_consent_problem:
+        raise NotConfigured(problem)
 
     if not connection.service_principal_object_id:
         await _resolve_service_principal(connection)
@@ -454,7 +452,10 @@ def connection_options() -> dict:
         # named a connection and chosen a scope has already spent the attention
         # this screen was asking for, and telling them then is telling them too
         # late. It is also not their problem to fix.
-        "azure_configured": settings.azure_configured,
+        "azure_configured": settings.azure_consent_ready,
+        # The specific reason, so the wizard can name the variable at fault
+        # instead of repeating a generic "not set up yet".
+        "azure_problem": settings.azure_consent_problem,
         "scopes": [
             {
                 "value": ConnectionScope.TENANT_ROOT.value,
