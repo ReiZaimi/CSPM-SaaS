@@ -58,7 +58,8 @@ npm test                         # vitest run
 ## Code Style
 
 - **Python**: Ruff (line-length 100, py312, rules E/F/W/I/N/UP/B/C4/SIM/RUF). MyPy strict with `disallow_untyped_defs`. B008 ignored (FastAPI `Depends()`). N818 ignored (domain errors named `NotFound`/`PermissionDenied`).
-- **TypeScript**: Strict mode, path alias `@/` → `./src/`. React 18, Tailwind 3, shadcn/ui components.
+- **TypeScript**: Strict mode, path alias `@/` → `./src/`. React 18 SPA on Vite — not Next.js, no SSR, no server components; the build is static and Vercel serves it. React Router for routing, TanStack Query for server state.
+- **UI**: Tailwind 3 is the styling layer, with severity/status color tokens defined in `apps/web/tailwind.config.js` — use the tokens, not raw hex. Primitives (badge, card, button, field, empty state) are hand-written in shadcn/ui style in `src/components/ui.tsx` using Tailwind + `clsx` + `tailwind-merge`; there is no shadcn CLI, no `components.json`, and no Radix dependency (DECISIONS.md §12). Add new primitives there in the same style. Copying a real shadcn/ui component in is fine when one earns it — it is source, not a runtime dependency. Charts: Recharts for anything with axes, series, or tooltips; hand-written SVG for one-off visuals like `ScoreRing`. Do not introduce a second UI or chart kit (Tremor, MUI, Chakra) — Tremor in particular ships its own Tailwind token layer that would collide with the severity tokens; a swap needs an entry in `docs/DECISIONS.md` first.
 - **Tests**: pytest with `asyncio_mode = "auto"`. `@pytest.mark.integration` for tests requiring live PostgreSQL. Frontend uses vitest + testing-library.
 
 ## Deployment
