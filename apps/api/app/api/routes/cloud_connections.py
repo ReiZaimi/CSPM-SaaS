@@ -46,6 +46,83 @@ async def connection_options(tenant: Tenant) -> dict:
     return envelope(service.connection_options())
 
 
+# Literal paths are declared before the parameterised ones below. FastAPI
+# matches routes in declaration order, so `/{connection_id}` would otherwise
+# swallow `/artifact` -- and because that route carries the tenant dependency,
+# the symptom is a 401 on a URL that is deliberately unauthenticated, from a
+# customer's shell, with nothing in it that looks like an auth problem.
+
+
+@router.get("/artifact", include_in_schema=False)
+async def artifact(
+    token: str = Query(default=""), format: str = Query(default="cli")
+) -> PlainTextResponse:
+    """Serve one deployment artifact.
+
+    Unauthenticated by necessity: the customer's shell or IaC tooling fetches
+    this, not the CloudGuard frontend. The signed token is what makes that safe,
+    and nothing served here is secret -- it names a service principal the
+    customer's own directory lists and a set of read permissions they are about
+    to review.
+    """
+    try:
+        payload = verify_state(token, max_age_seconds=service.ARTIFACT_TTL_SECONDS)
+    except ConsentStateError as exc:
+        return PlainTextResponse(f"# {exc}\n", status_code=400)
+
+    if payload.get("purpose") != "artifact":
+        return PlainTextResponse("# Invalid artifact token\n", status_code=400)
+
+    connection_id = UUID(payload["cloud_connection_id"])
+    async with service_session() as session:
+        connection = await session.get(CloudConnection, connection_id)
+        if connection is None:
+            raise CloudAccountNotFound("Connection not found")
+        content_type, filename, body = service.render_artifact(connection, format)
+
+    return PlainTextResponse(
+        body,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@router.get("/azure/consent/callback", include_in_schema=False)
+async def consent_callback(
+    state: str = Query(default=""),
+    tenant: str = Query(default=""),
+    admin_consent: str = Query(default=""),
+    error: str = Query(default=""),
+    error_description: str = Query(default=""),
+) -> RedirectResponse:
+    """Entra redirects the customer's browser here after admin consent.
+
+    Unauthenticated by necessity -- Entra sends the browser, not our frontend.
+    The signed ``state`` is what makes it trustworthy: it is the only reason
+    this endpoint can believe which connection it is being told about. The
+    ``tenant`` parameter is Entra's own statement of which directory consented,
+    and it is the sole source of a connection's tenant id.
+    """
+    frontend = f"{settings.app_url}/connect/result"
+
+    if error:
+        return RedirectResponse(f"{frontend}?status=error&message={error_description or error}")
+
+    try:
+        payload = verify_state(state)
+    except ConsentStateError as exc:
+        return RedirectResponse(f"{frontend}?status=error&message={exc}")
+
+    if admin_consent.lower() not in {"true", "1", ""}:
+        return RedirectResponse(f"{frontend}?status=error&message=Admin+consent+was+not+granted")
+
+    connection_id = UUID(payload["cloud_connection_id"])
+    async with service_session() as session:
+        await service.record_consent(session, connection_id, tenant, None)
+
+    return RedirectResponse(f"{frontend}?status=granted&cloud_connection_id={connection_id}")
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_connection(
     payload: CloudConnectionCreate, session: DbSession, tenant: Tenant
@@ -143,86 +220,8 @@ async def artifact_links(
     )
 
 
-@router.get("/artifact", include_in_schema=False)
-async def artifact(
-    token: str = Query(default=""), format: str = Query(default="cli")
-) -> PlainTextResponse:
-    """Serve one deployment artifact.
-
-    Unauthenticated by necessity: the customer's shell or IaC tooling fetches
-    this, not the CloudGuard frontend. The signed token is what makes that safe,
-    and nothing served here is secret -- it names a service principal the
-    customer's own directory lists and a set of read permissions they are about
-    to review.
-    """
-    try:
-        payload = verify_state(token, max_age_seconds=service.ARTIFACT_TTL_SECONDS)
-    except ConsentStateError as exc:
-        return PlainTextResponse(f"# {exc}\n", status_code=400)
-
-    if payload.get("purpose") != "artifact":
-        return PlainTextResponse("# Invalid artifact token\n", status_code=400)
-
-    connection_id = UUID(payload["cloud_connection_id"])
-    async with service_session() as session:
-        connection = await session.get(CloudConnection, connection_id)
-        if connection is None:
-            raise CloudAccountNotFound("Connection not found")
-        content_type, filename, body = service.render_artifact(connection, format)
-
-    return PlainTextResponse(
-        body,
-        media_type=content_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
-
-
-@router.get("/azure/consent/callback", include_in_schema=False)
-async def consent_callback(
-    state: str = Query(default=""),
-    tenant: str = Query(default=""),
-    admin_consent: str = Query(default=""),
-    error: str = Query(default=""),
-    error_description: str = Query(default=""),
-) -> RedirectResponse:
-    """Entra redirects the customer's browser here after admin consent.
-
-    Unauthenticated by necessity -- Entra sends the browser, not our frontend.
-    The signed ``state`` is what makes it trustworthy: it is the only reason
-    this endpoint can believe which connection it is being told about. The
-    ``tenant`` parameter is Entra's own statement of which directory consented,
-    and it is the sole source of a connection's tenant id.
-    """
-    frontend = f"{settings.app_url}/connect/result"
-
-    if error:
-        return RedirectResponse(
-            f"{frontend}?status=error&message={error_description or error}"
-        )
-
-    try:
-        payload = verify_state(state)
-    except ConsentStateError as exc:
-        return RedirectResponse(f"{frontend}?status=error&message={exc}")
-
-    if admin_consent.lower() not in {"true", "1", ""}:
-        return RedirectResponse(
-            f"{frontend}?status=error&message=Admin+consent+was+not+granted"
-        )
-
-    connection_id = UUID(payload["cloud_connection_id"])
-    async with service_session() as session:
-        await service.record_consent(session, connection_id, tenant, None)
-
-    return RedirectResponse(
-        f"{frontend}?status=granted&cloud_connection_id={connection_id}"
-    )
-
-
 @router.post("/{connection_id}/validate")
-async def validate_connection(
-    connection_id: UUID, session: DbSession, tenant: Tenant
-) -> dict:
+async def validate_connection(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     """Verify both grants by actually calling Azure."""
     tenant.require_write()
     check = await service.validate_connection(session, tenant, connection_id)
@@ -246,9 +245,7 @@ async def discover(connection_id: UUID, session: DbSession, tenant: Tenant) -> d
 
 
 @router.get("/{connection_id}/subscriptions")
-async def list_subscriptions(
-    connection_id: UUID, session: DbSession, tenant: Tenant
-) -> dict:
+async def list_subscriptions(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     connection = await service.get_connection(session, tenant, connection_id)
     rows = (
         (
@@ -277,9 +274,7 @@ async def set_scope(
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_200_OK)
-async def delete_connection(
-    connection_id: UUID, session: DbSession, tenant: Tenant
-) -> dict:
+async def delete_connection(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     tenant.require_role(Role.OWNER, Role.ADMIN)
     connection = await service.get_connection(session, tenant, connection_id)
     await session.delete(connection)

@@ -289,10 +289,17 @@ class TestCloudConnections:
         assert artifact.status_code == 422
 
     async def test_artifact_token_must_be_signed(self, client) -> None:
+        """Also guards route ordering.
+
+        This path is unauthenticated by design -- a customer's Cloud Shell
+        fetches it. Declared after `/{connection_id}` it gets swallowed by that
+        route instead, and the symptom is a 401 from a shell session, on a URL
+        that never had a session to begin with.
+        """
         response = await client.get(
             "/api/v1/cloud-connections/artifact?token=forged.deadbeef&format=cli"
         )
-        assert response.status_code == 400
+        assert response.status_code == 400, "route shadowed, or signature check skipped"
 
     async def test_a_user_cannot_read_another_orgs_connection(
         self, client, cleanup_orgs
