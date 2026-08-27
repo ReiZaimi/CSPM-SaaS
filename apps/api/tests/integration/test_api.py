@@ -257,6 +257,9 @@ class TestCloudConnections:
             "SUBSCRIPTION",
         }
         assert {m["value"] for m in data["permission_modes"]} == {"READER", "CUSTOM_ROLE"}
+        # Whether consent can start at all is reported here, so the wizard can
+        # say so before a customer picks a scope rather than at the button.
+        assert data["azure_configured"] is False  # CI registers no Entra app
         # The custom role's actions are published, not summarised.
         assert data["arm_actions"]
         assert all(action.endswith("/read") for action in data["arm_actions"])

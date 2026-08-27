@@ -260,6 +260,8 @@ export interface ConnectionChoice {
 }
 
 export interface ConnectionOptions {
+  /** False when this deployment has no Entra app identity — consent cannot start. */
+  azure_configured: boolean;
   scopes: ConnectionChoice[];
   permission_modes: ConnectionChoice[];
   formats: string[];

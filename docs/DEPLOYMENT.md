@@ -186,12 +186,16 @@ Node installed on your machine.
    AZURE_CONSENT_STATE_SECRET=<random 32+ char string>
 
    # Optional until you register CloudGuard's own multi-tenant Entra app —
-   # see AZURE_INTEGRATION.md §2. Leave blank until then; the app runs fine
-   # without a connected Azure tenant, it just can't run a real scan.
+   # see AZURE_INTEGRATION.md §2.1 for the registration steps. Leave blank
+   # until then; the app runs fine without a connected Azure tenant, it just
+   # cannot start a consent flow, and the connection wizard says so.
+   #
+   # AZURE_REDIRECT_URI must match the value registered on the Entra app
+   # character for character, including the path below.
    AZURE_CLIENT_ID=
    AZURE_CLIENT_SECRET=
    AZURE_TENANT_ID=
-   AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-accounts/azure/consent/callback
+   AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-connections/azure/consent/callback
 
    SENTRY_DSN=
    ```
@@ -377,9 +381,10 @@ Then open the Vercel URL, sign in with your real email (check your inbox for
 the magic link — Supabase's default email provider is rate-limited and fine
 for testing, not for real traffic), create an organization, and go to
 **Connections**. Scanning a real Azure environment additionally needs the
-Entra app registration from `AZURE_INTEGRATION.md` §2 — that's a separate
-setup, not a hosting one, and the app works fully up through the Connections
-screen without it.
+Entra app registration in `AZURE_INTEGRATION.md` §2.1 — that's a separate
+setup, not a hosting one. Without it the app works fully up to the point of
+starting a consent flow, and the connection wizard tells you so rather than
+failing at the button.
 
 ### Seeing the product loop before Azure is registered
 

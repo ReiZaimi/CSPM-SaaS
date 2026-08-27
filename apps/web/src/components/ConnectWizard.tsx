@@ -84,6 +84,8 @@ export function ConnectWizard({
 
       {options.isLoading && <Spinner />}
 
+      {options.data && !options.data.azure_configured && <NotConfiguredNote />}
+
       {step === 1 && options.data && (
         <ScopeStep options={options.data} onCreated={onCreated} />
       )}
@@ -307,6 +309,13 @@ function ConsentStep({ connection }: { connection: CloudConnection }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const options = useQuery({
+    queryKey: ["connection-options"],
+    queryFn: () =>
+      api.get<ConnectionOptions>("/api/v1/cloud-connections/options").then((r) => r.data),
+  });
+  const configured = options.data?.azure_configured ?? true;
+
   const link = useMutation({
     mutationFn: () =>
       api.post<{ consent_url: string; expires_in_seconds: number }>(
@@ -328,8 +337,10 @@ function ConsentStep({ connection }: { connection: CloudConnection }) {
         {t.connection.whoYouNeedDetail}
       </p>
 
+      {!configured && <NotConfiguredNote />}
+
       <div className="flex flex-wrap gap-2">
-        <Button onClick={() => link.mutate()} disabled={link.isPending}>
+        <Button onClick={() => link.mutate()} disabled={link.isPending || !configured}>
           {t.connection.openConsent}
         </Button>
         {url && <CopyButton text={url} label={t.connection.copyConsentLink} />}
@@ -339,7 +350,9 @@ function ConsentStep({ connection }: { connection: CloudConnection }) {
 
       {error && <ErrorNote message={error} />}
 
-      <WaitingNote text={t.connection.waitingForConsent} />
+      {/* Nothing is going to arrive while the server cannot start a consent
+          flow, so a spinner would be claiming progress that is not happening. */}
+      {configured && <WaitingNote text={t.connection.waitingForConsent} />}
     </div>
   );
 }
@@ -581,6 +594,26 @@ function SubscriptionsStep({
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A server-side gap, said plainly.
+ *
+ * Distinct from an ErrorNote because nothing the customer does will clear it:
+ * this deployment has no Entra app identity, and the fix belongs to whoever
+ * runs CloudGuard. Presenting it as a failed action would send them looking
+ * through their own Azure tenant for a cause that is not there.
+ */
+function NotConfiguredNote() {
+  const t = useT();
+  return (
+    <div className="mb-4 rounded-lg border border-medium-border bg-medium-bg px-4 py-3">
+      <p className="text-sm font-medium text-medium">{t.connection.notConfigured}</p>
+      <p className="mt-1 text-xs leading-relaxed text-stone-700">
+        {t.connection.notConfiguredDetail}
+      </p>
+    </div>
+  );
+}
 
 function WaitingNote({ text }: { text: string }) {
   return (

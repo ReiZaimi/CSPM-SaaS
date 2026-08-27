@@ -449,6 +449,12 @@ def connection_options() -> dict:
     from app.connectors.azure.rbac import ARM_READ_ACTIONS
 
     return {
+        # Whether this deployment can actually start a consent flow. Reported
+        # up front rather than discovered on the button: a customer who has
+        # named a connection and chosen a scope has already spent the attention
+        # this screen was asking for, and telling them then is telling them too
+        # late. It is also not their problem to fix.
+        "azure_configured": settings.azure_configured,
         "scopes": [
             {
                 "value": ConnectionScope.TENANT_ROOT.value,
