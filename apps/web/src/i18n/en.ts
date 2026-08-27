@@ -23,6 +23,16 @@ export const en = {
     compliance: "Compliance",
     signOut: "Sign out",
   },
+  account: {
+    menu: "Account menu",
+    signedInAs: "Signed in as",
+    organization: "Organization",
+    switchTo: "Switch to",
+    currentOrg: "Current organization",
+    newOrganization: "Create organization",
+    settings: "Cloud connections",
+    unknownUser: "Signed in",
+  },
   auth: {
     signIn: "Sign in",
     signUp: "Create your account",
