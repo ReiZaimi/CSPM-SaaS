@@ -29,3 +29,6 @@ apps/web/.vite/
 .idea/
 .vscode/
 temp/
+
+# Brainstorming companion (local only)
+.superpowers/
