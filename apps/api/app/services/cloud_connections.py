@@ -659,9 +659,58 @@ async def _auto_discover(
             account.status = CloudAccountStatus.DISABLED
             account.status_detail = "No longer visible to this connection"
 
-    connection.last_discovery_at = now
+    # Only stamped when something was actually found. ``try_auto_validate``
+    # treats this column as "discovery is done", so latching it on an empty
+    # result freezes the connection with no subscriptions for good. An empty
+    # listing right after a role deployment is not an answer -- ARM's
+    # subscription list is eventually consistent and takes minutes to catch up
+    # with a fresh assignment.
+    if accounts:
+        connection.last_discovery_at = now
+    else:
+        log.warning(
+            "azure.discovery_found_nothing",
+            connection_id=str(connection.id),
+            tenant_id=connection.tenant_id,
+        )
     await commit_unless_externally_managed(session)
     return accounts
+
+
+async def rediscover_subscriptions(
+    session: AsyncSession, tenant: TenantContext, connection_id: UUID
+) -> tuple[CloudConnection, list[CloudAccount]]:
+    """Run discovery again on demand, ignoring whether it has run before.
+
+    The escape hatch that was missing. Discovery otherwise happens only inside
+    ``try_auto_validate``, which runs only while the connections page is
+    polling -- and the page stops polling the moment a connection reports
+    itself verified. Verification and discovery are two ARM calls, so a single
+    transient failure on the second one left a connection permanently verified
+    with nothing beneath it and no way back short of editing the database.
+
+    Safe to call repeatedly: discovery matches on subscription id, so an
+    existing row is updated rather than duplicated, and a subscription the
+    customer excluded stays excluded.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if not connection.is_verified:
+        raise ValidationFailed(
+            "This connection is not verified yet, so there is nothing to "
+            "discover with. Grant admin consent and deploy the scanner role "
+            "first."
+        )
+
+    accounts = await _auto_discover(session, connection)
+    if not accounts:
+        raise ValidationFailed(
+            "CloudGuard could not see any subscriptions with this connection. "
+            "Check that the scanner role is assigned at the scope you deployed "
+            "it to, and that the subscriptions sit beneath it. A role assigned "
+            "moments ago can take a few minutes to appear."
+        )
+    return connection, accounts
 
 
 # ---------------------------------------------------------------------------

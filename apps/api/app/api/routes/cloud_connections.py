@@ -46,6 +46,14 @@ def _serialize(
     # plausible explanation for the silence.
     data["deploy_stalled"] = service.deploy_stalled(connection)
     data["role_upgrade_available"] = service.role_upgrade_available(connection)
+    # Both grants proven is not the same as having something to scan, and the
+    # card said "Ready to scan: Yes" over an empty connection because it read
+    # ``is_verified``. Readiness needs a subscription CloudGuard can actually
+    # look at. Only meaningful when the caller passed the subscriptions in;
+    # endpoints that do not are reporting on a connection mid-setup.
+    data["is_ready_to_scan"] = connection.is_verified and any(
+        a.is_scannable for a in (subscriptions or [])
+    )
 
     # Regenerated on every read, not just on create. Returning it only from the
     # create response meant a page reload lost the consent button and left the
@@ -203,6 +211,22 @@ async def get_connection(connection_id: UUID, session: DbSession, tenant: Tenant
         _, subscriptions = await service.get_connection_with_subscriptions(
             session, tenant, connection_id
         )
+    return envelope(_serialize(connection, len(subscriptions), subscriptions))
+
+
+@router.post("/{connection_id}/discover")
+async def rediscover(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Look for subscriptions again.
+
+    Discovery normally runs by itself, once, while the connections page polls.
+    That leaves no way back from the case where verification succeeded and the
+    discovery call immediately after it did not: the page stops polling a
+    verified connection, so nothing ever asks again. This is the ask-again.
+    """
+    tenant.require_write()
+    connection, subscriptions = await service.rediscover_subscriptions(
+        session, tenant, connection_id
+    )
     return envelope(_serialize(connection, len(subscriptions), subscriptions))
 
 

@@ -238,6 +238,7 @@ export interface CloudConnection {
   last_discovery_at: string | null;
   created_at: string;
   is_verified: boolean;
+  is_ready_to_scan: boolean;
   subscription_count: number;
   subscriptions: DiscoveredSubscription[];
   consent_url: string | null;

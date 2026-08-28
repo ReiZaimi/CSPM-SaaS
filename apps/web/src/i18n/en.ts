@@ -125,6 +125,11 @@ export const en = {
     resumeSetup: "Resume setup",
     setupCancelled: "Setup cancelled",
     readyToScan: "Ready to scan",
+    noSubscriptionsTitle: "No subscriptions found yet",
+    noSubscriptionsBody:
+      "Both grants are working, but CloudGuard cannot see any subscription to scan. A role assigned moments ago can take a few minutes to show up, and a role deployed to the wrong scope will never show up at all.",
+    lookAgain: "Look for subscriptions again",
+    lookingAgain: "Looking…",
     runFirstScan: "Run a scan",
     noSubscriptionsYet: "No subscriptions discovered yet",
     noSubscriptionsYetHelp:

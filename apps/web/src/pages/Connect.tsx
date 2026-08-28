@@ -125,13 +125,29 @@ function ConnectionCard({
         .get<CloudConnection>(`/api/v1/cloud-connections/${initial.id}`)
         .then((r) => r.data),
     initialData: initial,
-    refetchInterval: (query) => (query.state.data?.is_verified ? false : 5000),
+    // Polls until the connection can actually be scanned, not merely until
+    // both grants work. Discovery runs server-side inside this same request,
+    // so stopping at is_verified stopped the only thing that would ever find
+    // a subscription -- one transient failure and the connection sat verified
+    // and empty forever.
+    refetchInterval: (query) => (query.state.data?.is_ready_to_scan ? false : 5000),
     refetchIntervalInBackground: true,
   });
 
   const connection = detail.data ?? initial;
   const subscriptions = connection.subscriptions ?? [];
   const scoped = subscriptions.filter((s) => s.in_scope);
+
+  const rediscover = useMutation({
+    mutationFn: () =>
+      api.post(`/api/v1/cloud-connections/${connection.id}/discover`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cloud-connection", connection.id] });
+      queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
+    },
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : "Could not look for subscriptions"),
+  });
 
   const saveScope = useMutation({
     mutationFn: () =>
@@ -201,8 +217,8 @@ function ConnectionCard({
         />
         <Signal
           label={t.connection.readySignal}
-          ok={connection.is_verified}
-          detail={connection.is_verified ? t.connection.yes : t.connection.notYet}
+          ok={connection.is_ready_to_scan}
+          detail={connection.is_ready_to_scan ? t.connection.yes : t.connection.notYet}
         />
       </div>
 
@@ -285,6 +301,27 @@ function ConnectionCard({
             </p>
           </div>
         )}
+
+      {/* Verified with nothing beneath it. Previously this rendered nothing:
+          three green ticks, "Ready to scan: Yes", and an empty card. */}
+      {connection.is_verified && subscriptions.length === 0 && (
+        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+          <p className="text-sm font-medium text-stone-900">
+            {t.connection.noSubscriptionsTitle}
+          </p>
+          <p className="mt-1 text-sm text-stone-600">{t.connection.noSubscriptionsBody}</p>
+          <Button
+            className="mt-3"
+            variant="secondary"
+            disabled={rediscover.isPending}
+            onClick={() => rediscover.mutate()}
+          >
+            {rediscover.isPending
+              ? t.connection.lookingAgain
+              : t.connection.lookAgain}
+          </Button>
+        </div>
+      )}
 
       {/* Verified: show subscriptions */}
       {connection.is_verified && subscriptions.length > 0 && (

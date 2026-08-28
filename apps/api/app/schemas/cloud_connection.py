@@ -60,6 +60,10 @@ class CloudConnectionOut(BaseModel):
     # until the customer redeploys, so this drives a prompt rather than leaving
     # them to wonder why a rule reports UNKNOWN.
     role_upgrade_available: bool = False
+    # Verified *and* holding at least one subscription that can be scanned.
+    # ``is_verified`` alone says both grants work, which is true of a connection
+    # with nothing beneath it.
+    is_ready_to_scan: bool = False
 
 
 class DiscoveredSubscription(BaseModel):
