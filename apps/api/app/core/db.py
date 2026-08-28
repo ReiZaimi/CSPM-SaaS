@@ -94,6 +94,31 @@ async def dispose_engines() -> None:
         await engine.dispose()
 
 
+# Set on sessions whose transaction is owned by the context manager that
+# created them, rather than by the code using them.
+EXTERNAL_TRANSACTION = "externally_managed_transaction"
+
+
+async def commit_unless_externally_managed(session: AsyncSession) -> None:
+    """Commit, unless someone else owns this transaction.
+
+    Two session contracts exist and service code is reachable from both.
+    ``rls_session`` wraps a whole request in ``session.begin()``, so it commits
+    on exit; ``service_session`` hands out a plain session that its caller must
+    commit itself.
+
+    Committing inside ``rls_session`` is not merely redundant, it is wrong
+    twice over. Everything afterwards fails with "Can't operate on closed
+    transaction inside context manager" -- and more quietly, ``SET LOCAL ROLE
+    authenticated`` and the JWT claims are transaction-scoped, so a commit tears
+    down the very settings RLS depends on. Any statement that did run after one
+    would run without them.
+    """
+    if session.info.get(EXTERNAL_TRANSACTION):
+        return
+    await session.commit()
+
+
 @asynccontextmanager
 async def rls_session(user_id: UUID | str) -> AsyncIterator[AsyncSession]:
     """A session that PostgreSQL itself will constrain to ``user_id``'s tenants.
@@ -104,6 +129,10 @@ async def rls_session(user_id: UUID | str) -> AsyncIterator[AsyncSession]:
     """
     claims = json.dumps({"sub": str(user_id), "role": "authenticated"})
     session = _app_session_factory()()
+    # Marks the transaction as this context manager's to finish. Service code
+    # is called from here *and* from `service_session`, and cannot otherwise
+    # tell which -- see `commit_unless_externally_managed`.
+    session.info[EXTERNAL_TRANSACTION] = True
     try:
         async with session.begin():
             await session.execute(

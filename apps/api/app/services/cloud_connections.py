@@ -31,6 +31,7 @@ from app.connectors.azure.rbac import (
 )
 from app.connectors.base import ConnectionCheck
 from app.core.config import settings
+from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
 from app.core.enums import (
     CloudAccountStatus,
@@ -245,7 +246,7 @@ async def record_consent(
         if problem and not connection.service_principal_object_id:
             connection.status_detail = problem
 
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return connection
 
 
@@ -272,7 +273,7 @@ async def ensure_service_principal(
     problem = await _resolve_service_principal(connection)
     if connection.service_principal_object_id:
         connection.status_detail = READY_TO_DEPLOY
-        await session.commit()
+        await commit_unless_externally_managed(session)
         return True
 
     # Committed so it survives the request and reaches the card. Without this
@@ -280,7 +281,7 @@ async def ensure_service_principal(
     # under a spinner, while the thing that would let anyone deploy had failed.
     if problem:
         connection.status_detail = problem
-        await session.commit()
+        await commit_unless_externally_managed(session)
     return False
 
 
@@ -496,14 +497,14 @@ async def try_auto_validate(
             connection.status = CloudAccountStatus.ACTIVE
             connection.rbac_verified_at = datetime.now(UTC)
             connection.status_detail = "Connection verified."
-            await session.commit()
+            await commit_unless_externally_managed(session)
         elif deploy_stalled(connection):
             # Committed so the message survives the request. Status is left
             # alone: nothing here is known to be broken, and marking a
             # connection ERROR because a colleague is slow would be a lie.
             if connection.status_detail != DEPLOY_STALLED_DETAIL:
                 connection.status_detail = DEPLOY_STALLED_DETAIL
-                await session.commit()
+                await commit_unless_externally_managed(session)
 
     # Auto-discover subscriptions once validated
     if connection.rbac_verified_at and not connection.last_discovery_at:
@@ -619,7 +620,7 @@ async def _auto_discover(
             account.status_detail = "No longer visible to this connection"
 
     connection.last_discovery_at = now
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return accounts
 
 
@@ -651,7 +652,7 @@ async def set_subscription_scope(
                 else CloudAccountStatus.DISABLED
             )
 
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return accounts
 
 
@@ -712,7 +713,7 @@ async def set_setup_cancelled(
             else "Grant admin consent to continue."
         )
 
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return connection
 
 

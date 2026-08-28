@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
 from app.core.enums import ExceptionStatus, FindingStatus, RiskStatus
 from app.core.errors import FindingNotFound, ValidationFailed
@@ -115,7 +116,7 @@ async def accept_risk(
         resource_id=finding.id,
         metadata={"reason": reason, "rule_id": finding.rule_id},
     )
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return finding
 
 
@@ -145,7 +146,7 @@ async def set_status(
         resource_id=finding.id,
         metadata={"status": status.value, "rule_id": finding.rule_id},
     )
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return finding
 
 

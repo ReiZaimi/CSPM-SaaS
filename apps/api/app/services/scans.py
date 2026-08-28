@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
 from app.core.enums import FindingStatus
 from app.core.errors import ScanNotFound
@@ -144,5 +145,5 @@ async def delete_scan(
             purged += 1
 
     await session.delete(scan)
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return {"deleted": str(scan_id), "findings_purged": purged}
