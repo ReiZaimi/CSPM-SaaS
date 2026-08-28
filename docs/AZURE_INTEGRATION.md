@@ -149,6 +149,32 @@ The way through is a member account in that tenant, usually
 Entra ID → Users → New user, assign the role, sign in as that account, and
 consent again.
 
+### Deploying the role needs rights at the scope, not below it
+
+The scanner role is deployed by the customer, and the commonest failure is
+choosing a scope they cannot deploy at:
+
+> You don't have authorization to perform action
+> `Microsoft.Resources/deployments/validate/action`.
+
+Azure RBAC inherits **downward only**. Owner on a subscription grants nothing at
+the management group above it, and by default *nobody* — including a Global
+Administrator — holds Azure RBAC at the tenant root management group. Entra
+directory roles and Azure resource roles are separate systems.
+
+Two ways through, and the second is usually right:
+
+1. **Elevate access.** Entra ID → Properties → *Access management for Azure
+   resources* → Yes. That grants User Access Administrator at root scope, from
+   which the deployer can assign themselves Owner on the tenant root management
+   group. Turn it back off afterwards.
+2. **Pick a narrower scope.** A single subscription the customer already owns
+   needs no elevation at all. Coverage is narrower — new subscriptions are not
+   discovered — but it completes in one step.
+
+The scope chooser states the requirement against each option, so the choice is
+made on what the customer can finish rather than on coverage alone.
+
 ### The template endpoint is deliberately public and CORS-open
 
 Azure Portal fetches the ARM template **from the customer's browser**, not

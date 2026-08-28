@@ -45,21 +45,40 @@ export function ConnectionForm({
       setError(err instanceof ApiError ? err.message : "Could not create the connection"),
   });
 
-  const scopes: { value: ConnectionScope; label: string; detail: string }[] = [
+  // Each option carries what it will take to *finish*, not just what it covers.
+  // Azure RBAC inherits downward only, so being Owner of a subscription grants
+  // nothing at the management group above it — and by default nobody, not even
+  // a Global Administrator, holds rights at the tenant root. Choosing on
+  // coverage alone sends people to a portal error at the last step, after
+  // consent and after their administrator has already been involved.
+  const scopes: {
+    value: ConnectionScope;
+    label: string;
+    detail: string;
+    requires: string;
+  }[] = [
     {
       value: "TENANT_ROOT",
       label: "Entire tenant",
       detail: "Discover and scan every subscription in this directory.",
+      requires:
+        "Needs Owner at the tenant root management group. Most directories "
+        + "must turn on Entra ID → Properties → Access management for Azure "
+        + "resources first; without it this step fails in Azure Portal.",
     },
     {
       value: "MANAGEMENT_GROUP",
       label: "Management group",
       detail: "Limit to subscriptions under a specific management group.",
+      requires: "Needs Owner or User Access Administrator on that management group.",
     },
     {
       value: "SUBSCRIPTION",
       label: "Single subscription",
       detail: "Scan one subscription only.",
+      requires:
+        "Needs Owner or User Access Administrator on that subscription — "
+        + "usually the easiest to complete.",
     },
   ];
 
@@ -121,6 +140,9 @@ export function ConnectionForm({
                   </span>
                   <span className="mt-0.5 block text-xs leading-relaxed text-stone-600">
                     {scope.detail}
+                  </span>
+                  <span className="mt-1 block text-xs leading-relaxed text-stone-500">
+                    {scope.requires}
                   </span>
                 </span>
               </label>
