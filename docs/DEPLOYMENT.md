@@ -386,6 +386,31 @@ setup, not a hosting one. Without it the app works fully up to the point of
 starting a consent flow, and the connection wizard tells you so rather than
 failing at the button.
 
+### Scans stay Queued forever
+
+`QUEUED` means the scan row was written and the task handed to Redis. Nothing
+else has happened. A worker collects it within seconds when one is running, so
+minutes in that state means nothing is listening — and the scans page now says
+so rather than showing a progress bar indefinitely.
+
+Almost always: **the Celery worker is not deployed.** It is a *second* Railway
+service, built from the same image but started with
+`infrastructure/railway/worker.json`:
+
+```
+celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+```
+
+Check, in order:
+
+1. A worker service exists in the Railway project and is running.
+2. It has the same `DATABASE_URL`, `REDIS_URL` and `APP_ENV` as the API — it
+   shares the whole codebase and reads the scan row itself.
+3. Its logs show `scan.task_received`. If they do not, it is not reaching Redis.
+
+Cancelling a stuck scan is safe: the pipeline re-reads the status before it
+starts, so a task collected later stops instead of writing findings.
+
 ### Seeing the product loop before Azure is registered
 
 The demo seed runs the real pipeline against a recorded snapshot. On Railway,

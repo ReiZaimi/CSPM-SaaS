@@ -415,3 +415,53 @@ def test_no_commands_before_there_is_anything_to_revoke() -> None:
     from app.services.cloud_connections import revocation_steps
 
     assert revocation_steps(connection())["steps"] == []
+
+
+# --- a scan nobody collects ------------------------------------------------
+
+
+def scan_queued_for(seconds: int):
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    scan = Scan(status=ScanStatus.QUEUED)
+    scan.created_at = datetime.now(UTC) - timedelta(seconds=seconds)
+    return scan
+
+
+def test_a_freshly_queued_scan_is_not_stuck() -> None:
+    from app.models.scan import Scan
+
+    assert scan_queued_for(5).stuck_in_queue is False
+    assert Scan.QUEUE_PATIENCE_SECONDS >= 60
+
+
+def test_a_long_queued_scan_is_reported_stuck() -> None:
+    """A worker collects work in seconds. Minutes of silence means none is
+    running, which the progress bar alone would never say."""
+    from app.models.scan import Scan
+
+    assert scan_queued_for(Scan.QUEUE_PATIENCE_SECONDS + 60).stuck_in_queue is True
+
+
+def test_a_finished_scan_is_never_stuck() -> None:
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    for status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
+        scan = Scan(status=status)
+        scan.created_at = datetime.now(UTC) - timedelta(hours=1)
+        assert scan.stuck_in_queue is False, status
+
+
+def test_cancelled_is_a_terminal_status() -> None:
+    """The pipeline checks this before starting, and the cancel route refuses
+    to act on a scan that has already finished."""
+    from app.core.enums import ScanStatus
+
+    assert ScanStatus.CANCELLED.is_terminal is True
+    assert ScanStatus.QUEUED.is_terminal is False

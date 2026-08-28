@@ -24,6 +24,9 @@ class ScanOut(BaseModel):
     error_message: str | None = None
     collection_errors: dict = Field(default_factory=dict)
     created_at: datetime
+    # True when nothing has collected this scan for long enough that a worker
+    # is probably not running at all.
+    stuck_in_queue: bool = False
 
 
 class CoverageOut(BaseModel):

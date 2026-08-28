@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, status
@@ -6,10 +7,13 @@ from sqlalchemy import func, select
 from app.core.deps import DbSession, Tenant
 from app.core.enums import ScanStatus
 from app.core.errors import ConflictError, ScanNotFound, ValidationFailed, envelope
+from app.core.logging import get_logger
 from app.models.scan import Scan, ScanEvaluationGap, ScanRuleResult
 from app.schemas.scan import CoverageOut, ScanCreate, ScanOut
 from app.services import cloud_accounts as accounts_service
 from app.workers.scan_tasks import run_scan
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
@@ -56,7 +60,52 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
 
     # Only the id crosses the queue. The worker re-reads the tenant boundary
     # from the scan row rather than trusting the message.
-    run_scan.delay(str(scan.id))
+    try:
+        run_scan.delay(str(scan.id))
+    except Exception as exc:
+        # The row is already committed, so a broker that refused the message
+        # would otherwise leave a scan queued that nothing will ever collect --
+        # indistinguishable, on screen, from one about to start.
+        log.warning("scan.enqueue_failed", scan_id=str(scan.id), error=str(exc))
+        scan.status = ScanStatus.FAILED
+        scan.error_message = (
+            "CloudGuard could not put this scan on the queue. The task broker "
+            f"is unreachable: {exc}"
+        )
+        await session.commit()
+
+    return envelope(ScanOut.model_validate(scan).model_dump(mode="json"))
+
+
+@router.post("/{scan_id}/cancel")
+async def cancel_scan(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Stop a scan that has not finished.
+
+    Cancelling a queued scan is the common case and the reason this exists: a
+    scan sits queued until a worker collects it, and if none is running it sits
+    there indefinitely. The pipeline re-reads the status before it starts, so a
+    task collected after cancellation stops rather than writing findings nobody
+    asked for.
+    """
+    tenant.require_write()
+    scan = (
+        await session.execute(
+            select(Scan).where(
+                Scan.id == scan_id,
+                Scan.organization_id == tenant.organization_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if scan is None:
+        raise ScanNotFound()
+
+    if scan.status.is_terminal:
+        raise ConflictError(f"This scan has already finished ({scan.status.value}).")
+
+    scan.status = ScanStatus.CANCELLED
+    scan.completed_at = datetime.now(UTC)
+    scan.error_message = "Cancelled."
+    await session.commit()
     return envelope(ScanOut.model_validate(scan).model_dump(mode="json"))
 
 

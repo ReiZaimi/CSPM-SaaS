@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import ClassVar
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -27,6 +28,20 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     error_message: Mapped[str | None] = mapped_column(Text)
+
+    # How long a scan may sit unclaimed before the UI stops implying it is
+    # about to start. A worker picks work up in seconds when one is running, so
+    # minutes of silence means nothing is listening -- almost always the Celery
+    # worker service not deployed, or unable to reach Redis.
+    QUEUE_PATIENCE_SECONDS: ClassVar[int] = 120
+
+    @property
+    def stuck_in_queue(self) -> bool:
+        """Queued long enough that waiting no longer explains it."""
+        if self.status != ScanStatus.QUEUED or self.created_at is None:
+            return False
+        waited = datetime.now(UTC) - self.created_at
+        return waited.total_seconds() > self.QUEUE_PATIENCE_SECONDS
     # Category-level collection failures, e.g. {"storage": "timeout"}. Drives
     # PARTIAL status and the UNKNOWN degradation path (AZURE_INTEGRATION.md section 5).
     collection_errors: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

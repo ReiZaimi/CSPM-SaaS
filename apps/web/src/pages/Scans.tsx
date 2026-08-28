@@ -91,7 +91,13 @@ export function ScansPage() {
 
 function ScanRow({ scan }: { scan: Scan }) {
   const t = useT();
+  const queryClient = useQueryClient();
   const running = IN_FLIGHT.includes(scan.status);
+
+  const cancel = useMutation({
+    mutationFn: () => api.post<Scan>(`/api/v1/scans/${scan.id}/cancel`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scans"] }),
+  });
 
   return (
     <Card>
@@ -112,6 +118,30 @@ function ScanRow({ scan }: { scan: Scan }) {
       {running && (
         <div className="mt-4">
           <Progress status={scan.status} />
+        </div>
+      )}
+
+      {/* Queued far longer than a worker takes to collect one. The progress bar
+          above keeps implying imminent work, so the reason has to say
+          otherwise -- this is almost always no worker running at all. */}
+      {scan.stuck_in_queue && (
+        <div className="mt-3 rounded-lg border border-high-border bg-high-bg px-3 py-2">
+          <p className="text-xs font-medium text-high">{t.scans.stuckTitle}</p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+            {t.scans.stuckDetail}
+          </p>
+        </div>
+      )}
+
+      {running && (
+        <div className="mt-3">
+          <Button
+            variant="secondary"
+            onClick={() => cancel.mutate()}
+            disabled={cancel.isPending}
+          >
+            {cancel.isPending ? t.scans.cancelling : t.scans.cancel}
+          </Button>
         </div>
       )}
 

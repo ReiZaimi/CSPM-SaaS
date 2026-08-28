@@ -106,6 +106,8 @@ export interface Scan {
   error_message: string | null;
   collection_errors: Record<string, string>;
   created_at: string;
+  /** Queued long enough that no worker is likely running. */
+  stuck_in_queue?: boolean;
 }
 
 export interface Dashboard {

@@ -254,6 +254,11 @@ export const en = {
     resources: "Resources",
     rules: "Rules run",
     findings: "Findings",
+    cancel: "Cancel scan",
+    cancelling: "Cancelling\u2026",
+    stuckTitle: "Nothing has picked this scan up",
+    stuckDetail:
+      "A scan is collected by CloudGuard's worker within seconds of being queued. Minutes of silence means no worker is running \u2014 check that the Celery worker service is deployed and can reach Redis.",
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
   rules: { title: "Rule library", empty: "No rules loaded." },

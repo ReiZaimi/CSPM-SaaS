@@ -65,6 +65,14 @@ class ScanPipeline:
                 await self._fail(session, scan, "Cloud account no longer exists")
                 return
 
+            # Cancelled between being queued and being picked up. The worker
+            # may sit behind a backlog for minutes, which is exactly the window
+            # someone uses the cancel button in -- starting anyway would ignore
+            # them and write findings they asked not to collect.
+            if scan.status == ScanStatus.CANCELLED:
+                log.info("scan.cancelled_before_start", scan_id=str(self.scan_id))
+                return
+
             scan.started_at = datetime.now(UTC)
             org_id = scan.organization_id  # authoritative; never from a request
 
