@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import type { CloudAccount, Scan } from "@/lib/types";
+import type { CloudAccount, Scan, ScanDetail } from "@/lib/types";
 import { useT } from "@/i18n";
 import {
   Button,
@@ -13,6 +13,7 @@ import {
   StatusPill,
 } from "@/components/ui";
 import { formatDateTime, label } from "@/lib/format";
+import { Badge } from "@/components/ui";
 
 const IN_FLIGHT = ["QUEUED", "DISCOVERING", "NORMALIZING", "EVALUATING", "CALCULATING_RISK"];
 
@@ -94,9 +95,24 @@ function ScanRow({ scan }: { scan: Scan }) {
   const queryClient = useQueryClient();
   const running = IN_FLIGHT.includes(scan.status);
 
+  const [open, setOpen] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
   const cancel = useMutation({
     mutationFn: () => api.post<Scan>(`/api/v1/scans/${scan.id}/cancel`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scans"] }),
+  });
+
+  const remove = useMutation({
+    mutationFn: (purge: boolean) =>
+      api.del(`/api/v1/scans/${scan.id}?purge_findings=${purge}`),
+    onSuccess: () => {
+      setConfirmingDelete(false);
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+      // Purging changes the findings and the score, so those go too.
+      queryClient.invalidateQueries({ queryKey: ["findings"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
 
   return (
@@ -109,6 +125,9 @@ function ScanRow({ scan }: { scan: Scan }) {
           </span>
         </div>
         <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+          {scan.duration_seconds != null && (
+            <Stat label={t.scans.duration} value={formatDuration(scan.duration_seconds)} />
+          )}
           <Stat label={t.scans.resources} value={scan.resource_count} />
           <Stat label={t.scans.rules} value={scan.rule_count} />
           <Stat label={t.scans.findings} value={scan.finding_count} />
@@ -133,8 +152,8 @@ function ScanRow({ scan }: { scan: Scan }) {
         </div>
       )}
 
-      {running && (
-        <div className="mt-3">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {running && (
           <Button
             variant="secondary"
             onClick={() => cancel.mutate()}
@@ -142,8 +161,31 @@ function ScanRow({ scan }: { scan: Scan }) {
           >
             {cancel.isPending ? t.scans.cancelling : t.scans.cancel}
           </Button>
-        </div>
+        )}
+        <Button variant="ghost" onClick={() => setOpen((v) => !v)}>
+          {open ? t.scans.hideDetails : t.scans.details}
+        </Button>
+        {!running && (
+          <Button
+            variant="ghost"
+            className="ml-auto text-critical hover:bg-critical-bg"
+            onClick={() => setConfirmingDelete(true)}
+          >
+            {t.scans.deleteScan}
+          </Button>
+        )}
+      </div>
+
+      {confirmingDelete && (
+        <DeleteScanConfirm
+          scanId={scan.id}
+          busy={remove.isPending}
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={(purge) => remove.mutate(purge)}
+        />
       )}
+
+      {open && <ScanDetailPanel scanId={scan.id} />}
 
       {scan.error_message && (
         <p className="mt-3 rounded-lg border border-critical-border bg-critical-bg px-3 py-2 text-sm text-critical">
@@ -188,11 +230,156 @@ function Progress({ status }: { status: string }) {
   );
 }
 
-function Stat({ label: text, value }: { label: string; value: number }) {
+function Stat({ label: text, value }: { label: string; value: number | string }) {
   return (
     <div>
       <p className="text-xs text-stone-500">{text}</p>
       <p className="font-medium tabular-nums text-stone-900">{value}</p>
+    </div>
+  );
+}
+
+
+/** Human duration. Minutes and seconds, because scans are minutes-long. */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${String(rest).padStart(2, "0")}s`;
+}
+
+/**
+ * Scope, identity and severity breakdown for one scan.
+ *
+ * Loaded only when opened. The list renders every scan an organization has
+ * ever run, and this reads two more tables and aggregates findings per row.
+ */
+function ScanDetailPanel({ scanId }: { scanId: string }) {
+  const t = useT();
+  const detail = useQuery({
+    queryKey: ["scan-detail", scanId],
+    queryFn: () =>
+      api.get<ScanDetail>(`/api/v1/scans/${scanId}/detail`).then((r) => r.data),
+  });
+
+  if (detail.isLoading) return <Spinner />;
+  if (!detail.data) return null;
+
+  const { scope, findings_by_severity: severities } = detail.data;
+  const scanned = detail.data.progress_total ?? 0;
+
+  return (
+    <div className="mt-3 grid gap-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 sm:grid-cols-2">
+      <div>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+          {t.scans.scope}
+        </p>
+        <dl className="mt-1.5 space-y-1 text-xs">
+          <Row label={t.connection.connectionName} value={scope.connection_name} />
+          <Row label="Subscription" value={scope.subscription_name ?? scope.subscription_id} />
+          <Row label="Tenant" value={scope.tenant_id} />
+          <Row label={t.scans.evaluated} value={scanned ? String(scanned) : null} />
+        </dl>
+      </div>
+
+      <div>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+          {t.scans.identity}
+        </p>
+        <dl className="mt-1.5 space-y-1 text-xs">
+          {/* The object id the customer can look up in their own directory
+              and revoke — not an internal reference. */}
+          <Row label="Service principal" value={scope.service_principal_object_id} />
+          <Row label="Role" value={scope.role_version ? `Scanner ${scope.role_version}` : null} />
+          <Row
+            label={t.scans.initiator}
+            value={detail.data.triggered_by_user_id ?? t.scans.scheduled}
+          />
+        </dl>
+      </div>
+
+      {Object.keys(severities).length > 0 && (
+        <div className="sm:col-span-2">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+            {t.scans.breakdown}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {Object.entries(severities).map(([severity, count]) => (
+              <Badge key={severity} level={severity}>
+                {label(severity)} {count}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Row({ label: text, value }: { label: string; value: string | null }) {
+  return (
+    <div className="flex gap-2">
+      <dt className="shrink-0 text-stone-500">{text}</dt>
+      <dd className="min-w-0 truncate font-mono text-[11px] text-stone-800">
+        {value ?? "\u2014"}
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * Deleting a scan is two different acts, so it asks which.
+ *
+ * The record is an execution log. The findings it raised are statements about
+ * the environment, which is why `findings.scan_id` is ON DELETE SET NULL —
+ * history can be pruned without discarding what was found. Purging is for a
+ * run whose results the user considers wrong, and never touches resolved
+ * findings: each is the evidence that a fix was verified.
+ */
+function DeleteScanConfirm({
+  scanId,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  scanId: string;
+  busy: boolean;
+  onConfirm: (purge: boolean) => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const detail = useQuery({
+    queryKey: ["scan-detail", scanId],
+    queryFn: () =>
+      api.get<ScanDetail>(`/api/v1/scans/${scanId}/detail`).then((r) => r.data),
+  });
+  const purgeable = detail.data?.purgeable_finding_count ?? 0;
+
+  return (
+    <div className="mt-3 rounded-lg border border-critical-border bg-critical-bg px-4 py-3">
+      <p className="text-sm font-medium text-critical">{t.scans.deleteTitle}</p>
+      <div className="mt-3 space-y-2">
+        <div>
+          <Button variant="secondary" onClick={() => onConfirm(false)} disabled={busy}>
+            {t.scans.deleteRecordOnly}
+          </Button>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {t.scans.deleteRecordOnlyDetail}
+          </p>
+        </div>
+        <div>
+          <Button variant="danger" onClick={() => onConfirm(true)} disabled={busy}>
+            {t.scans.deleteWithFindings}
+            {purgeable > 0 && ` (${purgeable})`}
+          </Button>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {t.scans.deleteWithFindingsDetail}
+          </p>
+        </div>
+      </div>
+      <Button variant="ghost" className="mt-3" onClick={onCancel} disabled={busy}>
+        {t.findings.cancel}
+      </Button>
     </div>
   );
 }

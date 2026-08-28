@@ -108,6 +108,11 @@ export interface Scan {
   created_at: string;
   /** Queued long enough that no worker is likely running. */
   stuck_in_queue?: boolean;
+  triggered_by_user_id?: string | null;
+  progress_done?: number;
+  progress_total?: number;
+  /** Live while running, fixed once finished. */
+  duration_seconds?: number | null;
 }
 
 export interface Dashboard {
@@ -272,4 +277,22 @@ export interface Revocation {
 export interface RevocationCheck {
   revoked: boolean;
   detail: string;
+}
+
+export interface ScanScope {
+  subscription_id: string | null;
+  subscription_name: string | null;
+  tenant_id: string | null;
+  connection_name: string | null;
+  scope_type: string | null;
+  scope_path: string | null;
+  service_principal_object_id: string | null;
+  role_version: string | null;
+}
+
+export interface ScanDetail extends Scan {
+  scope: ScanScope;
+  findings_by_severity: Record<string, number>;
+  /** How many unresolved findings a purge would take with it. */
+  purgeable_finding_count: number;
 }

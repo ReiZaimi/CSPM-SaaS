@@ -465,3 +465,37 @@ def test_cancelled_is_a_terminal_status() -> None:
 
     assert ScanStatus.CANCELLED.is_terminal is True
     assert ScanStatus.QUEUED.is_terminal is False
+
+
+# --- scan duration ---------------------------------------------------------
+
+
+def test_duration_is_none_before_a_scan_starts() -> None:
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    assert Scan(status=ScanStatus.QUEUED).duration_seconds is None
+
+
+def test_duration_runs_live_while_scanning() -> None:
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    scan = Scan(status=ScanStatus.EVALUATING)
+    scan.started_at = datetime.now(UTC) - timedelta(seconds=90)
+    assert 89 <= (scan.duration_seconds or 0) <= 95
+
+
+def test_duration_freezes_when_the_scan_completes() -> None:
+    """Otherwise a finished scan would appear to keep running forever."""
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    scan = Scan(status=ScanStatus.COMPLETED)
+    scan.started_at = datetime.now(UTC) - timedelta(hours=2)
+    scan.completed_at = scan.started_at + timedelta(seconds=120)
+    assert scan.duration_seconds == 120

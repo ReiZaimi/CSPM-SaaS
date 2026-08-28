@@ -105,6 +105,13 @@ class ScanPipeline:
                 id_map = await self._persist_resources(session, org_id, account.id, state)
                 scan.resource_count = len(state.resources)
 
+                # Now the size of the job is known, so progress can be a count
+                # rather than a phase name. Committed here so a long evaluation
+                # shows a denominator immediately rather than at the end.
+                scan.progress_total = len(state.resources)
+                scan.progress_done = len(state.resources)
+                await session.commit()
+
                 # --- evaluate -----------------------------------------------
                 await self._set_status(session, scan, ScanStatus.EVALUATING)
                 context = RuleContext(

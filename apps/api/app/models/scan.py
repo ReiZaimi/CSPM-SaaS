@@ -29,6 +29,22 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
 
     error_message: Mapped[str | None] = mapped_column(Text)
 
+    # Who asked for this run. Not an FK: auth.users belongs to Supabase.
+    triggered_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    # How far along a running scan is. Status moves in five coarse jumps, so a
+    # large tenant sits on one of them long enough to look stalled.
+    progress_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    @property
+    def duration_seconds(self) -> int | None:
+        """Elapsed time, live while running and fixed once finished."""
+        if self.started_at is None:
+            return None
+        end = self.completed_at or datetime.now(UTC)
+        return max(0, int((end - self.started_at).total_seconds()))
+
     # How long a scan may sit unclaimed before the UI stops implying it is
     # about to start. A worker picks work up in seconds when one is running, so
     # minutes of silence means nothing is listening -- almost always the Celery

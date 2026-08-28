@@ -9,8 +9,9 @@ from app.core.enums import ScanStatus
 from app.core.errors import ConflictError, ScanNotFound, ValidationFailed, envelope
 from app.core.logging import get_logger
 from app.models.scan import Scan, ScanEvaluationGap, ScanRuleResult
-from app.schemas.scan import CoverageOut, ScanCreate, ScanOut
+from app.schemas.scan import CoverageOut, ScanCreate, ScanDetailOut, ScanOut
 from app.services import cloud_accounts as accounts_service
+from app.services import scans as scans_service
 from app.workers.scan_tasks import run_scan
 
 log = get_logger(__name__)
@@ -54,6 +55,8 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
         organization_id=tenant.organization_id,
         cloud_account_id=account.id,
         status=ScanStatus.QUEUED,
+        # Recorded from the authenticated user, never from the request body.
+        triggered_by_user_id=tenant.user.id,
     )
     session.add(scan)
     await session.commit()
@@ -126,6 +129,19 @@ async def list_scans(session: DbSession, tenant: Tenant, limit: int = 25) -> dic
     return envelope([ScanOut.model_validate(s).model_dump(mode="json") for s in rows])
 
 
+@router.get("/{scan_id}/detail")
+async def get_scan_detail(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """One scan, with its scope, identity and severity breakdown."""
+    scan = await scans_service.get_scan(session, tenant, scan_id)
+    data = ScanDetailOut.model_validate(scan).model_dump(mode="json")
+    data["scope"] = await scans_service.scan_context(session, scan)
+    data["findings_by_severity"] = await scans_service.severity_breakdown(session, scan)
+    data["purgeable_finding_count"] = await scans_service.findings_attributable_to(
+        session, scan
+    )
+    return envelope(data)
+
+
 @router.get("/{scan_id}")
 async def get_scan(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     scan = (
@@ -138,6 +154,27 @@ async def get_scan(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     if scan is None:
         raise ScanNotFound()
     return envelope(ScanOut.model_validate(scan).model_dump(mode="json"))
+
+
+@router.delete("/{scan_id}", status_code=status.HTTP_200_OK)
+async def delete_scan(
+    scan_id: UUID,
+    session: DbSession,
+    tenant: Tenant,
+    purge_findings: bool = False,
+) -> dict:
+    """Delete a scan record, and optionally the findings it last detected.
+
+    ``purge_findings`` defaults to false because the two are different acts:
+    deleting the record prunes an execution log, while purging also discards
+    what was found. Resolved findings are never purged either way -- each one
+    is the evidence that a fix was verified.
+    """
+    tenant.require_write()
+    result = await scans_service.delete_scan(
+        session, tenant, scan_id, purge_findings=purge_findings
+    )
+    return envelope(result)
 
 
 @router.get("/{scan_id}/coverage")
