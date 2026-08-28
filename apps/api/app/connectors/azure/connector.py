@@ -5,7 +5,11 @@ from typing import Any
 
 import httpx
 
-from app.connectors.azure.auth import REQUIRED_GRAPH_PERMISSIONS, TokenProvider
+from app.connectors.azure.auth import (
+    REQUIRED_GRAPH_PERMISSIONS,
+    TokenProvider,
+    missing_permissions,
+)
 from app.connectors.azure.client import ArmClient, GraphClient
 from app.connectors.azure.collector import AzureCollector
 from app.connectors.azure.normalizer import AzureNormalizer
@@ -77,6 +81,24 @@ class AzureConnector(CloudConnector):
         # was the old shape, and it claimed far more than it had shown: that
         # endpoint answers with much less, so a connection could validate green
         # and then lose the whole identity category to a 403 on the first scan.
+        # Asked of the token before anything is called. Its ``roles`` claim is
+        # the tenant's actual consent, so a missing grant can be named -- nine
+        # permissions, this is which ones -- instead of being inferred from
+        # whichever endpoint happened to 403 first.
+        try:
+            absent = missing_permissions(tokens.graph_token())
+        except Exception:
+            absent = ()
+        if absent:
+            check.problems.append(
+                f"Admin consent in this tenant did not grant {len(absent)} of the "
+                f"{len(REQUIRED_GRAPH_PERMISSIONS)} directory permissions CloudGuard "
+                f"needs: {', '.join(absent)}. Add them to the CloudGuard app "
+                "registration as application permissions, then re-run admin consent "
+                "-- consent covers only what the registration declared at the moment "
+                "it was granted."
+            )
+
         async with GraphClient(tokens, self._http) as graph:
             for probe, subject, permission in GRAPH_PROBES:
                 try:

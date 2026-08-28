@@ -4,7 +4,12 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.connectors.azure.auth import ConsentStateError, verify_state
+from app.connectors.azure.auth import (
+    REQUIRED_GRAPH_PERMISSIONS,
+    ConsentStateError,
+    app_registration_manifest,
+    verify_state,
+)
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.deps import DbSession, Tenant
@@ -140,6 +145,45 @@ async def arm_template(
             "Content-Disposition": 'inline; filename="cloudguard-scanner.json"',
             **TEMPLATE_CORS_HEADERS,
         },
+    )
+
+
+@router.get("/azure/app-registration")
+async def app_registration(tenant: Tenant) -> dict:
+    """What CloudGuard's own Entra app registration must declare.
+
+    The other half of the deployment. The ARM template grants subscription
+    access in the *customer's* tenant; directory access comes from application
+    permissions on CloudGuard's registration in its own tenant, which no
+    template a customer runs can touch. That half has only ever existed as a
+    list in a code comment, which is why a registration missing seven of nine
+    permissions still produced a consent screen that looked entirely normal.
+
+    Returned as the manifest fragment plus the command that applies it, so the
+    registration can be diffed against what is deployed instead of inspected by
+    eye in a portal.
+    """
+    tenant.require_role(Role.OWNER, Role.ADMIN)
+    manifest = app_registration_manifest()
+    return envelope(
+        {
+            "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
+            "required_resource_access": manifest,
+            "apply_command": (
+                "az ad app update --id <CLOUDGUARD_APP_ID> "
+                f"--required-resource-accesses '{json.dumps(manifest)}'"
+            ),
+            "grant_command": (
+                "# Then, in each customer tenant, a Global Administrator "
+                "re-runs the consent link from this page."
+            ),
+            "note": (
+                "Consent grants what the registration declares at the moment it "
+                "is granted. Adding a permission afterwards does not extend an "
+                "existing grant -- every already-connected tenant must consent "
+                "again."
+            ),
+        }
     )
 
 

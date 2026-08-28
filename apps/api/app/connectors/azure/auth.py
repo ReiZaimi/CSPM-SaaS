@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+import jwt
 import msal
 
 from app.core.config import settings
@@ -50,6 +51,92 @@ REQUIRED_GRAPH_PERMISSIONS = [
     "IdentityRiskyUser.Read.All",
     "AuditLog.Read.All",
 ]
+
+# Microsoft Graph's own application id, and the app role id behind each
+# permission above. Entra's manifest and ``az ad app`` both address permissions
+# by id, never by name, so a reproducible registration needs these.
+#
+# Every id below was read from Microsoft's published reference rather than
+# recalled, for the reason ``rbac.py`` records about ARM actions: a wrong
+# identifier here is indistinguishable from a right one by inspection, and
+# fails only in front of a customer's Global Administrator.
+GRAPH_RESOURCE_APP_ID = "00000003-0000-0000-c000-000000000000"
+
+GRAPH_APP_ROLES: dict[str, str] = {
+    "Directory.Read.All": "7ab1d382-f21e-4acd-a863-ba3e13f7da61",
+    "User.Read.All": "df021288-bdef-4463-88db-98f22de89214",
+    "RoleManagement.Read.Directory": "483bed4a-2ad3-4361-a73b-c83ccdbdc53c",
+    "UserAuthenticationMethod.Read.All": "38d9df27-64da-44fd-b7c5-a6fbac20248f",
+    "Policy.Read.All": "246dd0d5-5bd0-4def-940b-0421030a5b68",
+    "Application.Read.All": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30",
+    "Group.Read.All": "5b567255-7703-4780-807c-7be8301ae99b",
+    "IdentityRiskyUser.Read.All": "dc5007c0-2d7d-4c42-879c-2dab87571379",
+    "AuditLog.Read.All": "b0afded3-3588-46d8-8b3d-9842eff778da",
+}
+
+
+def granted_permissions(graph_token: str) -> frozenset[str]:
+    """The Graph application permissions this token actually carries.
+
+    A client-credentials token lists its granted application permissions in the
+    ``roles`` claim, so the authoritative answer to "what did consent actually
+    grant in this tenant" is already in hand before any API call is made. There
+    is no Graph endpoint that answers it as directly, and the obvious
+    candidates all require a permission that may itself be missing.
+
+    The signature is deliberately not verified, and this value is deliberately
+    never used to authorize anything. It is read for diagnosis only -- to turn
+    "Insufficient privileges to complete the operation" into a list of names a
+    Global Administrator can act on. Microsoft remains the enforcer: a token
+    claiming a permission it was not granted still gets a 403 from Graph.
+    """
+    try:
+        claims = jwt.decode(graph_token, options={"verify_signature": False})
+    except Exception as exc:  # pragma: no cover -- malformed token
+        log.warning("azure.token_undecodable", error=str(exc))
+        return frozenset()
+    roles = claims.get("roles") or []
+    return frozenset(str(r) for r in roles)
+
+
+def missing_permissions(graph_token: str) -> tuple[str, ...]:
+    """Required permissions this tenant's consent did not grant, in order.
+
+    Empty when the token could not be read at all: an unreadable token is not
+    evidence of a missing grant, and reporting nine phantom gaps would send an
+    administrator to fix something that is not broken.
+    """
+    granted = granted_permissions(graph_token)
+    if not granted:
+        return ()
+    return tuple(p for p in REQUIRED_GRAPH_PERMISSIONS if p not in granted)
+
+
+def app_registration_manifest() -> list[dict]:
+    """``requiredResourceAccess`` for CloudGuard's own app registration.
+
+    The ARM template grants the *subscription* half of the access and can never
+    grant this half: Graph application permissions live on the app registration
+    in CloudGuard's home tenant, and a customer's admin consent grants whatever
+    that registration happens to declare at the moment they click.
+
+    Which makes the registration a deployment artefact like any other, and it
+    has been a checklist in a comment. Generated here so it can be applied with
+    ``az ad app update --required-resource-accesses`` and diffed, rather than
+    clicked into a portal and hoped over.
+    """
+    return [
+        {
+            "resourceAppId": GRAPH_RESOURCE_APP_ID,
+            "resourceAccess": [
+                # "Role" is an application permission; "Scope" would be
+                # delegated, which a background scanner with no signed-in user
+                # can never exercise.
+                {"id": GRAPH_APP_ROLES[name], "type": "Role"}
+                for name in REQUIRED_GRAPH_PERMISSIONS
+            ],
+        }
+    ]
 
 
 @dataclass(frozen=True)
