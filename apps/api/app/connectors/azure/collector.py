@@ -91,7 +91,7 @@ class AzureCollector:
 
         async with GraphClient(self.tokens, self._http) as graph:
             await self._collect_category(
-                snapshot, "identity", lambda: self._collect_identity(graph)
+                snapshot, "identity", lambda: self._collect_identity(graph, snapshot)
             )
 
         return snapshot
@@ -185,9 +185,40 @@ class AzureCollector:
         return {"resources": await arm.list_resources(self.subscription_id)}
 
     # --------------------------------------------------------------- identity
-    async def _collect_identity(self, graph: GraphClient) -> dict[str, Any]:
-        users = await graph.list_users()
-        roles = await graph.list_directory_roles()
+    async def _collect_identity(
+        self, graph: GraphClient, snapshot: RawSnapshot
+    ) -> dict[str, Any]:
+        """Directory state, degrading one call at a time rather than all at once.
+
+        These two calls used to be bare, so a 403 on ``/directoryRoles`` threw
+        away the user list that had already been read successfully -- and with
+        it the whole identity asset inventory, for a permission that only the
+        role rules needed. The calls below have always been defended
+        individually; these two were the exception.
+
+        Recording the gap is not optional, and is why the snapshot is passed
+        in: partial identity data must still mark the category failed, so every
+        identity rule degrades to UNKNOWN. Half a directory is not grounds for
+        saying anyone's MFA is fine (RULE_ENGINE.md section 2).
+        """
+        failures: list[str] = []
+
+        try:
+            users = await graph.list_users()
+        except Exception as exc:
+            log.warning("azure.users_failed", tenant_id=self.tenant_id, error=str(exc))
+            failures.append(f"directory users could not be read ({exc})")
+            users = []
+
+        try:
+            roles = await graph.list_directory_roles()
+        except Exception as exc:
+            log.warning("azure.roles_failed", tenant_id=self.tenant_id, error=str(exc))
+            failures.append(f"directory roles could not be read ({exc})")
+            roles = []
+
+        if failures:
+            snapshot.errors["identity"] = "; ".join(failures)
 
         # user id -> [role display names]
         role_map: dict[str, list[str]] = {}

@@ -15,6 +15,26 @@ from app.core.logging import get_logger
 log = get_logger(__name__)
 
 
+# The Graph calls collection depends on, each paired with the permission that
+# grants it. Verifying by calling is the only verification available: Graph
+# exposes no "what am I consented to" endpoint, and a consent screen that was
+# clicked is not evidence that the grant covers what CloudGuard needs today.
+#
+# These are exactly the two calls ``_collect_identity`` makes before anything
+# else, plus the tenant read that proves consent happened at all. The deeper
+# identity calls are absent on purpose -- they already degrade to UNKNOWN
+# individually, so they cost a category rather than a connection.
+GRAPH_PROBES: tuple[tuple[str, str, str], ...] = (
+    ("get_organization", "the tenant directory", "Directory.Read.All"),
+    ("list_users", "directory users", "User.Read.All or Directory.Read.All"),
+    (
+        "list_directory_roles",
+        "directory roles",
+        "RoleManagement.Read.Directory or Directory.Read.All",
+    ),
+)
+
+
 class AzureConnector(CloudConnector):
     provider = Provider.AZURE
 
@@ -46,16 +66,26 @@ class AzureConnector(CloudConnector):
             check.detail = "Authentication failed"
             return check
 
-        # --- Graph: did admin consent actually happen? ----------------------
+        # --- Graph: did admin consent cover what the collector needs? -------
+        # One call per probe, because one call is what a permission grants.
+        # Reading /organization and then declaring Directory.Read.All verified
+        # was the old shape, and it claimed far more than it had shown: that
+        # endpoint answers with much less, so a connection could validate green
+        # and then lose the whole identity category to a 403 on the first scan.
         async with GraphClient(tokens, self._http) as graph:
-            try:
-                await graph.get_organization()
-                check.permissions_verified.append("Microsoft Graph: Directory.Read.All")
-            except Exception as exc:
-                check.problems.append(
-                    "Microsoft Graph directory data is not readable. Admin consent may not "
-                    f"have been granted. ({exc})"
-                )
+            for method, subject, permission in GRAPH_PROBES:
+                try:
+                    await getattr(graph, method)()
+                except Exception as exc:
+                    check.problems.append(
+                        f"CloudGuard cannot read {subject}. Grant {permission} as an "
+                        "application permission on the app registration, then re-run "
+                        "admin consent for this tenant. Consent covers the permissions "
+                        "configured at the moment it is granted, so a permission added "
+                        f"afterwards needs consenting again. ({exc})"
+                    )
+                else:
+                    check.permissions_verified.append(f"Microsoft Graph: {subject}")
 
         # --- ARM: was the Reader role assigned? -----------------------------
         async with ArmClient(tokens, self._http) as arm:
