@@ -6,28 +6,23 @@ could read the contents of a customer's storage or database. The claim
 "CloudGuard cannot perform a single write in your environment" is checkable
 from this file, and a test enforces it.
 
-**Actions declared ahead of use are unverified, and ARM validates the role
-definition atomically.** One string that is not a real provider operation fails
-the entire deployment with ``InvalidActionOrNotAction`` -- the customer sees a
-failed deployment, not a note about one permission. An action reached by a real
-collector call is proven correct by that call succeeding; an action nothing
-calls has never been checked against Azure by anything. Check a new one with
-``az provider operation show --namespace <Namespace>`` before adding it.
+**Every action here is reached by a real collector call, and nothing else is.**
+The role was briefly wider, carrying permissions declared ahead of the rules
+that would use them. That is no longer the trade being made, for a reason worth
+recording: ARM validates a role definition atomically, so a single string that
+is not a genuine provider operation fails the entire deployment with
+``InvalidActionOrNotAction`` -- and the customer sees "Deployment Failed", not a
+note about one permission. ``Microsoft.Security/autoProvisioningSettings/read``
+looked exactly as plausible as its neighbours and was not real.
 
-**The role is deliberately wider than the scanner currently reads.** Some
-actions are declared ahead of the rules that will use them, so that a customer
-who deploys the role today does not have to redeploy it when those rules ship
--- a role update means going back to whoever holds Owner on the subscription,
-which is a far worse tax than a slightly wider read-only grant.
-``CLIENT_ACTIONS`` below records which actions the collector reaches today, and
-``ROLE_ONLY_ACTIONS`` names the surplus explicitly, so "requested but unused"
-is a documented decision rather than something nobody noticed.
+An action a collector call exercises is proven correct the first time that call
+succeeds. An action nothing calls has never been checked against Azure by
+anything. So the list is now exactly the former, and both directions are
+enforced by tests: every call has an action, and every action has a call.
 
-The guarantee that *is* enforced runs the other way: every ARM call the
-collector makes must have a matching action. A missing one fails in production
-as a 403 inside one collection category, which surfaces as UNKNOWN results
-rather than as an error anyone reads
-(``tests/unit/test_azure_rbac.py::test_every_arm_call_has_a_matching_action``).
+Adding a permission ahead of its rule is still reasonable, but not on trust --
+verify the string first with
+``az provider operation show --namespace <Namespace>``.
 
 Bump ``ROLE_VERSION`` when the action list changes, so a deployed role that
 predates a new rule can be identified and the customer offered a redeploy
@@ -54,45 +49,20 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.Network/networkSecurityGroups/read",
     "Microsoft.Network/networkInterfaces/read",
     "Microsoft.Network/publicIPAddresses/read",
-    "Microsoft.Network/virtualNetworks/read",
-    "Microsoft.Network/virtualNetworks/subnets/read",
     # Compute
     "Microsoft.Compute/virtualMachines/read",
-    "Microsoft.Compute/disks/read",
-    # Containers
-    "Microsoft.ContainerService/managedClusters/read",
     # Storage
     "Microsoft.Storage/storageAccounts/read",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/read",
     # SQL
     "Microsoft.Sql/servers/read",
     "Microsoft.Sql/servers/firewallRules/read",
-    "Microsoft.Sql/servers/auditingSettings/read",
-    "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
-    "Microsoft.Sql/servers/advancedThreatProtectionSettings/read",
-    # PostgreSQL
+    # PostgreSQL -- flexible servers only; single-server is not collected.
     "Microsoft.DBforPostgreSQL/flexibleServers/read",
-    # Key Vault (metadata only -- not secret values)
-    "Microsoft.KeyVault/vaults/read",
-    # App Services
-    "Microsoft.Web/sites/read",
-    "Microsoft.Web/sites/config/read",
     # Monitoring & diagnostics
     "Microsoft.Insights/diagnosticSettings/read",
-    "Microsoft.OperationalInsights/workspaces/read",
-    # Identity & authorization
+    # Authorization -- who already has access, and under which definitions
     "Microsoft.Authorization/roleAssignments/read",
     "Microsoft.Authorization/roleDefinitions/read",
-    "Microsoft.Authorization/policyAssignments/read",
-    "Microsoft.Authorization/locks/read",
-    # Defender for Cloud
-    # Microsoft.Security/autoProvisioningSettings/read was here and is not a
-    # real provider operation -- ARM rejects the whole role definition with
-    # InvalidActionOrNotAction, so one wrong string blocks the entire
-    # deployment. Do not re-add without checking it against
-    # `az provider operation show --namespace Microsoft.Security`.
-    "Microsoft.Security/pricings/read",
-    "Microsoft.Security/securityContacts/read",
 )
 
 # Which ARM action each collector call needs. This is the link between the code
@@ -118,9 +88,11 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
 }
 
-# Granted but not yet reached by any collector call -- declared ahead of the
-# rules that will use them so customers deploy the role once rather than twice.
-# Derived, not hand-listed, so it cannot fall out of step with the two above.
+# Anything granted that no collector call reaches. Expected to be empty: the
+# role is trimmed to what the scanner proves it needs. Derived rather than
+# hand-listed so it cannot disagree with the two definitions above, and
+# asserted empty by the tests -- a non-empty value means a permission is being
+# requested on a customer's consent screen that nothing has ever used.
 ROLE_ONLY_ACTIONS: tuple[str, ...] = tuple(
     action
     for action in ARM_READ_ACTIONS

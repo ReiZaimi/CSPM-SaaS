@@ -191,24 +191,40 @@ plus the read permissions they are about to review. The header is set on this
 endpoint alone; the API's global CORS policy still names only this product's
 frontend.
 
-### Why the role is wider than the scanner reads
+### The role is exactly what the scanner reads
 
-The custom role declares 30 read actions; the collector currently reaches 13.
-The surplus is deliberate. Updating a deployed role means going back to whoever
-holds Owner or User Access Administrator on the subscription, which is a far
-worse tax on a customer than a slightly wider read-only grant — so actions are
-declared ahead of the rules that will use them.
+The custom role declares 13 read actions, and every one is exercised by a real
+call in `app/connectors/azure/client.py`. Nothing is granted speculatively.
 
-`app/connectors/azure/rbac.py` records both halves: `CLIENT_ACTIONS` maps every
-ARM call the collector makes to the action it needs, and `ROLE_ONLY_ACTIONS` is
-derived from the difference, so the surplus is a named decision rather than
-something nobody noticed.
+It was briefly wider — 30 actions, with 17 declared ahead of the rules that
+would use them, on the reasoning that a customer should deploy the role once
+rather than twice. That reasoning was sound and the outcome was not:
+`Microsoft.Security/autoProvisioningSettings/read` is not a real provider
+operation, and because ARM validates a role definition **atomically**, one bad
+string failed the entire deployment with `InvalidActionOrNotAction`. The
+customer saw "Deployment Failed", not a note about one permission.
 
-Only the forward direction is enforced by tests: every collector call must have
-a matching action. That is the direction that breaks production — a call with no
-permission returns 403 inside one collection category, and the engine records
-that as UNKNOWN rather than as an error anyone reads, so the scan looks like it
-worked. If `ROLE_ONLY_ACTIONS` ever empties, the reverse guard can be reinstated.
+The asymmetry that decided it: an action a collector call exercises is proven
+correct the first time that call succeeds. An action nothing calls has never
+been checked against Azure by anything — it is only a plausible-looking string.
+
+Both directions are enforced by tests. Every call must have an action (a missing
+one is a 403 inside one collection category, which the engine records as UNKNOWN
+rather than as an error anyone reads). And every action must have a call, so
+nothing appears on a customer's consent screen that cannot be justified when
+they ask what it is for.
+
+Adding a permission ahead of its rule is still legitimate — but verify the
+string first:
+
+```bash
+az provider operation show --namespace Microsoft.KeyVault \
+  --query "resourceTypes[].operations[].name"
+```
+
+`ROLE_VERSION` stays at `v1`. It exists to flag a deployed role that is
+*insufficient* for a newer rule; narrowing is backward compatible, and bumping
+it would create a second role definition in every customer's tenant for no gain.
 
 ### Permission modes
 

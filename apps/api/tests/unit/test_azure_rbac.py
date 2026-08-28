@@ -156,14 +156,32 @@ def test_mapped_methods_all_exist() -> None:
     assert stale == [], f"CLIENT_ACTIONS names methods that no longer exist: {stale}"
 
 
-def test_the_surplus_is_declared_rather_than_accidental() -> None:
-    """The wider-than-needed role is a decision, so it is written down.
+def test_no_permission_is_requested_that_nothing_uses() -> None:
+    """The reverse guard, reinstated now the role matches the collector.
 
-    If this ever reaches zero the role has caught up with the collector and the
-    reverse guard could be reinstated.
+    Two reasons it earns its place. A permission nothing calls appears on the
+    customer's consent screen and cannot be justified when they ask. And it has
+    never been checked against Azure by anything: an action a call exercises is
+    proven the first time that call succeeds, while an unused one is only ever
+    a plausible-looking string. One such string
+    (``Microsoft.Security/autoProvisioningSettings/read``) was not real, and
+    because ARM validates a role definition atomically it failed the entire
+    deployment rather than one permission.
     """
-    from app.connectors.azure.rbac import ARM_READ_ACTIONS, ROLE_ONLY_ACTIONS
+    from app.connectors.azure.rbac import ROLE_ONLY_ACTIONS
 
-    assert set(ROLE_ONLY_ACTIONS) <= set(ARM_READ_ACTIONS)
-    for action in ROLE_ONLY_ACTIONS:
-        assert action.endswith("/read"), action
+    assert ROLE_ONLY_ACTIONS == (), (
+        f"Granted but never used: {list(ROLE_ONLY_ACTIONS)}. Add the collector "
+        "call that needs it, or drop it from ARM_READ_ACTIONS. If you are "
+        "deliberately declaring ahead of a rule, verify the string first with "
+        "`az provider operation show --namespace <Namespace>` -- an invalid one "
+        "fails the whole ARM deployment, not just that permission."
+    )
+
+
+def test_the_role_is_small_enough_to_read() -> None:
+    """Reader is `*/read` across every provider. The point of a custom role is
+    that a human can check this list in full."""
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS
+
+    assert len(ARM_READ_ACTIONS) <= 20
