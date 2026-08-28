@@ -7,7 +7,7 @@ again, and the SDKs are synchronous. MSAL — Microsoft's own auth library — s
 handles every token.
 """
 
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 import httpx
 
@@ -33,6 +33,16 @@ class AzureApiError(CloudConnectionError):
 
 class _BaseClient:
     base_url: str
+
+    # What a 403 from this surface actually means, in terms the customer can
+    # act on. ARM access and Graph access are granted by two different people
+    # doing two different things -- a role deployment and an admin consent --
+    # and they fail independently, which is why ``validate_connection`` probes
+    # them separately (AZURE_INTEGRATION.md section 2). A single sentence
+    # naming both remedies throws that distinction away at the last step and
+    # sends half of everyone who reads it to a blade that looks correctly
+    # configured, because for their failure it is.
+    access_denied_hint: ClassVar[str] = ""
 
     def __init__(self, tokens: TokenProvider, client: httpx.AsyncClient | None = None) -> None:
         self.tokens = tokens
@@ -61,8 +71,8 @@ class _BaseClient:
 
         if response.status_code == 403:
             raise AzureApiError(
-                "Access denied. Check that the Reader role is assigned and admin consent "
-                "was granted.",
+                f"Access denied. {self.access_denied_hint}"
+                f"{self._reported_detail(response)}",
                 status_code=403,
             )
         if response.status_code == 429:
@@ -71,17 +81,30 @@ class _BaseClient:
                 f"Azure is throttling requests (retry after {retry_after}s)", status_code=429
             )
         if response.status_code >= 400:
-            detail = ""
-            try:
-                detail = response.json().get("error", {}).get("message", "")
-            except Exception:
-                detail = response.text[:200]
             raise AzureApiError(
-                f"Azure API returned {response.status_code}: {detail}",
+                f"Azure API returned {response.status_code}: {self._detail(response)}",
                 status_code=response.status_code,
             )
 
         return response.json()
+
+    @staticmethod
+    def _detail(response: httpx.Response) -> str:
+        """Azure's own account of what went wrong, however it chose to send it."""
+        try:
+            return str(response.json().get("error", {}).get("message", ""))
+        except Exception:
+            return response.text[:200]
+
+    def _reported_detail(self, response: httpx.Response) -> str:
+        """The provider's message, appended only when it says something.
+
+        Graph in particular answers a missing grant with "Insufficient
+        privileges to complete the operation", which names the shape of the
+        problem better than any sentence written here can.
+        """
+        detail = self._detail(response).strip()
+        return f" Azure reported: {detail}" if detail else ""
 
     async def get_all(
         self, url: str, params: dict[str, Any] | None = None, max_pages: int = 50
@@ -111,6 +134,14 @@ class ArmClient(_BaseClient):
     """Azure Resource Manager — subscriptions, resources, configuration."""
 
     base_url = ARM_BASE
+    # Not "the Reader role": CloudGuard stopped asking for Reader when the
+    # custom role landed, and a customer sent to look for a Reader assignment
+    # will not find one even on a correctly configured connection.
+    access_denied_hint: ClassVar[str] = (
+        "CloudGuard's scanner role is not assigned on this scope. Redeploy it "
+        "from the connection page, or check Access control (IAM) on the "
+        "subscription. This is not affected by admin consent."
+    )
 
     def _auth_header(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.tokens.arm_token()}"}
@@ -203,6 +234,14 @@ class GraphClient(_BaseClient):
     """Microsoft Graph — directory objects, roles, authentication methods."""
 
     base_url = GRAPH_BASE
+    # Everything in the identity category comes through here, and none of it
+    # goes anywhere near Azure RBAC.
+    access_denied_hint: ClassVar[str] = (
+        "Admin consent for CloudGuard's directory permissions is missing or "
+        "incomplete. A Global Administrator must grant it under Microsoft "
+        "Entra ID > Enterprise applications > CloudGuard > Permissions. "
+        "Azure role assignments do not affect this."
+    )
 
     def _auth_header(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.tokens.graph_token()}"}
