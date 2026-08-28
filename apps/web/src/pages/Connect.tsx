@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
 import { useT } from "@/i18n";
@@ -334,6 +334,21 @@ function ConnectionCard({
         connection.rbac_verified_at && (
           <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
         )}
+
+      {/* Verified with subscriptions in scope. Scanning lives on another page,
+          and nothing here said so — the flow ended on a green tick and left
+          the customer to guess what came next. */}
+      {connection.is_verified && scoped.length > 0 && (
+        <div className="mt-4 rounded-lg border border-ok-border bg-ok-bg px-4 py-3">
+          <p className="text-sm font-medium text-ok">{t.connection.readyToScan}</p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+            {scoped.length} {t.connection.inScopeCount}.
+          </p>
+          <Link to="/scans" className="mt-3 inline-block">
+            <Button>{t.connection.runFirstScan}</Button>
+          </Link>
+        </div>
+      )}
 
       {cancelled && (
         <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">

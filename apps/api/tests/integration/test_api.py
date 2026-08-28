@@ -223,6 +223,37 @@ class TestOrganizationDeletion:
         assert response.status_code == 404
 
 
+class TestConnectionListing:
+    async def test_the_list_carries_subscriptions_not_just_a_count(
+        self, client, cleanup_orgs
+    ) -> None:
+        """The connections page renders from this endpoint.
+
+        When it returned only a count, a verified connection showed no
+        subscriptions at all: the per-connection request that would have
+        supplied them never fired, because a card with nothing left to poll for
+        stops polling. The data has to be here.
+        """
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Listing Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        await client.post(
+            "/api/v1/cloud-connections",
+            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
+            headers=auth_header(user),
+        )
+
+        rows = (
+            await client.get("/api/v1/cloud-connections", headers=auth_header(user))
+        ).json()["data"]
+        assert len(rows) == 1
+        # Present and empty, rather than absent: the card distinguishes "none
+        # discovered" from "not told", and they render differently.
+        assert rows[0]["subscriptions"] == []
+        assert rows[0]["subscription_count"] == 0
+
+
 class TestCloudConnections:
     async def test_connection_screen_never_asks_for_a_credential(self, client) -> None:
         """The published contract: read-only, no customer secret."""

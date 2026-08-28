@@ -184,7 +184,9 @@ async def create_connection(
 @router.get("")
 async def list_connections(session: DbSession, tenant: Tenant) -> dict:
     rows = await service.list_connections(session, tenant)
-    return envelope([_serialize(c, sub_count) for c, sub_count in rows])
+    return envelope(
+        [_serialize(c, len(subs), subs) for c, subs in rows]
+    )
 
 
 @router.get("/{connection_id}")

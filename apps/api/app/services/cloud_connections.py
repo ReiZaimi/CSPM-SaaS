@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.azure.auth import build_consent_url, sign_state
@@ -147,21 +147,50 @@ async def get_connection_with_subscriptions(
 
 async def list_connections(
     session: AsyncSession, tenant: TenantContext
-) -> list[tuple[CloudConnection, int]]:
-    """All connections for the org, each with a subscription count."""
-    rows = (
-        await session.execute(
-            select(
-                CloudConnection,
-                func.count(CloudAccount.id).label("sub_count"),
+) -> list[tuple[CloudConnection, list[CloudAccount]]]:
+    """All connections for the org, each with its discovered subscriptions.
+
+    The subscriptions come back here, not only from the per-connection
+    endpoint. The connections page renders from this list, and when it carried
+    only a count the cards showed no subscriptions at all for a verified
+    connection -- the detail request that would have supplied them never fired,
+    because a card that is already verified has nothing left to poll for.
+    """
+    connections = list(
+        (
+            await session.execute(
+                select(CloudConnection)
+                .where(CloudConnection.organization_id == tenant.organization_id)
+                .order_by(CloudConnection.created_at.desc())
             )
-            .outerjoin(CloudAccount, CloudAccount.connection_id == CloudConnection.id)
-            .where(CloudConnection.organization_id == tenant.organization_id)
-            .group_by(CloudConnection.id)
-            .order_by(CloudConnection.created_at.desc())
         )
-    ).all()
-    return [(row[0], row[1]) for row in rows]
+        .scalars()
+        .all()
+    )
+    if not connections:
+        return []
+
+    # One query for every connection's subscriptions rather than one each.
+    accounts = list(
+        (
+            await session.execute(
+                select(CloudAccount)
+                .where(
+                    CloudAccount.connection_id.in_([c.id for c in connections]),
+                )
+                .order_by(CloudAccount.display_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    grouped: dict[UUID, list[CloudAccount]] = {}
+    for account in accounts:
+        if account.connection_id:
+            grouped.setdefault(account.connection_id, []).append(account)
+
+    return [(c, grouped.get(c.id, [])) for c in connections]
 
 
 async def _list_subscriptions(

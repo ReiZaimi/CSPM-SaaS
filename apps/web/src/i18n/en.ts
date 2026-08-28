@@ -124,6 +124,11 @@ export const en = {
     cancelSetupAction: "Cancel setup",
     resumeSetup: "Resume setup",
     setupCancelled: "Setup cancelled",
+    readyToScan: "Ready to scan",
+    runFirstScan: "Run a scan",
+    noSubscriptionsYet: "No subscriptions discovered yet",
+    noSubscriptionsYetHelp:
+      "The connection is verified but nothing was found beneath it. If the scanner role was deployed at a narrower scope than this connection covers, no subscription is visible to it.",
     cannotStartConsent: "CloudGuard cannot start the consent flow",
     cannotDeployYet: "CloudGuard cannot generate the deployment yet",
     whoYouNeed: "Who you will need",
