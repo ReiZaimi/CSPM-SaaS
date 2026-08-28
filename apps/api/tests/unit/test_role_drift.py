@@ -61,6 +61,30 @@ def test_every_historical_version_is_a_subset_of_today() -> None:
         assert not unknown, f"role {version} grants actions no longer defined: {unknown}"
 
 
+def test_a_superseded_version_granted_strictly_less_than_today() -> None:
+    """The guard that was missing, and the reason this file gained a test.
+
+    ``ROLE_HISTORY`` first shipped as ``{"v1": ARM_READ_ACTIONS}``, which binds
+    the name rather than the value. Appending an action for v2 would have
+    redefined v1 to match it, ``actions_missing_from("v1")`` would have returned
+    nothing, and every existing customer would have been judged up to date --
+    the whole mechanism quietly doing nothing.
+
+    Equality with today's role is the signature of that mistake: a version that
+    granted exactly what the current one grants is a version there was no
+    reason to publish. The two guards above both passed while it was true, so
+    this is the one that has to hold.
+    """
+    for version, actions in ROLE_HISTORY.items():
+        if version == ROLE_VERSION:
+            continue
+        assert set(actions) < set(ARM_READ_ACTIONS), (
+            f"role {version} grants exactly what {ROLE_VERSION} does. Either the "
+            f"bump added nothing, or {version}'s entry is aliasing "
+            "ARM_READ_ACTIONS instead of recording what it actually granted."
+        )
+
+
 def test_collection_actions_are_real_granted_actions() -> None:
     for category, actions in COLLECTION_ACTIONS.items():
         for action in actions:

@@ -233,9 +233,18 @@ class ScanPipeline:
         # --- normalize ------------------------------------------------------
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
         state = connector.normalize(snapshot)
-        id_map = await self._persist_resources(
-            session, org_id, account.id, state, observed_at
-        )
+        if mutate_findings:
+            id_map = await self._persist_resources(
+                session, org_id, account.id, state, observed_at
+            )
+        else:
+            # A superseded capture describes an environment that has since moved
+            # on. Upserting from it would overwrite live criticality, exposure
+            # and metadata with historical values -- the columns the risk scorer
+            # reads -- and re-create resources deleted since. ``evaluation_only``
+            # means the run changes nothing, and the asset inventory is part of
+            # "nothing".
+            id_map = await self._existing_resource_ids(session, org_id, account.id)
         scan.resource_count = len(state.resources)
 
         # Now the size of the job is known, so progress can be a count
@@ -266,8 +275,12 @@ class ScanPipeline:
             await self._verify_remediations(session, org_id, scan, report, id_map)
         else:
             # What today's rules would have raised against that capture,
-            # reported as a number without being written down as fact.
-            finding_count = len(report.failures)
+            # reported as a number without being written down as fact --
+            # counted the same way a real scan counts, so the two are
+            # comparable in the column that shows them side by side.
+            finding_count = await self._would_be_open_count(
+                session, org_id, report, id_map
+            )
 
         scan.finding_count = finding_count
         scan.completed_at = datetime.now(UTC)
@@ -283,6 +296,69 @@ class ScanPipeline:
             coverage=round(report.coverage_ratio, 3),
             evaluation_only=scan.evaluation_only,
         )
+
+    async def _existing_resource_ids(
+        self, session: AsyncSession, org_id: UUID, account_id: UUID
+    ) -> dict[str, UUID]:
+        """Provider id -> database id, read without writing anything.
+
+        The evaluation-only counterpart to ``_persist_resources``. Resources in
+        the snapshot that no longer have a row simply have no id, so the gaps
+        they produce are recorded against the scan rather than against an asset
+        -- which is accurate: there is no asset to point at any more.
+        """
+        rows = (
+            (
+                await session.execute(
+                    select(
+                        ResourceRecord.provider_resource_id, ResourceRecord.id
+                    ).where(
+                        ResourceRecord.organization_id == org_id,
+                        ResourceRecord.cloud_account_id == account_id,
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        return dict(rows)
+
+    async def _would_be_open_count(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        report: EvaluationReport,
+        id_map: dict[str, UUID],
+    ) -> int:
+        """How many failures a real scan would have counted as open findings.
+
+        ``_persist_findings`` returns the number of *open* findings, so a plain
+        ``len(report.failures)`` would report a larger number for identical
+        state: a finding someone has accepted is still a FAIL, and still not
+        something the scans list should count. RESOLVED and FALSE_POSITIVE are
+        counted, because a real scan reopens both on re-detection.
+        """
+        keys = {
+            (f.rule.rule_id, id_map.get(f.resource.provider_resource_id) if f.resource else None)
+            for f in report.failures
+        }
+        if not keys:
+            return 0
+
+        accepted = {
+            (row.rule_id, row.resource_id)
+            for row in (
+                await session.execute(
+                    select(Finding).where(
+                        Finding.organization_id == org_id,
+                        Finding.status == FindingStatus.ACCEPTED_RISK,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        return len(keys - accepted)
 
     # --------------------------------------------------------------- snapshots
     async def _stored_snapshot(

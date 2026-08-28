@@ -613,6 +613,72 @@ class TestSnapshotReplay:
         )
         assert gaps[0][0] > 0
 
+    async def test_a_superseded_replay_leaves_the_asset_inventory_alone(
+        self, replay, connected_account
+    ) -> None:
+        """The columns the risk scorer reads must not be rewritten from a
+        capture that has been superseded.
+
+        ``last_seen_at`` was guarded from the start; every other column was
+        assigned outright, so a replay of an old snapshot wrote historical
+        exposure and metadata over live rows and re-created resources deleted
+        since. This asserts the whole row, not one field.
+        """
+        org_id, account_id = connected_account
+        stale_scan_id = await run_scan(org_id, account_id)
+
+        # The environment moves on: a storage account is locked down, and the
+        # snapshot it is locked down in becomes the newest.
+        fixed = load_raw()
+        for account in fixed["data"]["storage_accounts"]:
+            account["properties"]["allowBlobPublicAccess"] = False
+        replay["payload"] = fixed
+        await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT id, resource_type, name, region, criticality, data_sensitivity, "
+            "public_exposure, metadata, first_seen_at, last_seen_at "
+            "FROM cloud_resources WHERE organization_id = :o ORDER BY id",
+            {"o": org_id},
+        )
+        await run_replay(org_id, account_id, stale_scan_id)
+        after = await fetch(
+            "SELECT id, resource_type, name, region, criticality, data_sensitivity, "
+            "public_exposure, metadata, first_seen_at, last_seen_at "
+            "FROM cloud_resources WHERE organization_id = :o ORDER BY id",
+            {"o": org_id},
+        )
+
+        assert after == before, "a superseded capture must not rewrite any asset"
+
+    async def test_replaying_a_replay_resolves_to_the_capture_underneath(
+        self, replay, connected_account
+    ) -> None:
+        """Only a scan that collected owns a snapshot, so pointing a replay at
+        another replay would queue a run guaranteed to fail."""
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+        first_replay_id = await run_replay(org_id, account_id, original_id)
+
+        async with service_session() as session:
+            second = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+                replay_of_scan_id=first_replay_id,
+            )
+            session.add(second)
+            await session.commit()
+            second_id = second.id
+
+        # Pointed straight at a replay, the pipeline has nothing to read and
+        # says so rather than raising -- the route is what resolves the chain.
+        await ScanPipeline(second_id).replay()
+        async with service_session() as session:
+            failed = await session.get(Scan, second_id)
+        assert failed.status == ScanStatus.FAILED
+        assert "no stored snapshot" in failed.error_message
+
     async def test_a_replay_does_not_backdate_last_seen_on_assets(
         self, replay, connected_account
     ) -> None:

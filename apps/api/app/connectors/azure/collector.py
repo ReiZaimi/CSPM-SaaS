@@ -112,7 +112,13 @@ class AzureCollector:
             snapshot.data.update(await collect())
         except Exception as exc:
             message = str(exc) or type(exc).__name__
-            snapshot.errors[category] = message
+            # Appended, not assigned. A collector may already have recorded a
+            # specific per-call reason before something later in the same
+            # category raised -- ``_collect_identity`` does exactly that -- and
+            # overwriting it would trade "Grant User.Read.All and re-consent"
+            # for whatever the second failure happened to say.
+            recorded = snapshot.errors.get(category)
+            snapshot.errors[category] = f"{recorded}; {message}" if recorded else message
             log.warning(
                 "azure.collection_failed",
                 category=category,

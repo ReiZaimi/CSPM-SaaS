@@ -164,10 +164,26 @@ async def validate(denied_paths: set[str]):
     return await connector.validate_connection()
 
 
+def test_every_probe_is_a_real_graph_method() -> None:
+    """Probes hold the function, not its name.
+
+    They were strings resolved with ``getattr`` inside the same ``try`` that
+    catches a 403, so renaming a GraphClient method would have reported a
+    missing Graph permission to every customer -- asking them to change their
+    Entra configuration to fix a typo in ours. Holding the callable moves that
+    failure to import time, and this asserts it stays that way.
+    """
+    from app.connectors.azure.client import GraphClient
+
+    for probe, _subject, _permission in GRAPH_PROBES:
+        assert callable(probe)
+        assert getattr(GraphClient, probe.__name__, None) is probe
+
+
 async def test_a_healthy_tenant_verifies_every_probe() -> None:
     check = await validate(set())
 
-    for _method, subject, _permission in GRAPH_PROBES:
+    for _probe, subject, _permission in GRAPH_PROBES:
         assert f"Microsoft Graph: {subject}" in check.permissions_verified
     assert check.ok
 
@@ -207,3 +223,20 @@ async def test_each_missing_permission_is_reported_separately() -> None:
 
     assert len(check.problems) == 2, "two missing permissions, two instructions"
     assert check.permissions_verified  # the tenant read still succeeded
+
+
+async def test_a_later_failure_does_not_erase_the_per_call_diagnosis() -> None:
+    """``_collect_category`` used to assign ``errors[category]``, so a second
+    failure inside the same category replaced the specific instruction with
+    whatever it happened to say. The two are joined instead."""
+    collector_ = collector()
+    snap = snapshot()
+
+    async def explode() -> dict:
+        await collector_._collect_identity(FakeGraph(denied={"list_users"}), snap)
+        raise RuntimeError("the gather blew up")
+
+    await collector_._collect_category(snap, "identity", explode)
+
+    assert "directory users could not be read" in snap.errors["identity"]
+    assert "the gather blew up" in snap.errors["identity"]

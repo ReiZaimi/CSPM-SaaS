@@ -104,6 +104,18 @@ async def replay_scan_endpoint(scan_id: UUID, session: DbSession, tenant: Tenant
     tenant.require_write()
     source = await scans_service.get_scan(session, tenant, scan_id)
 
+    # Replaying a replay resolves to the capture underneath it. Only a scan
+    # that collected owns a snapshot, so pointing at a replay would queue a run
+    # guaranteed to fail with "no stored snapshot" -- which reads as data loss
+    # rather than as the harmless thing it is. One hop always reaches a
+    # collecting scan, because this is the only code that sets the column and
+    # it never sets it to another replay.
+    if source.replay_of_scan_id is not None:
+        origin = await scans_service.get_scan(
+            session, tenant, source.replay_of_scan_id
+        )
+        source = origin
+
     if not source.status.is_terminal:
         raise ConflictError(
             "That scan has not finished yet. Wait for it to complete before "

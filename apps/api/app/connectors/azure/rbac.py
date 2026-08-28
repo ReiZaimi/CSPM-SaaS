@@ -121,8 +121,30 @@ COLLECTION_ACTIONS: dict[str, tuple[str, ...]] = {
 # way to know which checks their role cannot serve is to have kept the record.
 #
 # Bumping ROLE_VERSION means adding an entry here, never editing an old one.
+#
+# Every version is written out literally, and that repetition is the point.
+# Writing ``"v1": ARM_READ_ACTIONS`` reads as the same thing and is not: it
+# binds the *name*, so the next person to append an action for v2 would silently
+# redefine what v1 granted as well. v1 and v2 would then hold identical action
+# sets, ``actions_missing_from("v1")`` would return nothing, and no customer
+# would ever be told to redeploy -- the exact silence this module exists to
+# break, reintroduced by an edit that looks like housekeeping.
 ROLE_HISTORY: dict[str, tuple[str, ...]] = {
-    "v1": ARM_READ_ACTIONS,
+    "v1": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    ),
 }
 
 

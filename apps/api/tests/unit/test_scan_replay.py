@@ -129,9 +129,11 @@ def pipeline(monkeypatch: pytest.MonkeyPatch) -> ScanPipeline:
         return record
 
     monkeypatch.setattr(pipe, "_persist_resources", recorder("resources", {}))
+    monkeypatch.setattr(pipe, "_existing_resource_ids", recorder("read_resources", {}))
     monkeypatch.setattr(pipe, "_persist_coverage", recorder("coverage"))
     monkeypatch.setattr(pipe, "_persist_findings", recorder("findings", 7))
     monkeypatch.setattr(pipe, "_verify_remediations", recorder("verify"))
+    monkeypatch.setattr(pipe, "_would_be_open_count", recorder("would_be_open", 2))
     return pipe
 
 
@@ -176,6 +178,7 @@ async def test_a_current_snapshot_writes_findings_and_verifies_fixes(
 
     assert "findings" in pipeline.calls
     assert "verify" in pipeline.calls
+    assert "resources" in pipeline.calls, "a current capture updates the inventory"
     assert scan.status == ScanStatus.COMPLETED
 
 
@@ -199,8 +202,9 @@ async def test_a_stale_snapshot_writes_no_findings_and_resolves_nothing(
     assert "findings" not in pipeline.calls
     assert "verify" not in pipeline.calls
     assert "coverage" in pipeline.calls
-    # Reported, not recorded: the number the rules would have raised.
-    assert scan.finding_count == 3
+    # Reported, not recorded: the number the rules would have raised, counted
+    # the way a real scan counts so the two are comparable.
+    assert scan.finding_count == 2
 
 
 async def test_a_replay_of_a_partial_snapshot_stays_partial(
@@ -222,3 +226,52 @@ async def test_a_replay_of_a_partial_snapshot_stays_partial(
         mutate_findings=True,
     )
     assert scan.status == ScanStatus.PARTIAL
+
+
+async def test_a_stale_snapshot_does_not_touch_the_asset_inventory(
+    pipeline: ScanPipeline,
+) -> None:
+    """``evaluation_only`` means the run changes nothing, and the asset
+    inventory is part of nothing.
+
+    Upserting from a superseded capture would write historical criticality,
+    exposure and metadata over live rows -- the columns the risk scorer reads --
+    and re-create resources deleted since, which nothing ever cleans up. The
+    ids still have to be resolved for the coverage ledger, so they are read
+    rather than written.
+    """
+    await pipeline._evaluate(
+        FakeSession(),
+        make_scan(),
+        make_account(),
+        FakeConnector(),
+        RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s"),
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        mutate_findings=False,
+    )
+
+    assert "resources" not in pipeline.calls, "a stale capture must not upsert assets"
+    assert "read_resources" in pipeline.calls, "ids are still needed for coverage"
+
+
+async def test_the_reported_count_uses_the_same_rule_as_a_real_scan(
+    pipeline: ScanPipeline,
+) -> None:
+    """``len(report.failures)`` would have counted findings someone has already
+    accepted, so an unchanged environment would report more findings on replay
+    than on the scan it replayed, in the same column."""
+    scan = make_scan()
+    await pipeline._evaluate(
+        FakeSession(),
+        scan,
+        make_account(),
+        FakeConnector(),
+        RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s"),
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        mutate_findings=False,
+    )
+
+    assert "would_be_open" in pipeline.calls
+    # Three rules failed; the count is not simply three.
+    assert len(pipeline.engine.report.failures) == 3
+    assert scan.finding_count == 2

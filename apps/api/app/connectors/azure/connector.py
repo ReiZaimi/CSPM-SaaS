@@ -1,5 +1,6 @@
 """The Azure connector: validate, collect, normalize."""
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -24,11 +25,15 @@ log = get_logger(__name__)
 # else, plus the tenant read that proves consent happened at all. The deeper
 # identity calls are absent on purpose -- they already degrade to UNKNOWN
 # individually, so they cost a category rather than a connection.
-GRAPH_PROBES: tuple[tuple[str, str, str], ...] = (
-    ("get_organization", "the tenant directory", "Directory.Read.All"),
-    ("list_users", "directory users", "User.Read.All or Directory.Read.All"),
+# The call is the function itself, not its name. Looking it up with getattr
+# inside the same try that catches a 403 would turn a rename into a permission
+# diagnosis: every customer told to change their Entra configuration to fix a
+# typo in ours. Referencing the method here fails at import instead.
+GRAPH_PROBES: tuple[tuple[Callable[[GraphClient], Awaitable[Any]], str, str], ...] = (
+    (GraphClient.get_organization, "the tenant directory", "Directory.Read.All"),
+    (GraphClient.list_users, "directory users", "User.Read.All or Directory.Read.All"),
     (
-        "list_directory_roles",
+        GraphClient.list_directory_roles,
         "directory roles",
         "RoleManagement.Read.Directory or Directory.Read.All",
     ),
@@ -73,9 +78,9 @@ class AzureConnector(CloudConnector):
         # endpoint answers with much less, so a connection could validate green
         # and then lose the whole identity category to a 403 on the first scan.
         async with GraphClient(tokens, self._http) as graph:
-            for method, subject, permission in GRAPH_PROBES:
+            for probe, subject, permission in GRAPH_PROBES:
                 try:
-                    await getattr(graph, method)()
+                    await probe(graph)
                 except Exception as exc:
                     check.problems.append(
                         f"CloudGuard cannot read {subject}. Grant {permission} as an "
