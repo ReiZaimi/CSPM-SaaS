@@ -28,6 +28,8 @@ from app.connectors.azure.rbac import (
     ROLE_VERSION,
     TemplateContext,
     arm_template,
+    categories_behind,
+    role_is_current,
 )
 from app.connectors.base import ConnectionCheck
 from app.core.config import settings
@@ -37,6 +39,7 @@ from app.core.enums import (
     CloudAccountStatus,
     ConnectionScope,
     ConsentStatus,
+    Provider,
 )
 from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
 from app.core.logging import get_logger
@@ -414,6 +417,43 @@ def render_template(connection: CloudConnection) -> str:
         role_version=connection.role_version,
     )
     return arm_template(context)
+
+
+def role_upgrade_available(connection: CloudConnection) -> bool:
+    """Whether this connection's deployed role is older than the one CloudGuard
+    now needs.
+
+    ``CloudConnection.role_version`` has been stamped at creation since
+    connections existed, and until now nothing ever read it back. That made the
+    version a label rather than a mechanism: bumping ``ROLE_VERSION`` to ship a
+    check needing a new ARM action would leave every existing customer silently
+    collecting UNKNOWN for it, with no prompt and no explanation.
+    """
+    return connection.provider == Provider.AZURE and not role_is_current(
+        connection.role_version
+    )
+
+
+def degraded_categories(connection: CloudConnection) -> dict[str, str]:
+    """Collection categories this connection's role cannot fully serve.
+
+    Returns category -> the sentence to show the customer. Empty when the role
+    is current, and empty for any provider that has no such notion, so the
+    scanner can call it without knowing which cloud it is looking at.
+    """
+    if not role_upgrade_available(connection):
+        return {}
+
+    explanation = (
+        f"CloudGuard's scanner role was updated to {ROLE_VERSION} and this "
+        f"connection still has {connection.role_version}, which does not grant "
+        "the permissions these checks need. Redeploy the role from the "
+        "connection page to enable them."
+    )
+    return {
+        category: explanation
+        for category in categories_behind(connection.role_version)
+    }
 
 
 def deploy_to_azure_url(connection: CloudConnection) -> str | None:

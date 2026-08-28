@@ -45,6 +45,7 @@ def _serialize(
     # Lets the card stop showing a spinner once waiting has stopped being a
     # plausible explanation for the silence.
     data["deploy_stalled"] = service.deploy_stalled(connection)
+    data["role_upgrade_available"] = service.role_upgrade_available(connection)
 
     # Regenerated on every read, not just on create. Returning it only from the
     # create response meant a page reload lost the consent button and left the

@@ -88,6 +88,72 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
 }
 
+# Which collection category each ARM action serves, for the categories the
+# collector actually gathers. Identity is Graph-only and has no ARM action;
+# the two Authorization reads serve connection verification rather than a
+# collection category, so neither appears here.
+#
+# This exists so a 403 can be explained rather than merely reported. When a
+# customer's deployed role predates a check, the resulting failure is not
+# "Forbidden" -- it is "redeploy the role", which is a thing they can act on.
+COLLECTION_ACTIONS: dict[str, tuple[str, ...]] = {
+    "resources": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+    ),
+    "network": (
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+    ),
+    "compute": ("Microsoft.Compute/virtualMachines/read",),
+    "storage": ("Microsoft.Storage/storageAccounts/read",),
+    "database": (
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+    ),
+    "logging": ("Microsoft.Insights/diagnosticSettings/read",),
+}
+
+# What each published role version granted. Frozen once shipped: a customer's
+# deployed role is whatever it was on the day they deployed it, and the only
+# way to know which checks their role cannot serve is to have kept the record.
+#
+# Bumping ROLE_VERSION means adding an entry here, never editing an old one.
+ROLE_HISTORY: dict[str, tuple[str, ...]] = {
+    "v1": ARM_READ_ACTIONS,
+}
+
+
+def actions_missing_from(role_version: str) -> tuple[str, ...]:
+    """Actions the current role requires that ``role_version`` never granted.
+
+    An unrecognised version is treated as granting nothing. That is the safe
+    direction: a role CloudGuard has no record of is one whose contents it
+    cannot vouch for, and over-reporting a gap costs a redeploy prompt while
+    under-reporting one costs silent UNKNOWNs.
+    """
+    granted = frozenset(ROLE_HISTORY.get(role_version, ()))
+    return tuple(a for a in ARM_READ_ACTIONS if a not in granted)
+
+
+def categories_behind(role_version: str) -> frozenset[str]:
+    """Collection categories ``role_version`` cannot fully serve."""
+    missing = frozenset(actions_missing_from(role_version))
+    if not missing:
+        return frozenset()
+    return frozenset(
+        category
+        for category, actions in COLLECTION_ACTIONS.items()
+        if missing.intersection(actions)
+    )
+
+
+def role_is_current(role_version: str) -> bool:
+    return not actions_missing_from(role_version)
+
+
 # Anything granted that no collector call reaches. Expected to be empty: the
 # role is trimmed to what the scanner proves it needs. Derived rather than
 # hand-listed so it cannot disagree with the two definitions above, and

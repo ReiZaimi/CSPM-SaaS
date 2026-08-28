@@ -55,6 +55,11 @@ class CloudConnectionOut(BaseModel):
     # True once the deployment has been outstanding long enough that "still in
     # progress" no longer explains it.
     deploy_stalled: bool = False
+    # True when CloudGuard's scanner role has moved on since this connection
+    # deployed it. Checks needing the newer permissions cannot be evaluated
+    # until the customer redeploys, so this drives a prompt rather than leaving
+    # them to wonder why a rule reports UNKNOWN.
+    role_upgrade_available: bool = False
 
 
 class DiscoveredSubscription(BaseModel):
