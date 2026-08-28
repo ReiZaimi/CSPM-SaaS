@@ -437,6 +437,12 @@ async def try_auto_validate(
     ``DEPLOY_PATIENCE_SECONDS`` it stops being quiet, because by then silence is
     indistinguishable from a deployment that went wrong.
     """
+    # A cancelled setup stops being polled. Otherwise "cancel" would mean only
+    # that the spinner went away, while the server kept calling Azure every ten
+    # seconds on behalf of a customer who said stop.
+    if connection.status == CloudAccountStatus.DISABLED:
+        return connection
+
     if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
         return connection
 
@@ -627,3 +633,49 @@ def graph_permissions() -> list[str]:
 
 def arm_actions() -> list[str]:
     return list(ARM_READ_ACTIONS)
+
+
+SETUP_CANCELLED_DETAIL = (
+    "Setup cancelled. Nothing was scanned. Resume when you are ready, or "
+    "remove the connection."
+)
+
+
+async def set_setup_cancelled(
+    session: AsyncSession,
+    tenant: TenantContext,
+    connection_id: UUID,
+    cancelled: bool,
+) -> CloudConnection:
+    """Stop or restart the setup process for a connection.
+
+    Deliberately reversible, and deliberately not a delete. Cancelling is what
+    someone wants when the person who has to run the Azure deployment is not
+    available today -- throwing the connection away would mean redoing admin
+    consent, which needs a Global Administrator, to get back to exactly where
+    they already were.
+
+    A verified connection cannot be cancelled: there is no setup left to stop,
+    and DISABLED there would read as "stop scanning", which is a different
+    feature and not this one.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if cancelled and connection.is_verified:
+        raise ValidationFailed(
+            "This connection is already verified, so there is no setup to cancel."
+        )
+
+    if cancelled:
+        connection.status = CloudAccountStatus.DISABLED
+        connection.status_detail = SETUP_CANCELLED_DETAIL
+    else:
+        connection.status = CloudAccountStatus.PENDING
+        connection.status_detail = (
+            READY_TO_DEPLOY
+            if connection.consent_status == ConsentStatus.GRANTED
+            else "Grant admin consent to continue."
+        )
+
+    await session.commit()
+    return connection

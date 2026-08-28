@@ -215,6 +215,26 @@ async def set_scope(
     return envelope([_serialize_subscription(a) for a in accounts])
 
 
+@router.post("/{connection_id}/cancel")
+async def cancel_setup(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Stop the setup process without discarding the connection."""
+    tenant.require_write()
+    connection = await service.set_setup_cancelled(
+        session, tenant, connection_id, cancelled=True
+    )
+    return envelope(_serialize(connection))
+
+
+@router.post("/{connection_id}/resume")
+async def resume_setup(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Pick setup back up where it was left."""
+    tenant.require_write()
+    connection = await service.set_setup_cancelled(
+        session, tenant, connection_id, cancelled=False
+    )
+    return envelope(_serialize(connection))
+
+
 @router.delete("/{connection_id}", status_code=status.HTTP_200_OK)
 async def delete_connection(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     tenant.require_role(Role.OWNER, Role.ADMIN)

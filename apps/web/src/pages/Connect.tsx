@@ -143,6 +143,20 @@ function ConnectionCard({
       setError(err instanceof Error ? err.message : "Could not save scope"),
   });
 
+  const cancelled = connection.status === "DISABLED" && !connection.is_verified;
+  // Setup is "in progress" from creation until the first successful probe.
+  const inProgress = !connection.is_verified && !cancelled;
+
+  const setCancelled = useMutation({
+    mutationFn: (value: boolean) =>
+      api.post(
+        `/api/v1/cloud-connections/${connection.id}/${value ? "cancel" : "resume"}`,
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cloud-connections"] }),
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : "Could not update the connection"),
+  });
+
   const remove = useMutation({
     mutationFn: () => api.del(`/api/v1/cloud-connections/${connection.id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cloud-connections"] }),
@@ -191,7 +205,7 @@ function ConnectionCard({
           consent flow. Previously this rendered nothing at all: a card with
           three grey ticks and no explanation or button, which is the same
           dead end whether the cause is fixable or not. */}
-      {connection.consent_status !== "GRANTED" && !connection.consent_url && (
+      {!cancelled && connection.consent_status !== "GRANTED" && !connection.consent_url && (
         <div className="mt-4 rounded-lg border border-high-border bg-high-bg px-4 py-3">
           <p className="text-sm font-medium text-high">
             {t.connection.cannotStartConsent}
@@ -203,7 +217,7 @@ function ConnectionCard({
       )}
 
       {/* Consent step: not yet granted */}
-      {connection.consent_status !== "GRANTED" && connection.consent_url && (
+      {!cancelled && connection.consent_status !== "GRANTED" && connection.consent_url && (
         <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
           <p className="text-sm text-stone-700">{connection.status_detail}</p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -220,7 +234,8 @@ function ConnectionCard({
       )}
 
       {/* Deploy step: consented but not yet verified */}
-      {connection.consent_status === "GRANTED" &&
+      {!cancelled &&
+        connection.consent_status === "GRANTED" &&
         !connection.rbac_verified_at &&
         connection.template_url && (
           <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
@@ -252,7 +267,8 @@ function ConnectionCard({
           waiting. A spinner here claimed progress that was not happening: the
           only thing that advances this state is the message being read and
           acted on, so it is shown as a problem with no spinner. */}
-      {connection.consent_status === "GRANTED" &&
+      {!cancelled &&
+        connection.consent_status === "GRANTED" &&
         !connection.rbac_verified_at &&
         !connection.template_url && (
           <div className="mt-4 rounded-lg border border-high-border bg-high-bg px-4 py-3">
@@ -319,6 +335,17 @@ function ConnectionCard({
           <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
         )}
 
+      {cancelled && (
+        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+          <p className="text-sm font-medium text-stone-800">
+            {t.connection.setupCancelled}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {connection.status_detail}
+          </p>
+        </div>
+      )}
+
       {/* Actions */}
       {confirmingRemove ? (
         <RemoveConfirm
@@ -327,7 +354,25 @@ function ConnectionCard({
           onCancel={() => setConfirmingRemove(false)}
         />
       ) : (
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {inProgress && (
+            <Button
+              variant="secondary"
+              onClick={() => setCancelled.mutate(true)}
+              disabled={setCancelled.isPending}
+            >
+              {t.connection.cancelSetupAction}
+            </Button>
+          )}
+          {cancelled && (
+            <Button
+              variant="secondary"
+              onClick={() => setCancelled.mutate(false)}
+              disabled={setCancelled.isPending}
+            >
+              {t.connection.resumeSetup}
+            </Button>
+          )}
           <Button
             variant="ghost"
             className="ml-auto text-critical hover:bg-critical-bg"

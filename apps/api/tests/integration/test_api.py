@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.main import app
@@ -151,6 +152,75 @@ class TestTenantIsolationOverHttp:
         body = (await client.get("/api/v1/findings", headers=auth_header(user))).json()
         assert body["data"] == []
         assert body["meta"]["total"] == 0
+
+
+class TestOrganizationDeletion:
+    async def test_an_owner_can_delete_their_organization(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Departing Ltd")
+
+        response = await client.delete(
+            f"/api/v1/organizations/{org}", headers=auth_header(user)
+        )
+        assert response.status_code == 200
+
+        remaining = (
+            await client.get("/api/v1/organizations", headers=auth_header(user))
+        ).json()["data"]
+        assert org not in [o["id"] for o in remaining]
+
+    async def test_a_non_owner_is_refused_rather_than_silently_ignored(
+        self, client, cleanup_orgs
+    ) -> None:
+        """RLS filters rows, it does not raise.
+
+        Without the app-layer role check a member who is not an owner would
+        issue a DELETE that matches nothing and receive a cheerful 200, while
+        the organization stands. That is the worst of both worlds: no deletion
+        and no complaint.
+        """
+        owner, member = uuid.uuid4(), uuid.uuid4()
+        org = await make_org(client, owner, "Shared Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        # No members API yet, so the membership is inserted directly. The
+        # service connection is the owner role, which bypasses RLS — exactly
+        # what a fixture needs and exactly what the API must never do.
+        from app.core.db import service_session
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO organization_members (organization_id, user_id, role) "
+                    "VALUES (:org, :user, 'SECURITY_ANALYST')"
+                ),
+                {"org": uuid.UUID(org), "user": member},
+            )
+            await session.commit()
+
+        response = await client.delete(
+            f"/api/v1/organizations/{org}", headers=auth_header(member)
+        )
+        assert response.status_code in (403, 404)
+
+        still_there = (
+            await client.get("/api/v1/organizations", headers=auth_header(owner))
+        ).json()["data"]
+        assert org in [o["id"] for o in still_there]
+
+    async def test_a_stranger_cannot_delete_an_organization(
+        self, client, cleanup_orgs
+    ) -> None:
+        owner, stranger = uuid.uuid4(), uuid.uuid4()
+        org = await make_org(client, owner, "Private Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.delete(
+            f"/api/v1/organizations/{org}", headers=auth_header(stranger)
+        )
+        assert response.status_code == 404
 
 
 class TestCloudConnections:

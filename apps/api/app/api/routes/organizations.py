@@ -41,3 +41,18 @@ async def get_organization(organization_id: UUID, session: DbSession, tenant: Te
     if org is None:
         raise OrganizationNotFound()
     return envelope(OrganizationOut.model_validate(org).model_dump(mode="json"))
+
+
+@router.delete("/{organization_id}", status_code=status.HTTP_200_OK)
+async def delete_organization(
+    organization_id: UUID, user: CurrentUser, session: DbSession
+) -> dict:
+    """Delete an organization and everything under it.
+
+    Takes the id from the path rather than the tenant header: this is the one
+    operation whose target is not "the organization I am currently working in",
+    and resolving it from the header would make deleting a *different* one
+    impossible from a single screen.
+    """
+    await service.delete_organization(session, user, organization_id)
+    return envelope({"deleted": str(organization_id)})

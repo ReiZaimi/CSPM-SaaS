@@ -32,6 +32,13 @@ export const en = {
     newOrganization: "Create organization",
     settings: "Cloud connections",
     unknownUser: "Signed in",
+    removeOrg: "Remove organization",
+    removingOrg: "Removing\u2026",
+    removeOrgTitle: "Remove",
+    removeOrgDetail:
+      "Its cloud connections, discovered subscriptions, assets, scan history, findings and risks are all deleted with it. This cannot be undone.",
+    removeOrgOwnerOnly: "Only an owner can remove an organization.",
+    keep: "Keep it",
   },
   auth: {
     signIn: "Sign in",
@@ -114,6 +121,9 @@ export const en = {
     managementGroupId: "Management group id",
     subscriptionId: "Subscription id",
     create: "Continue",
+    cancelSetupAction: "Cancel setup",
+    resumeSetup: "Resume setup",
+    setupCancelled: "Setup cancelled",
     cannotStartConsent: "CloudGuard cannot start the consent flow",
     cannotDeployYet: "CloudGuard cannot generate the deployment yet",
     whoYouNeed: "Who you will need",

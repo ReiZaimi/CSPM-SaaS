@@ -2,12 +2,13 @@
 
 import re
 import secrets
+from uuid import UUID
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import Role
-from app.core.errors import OrganizationNotFound
+from app.core.errors import OrganizationNotFound, PermissionDenied
 from app.core.security import AuthenticatedUser
 from app.models.organization import Organization, OrganizationMember
 from app.schemas.organization import OrganizationCreate
@@ -61,3 +62,44 @@ async def list_memberships(
     )
     rows = (await session.execute(stmt)).all()
     return [(org, Role(role)) for org, role in rows]
+
+
+async def delete_organization(
+    session: AsyncSession, user: AuthenticatedUser, organization_id: UUID
+) -> None:
+    """Delete an organization and everything under it. Owners only.
+
+    The membership check here is not a duplicate of the RLS policy, it is the
+    part that can *speak*. RLS filters rows rather than raising: a member who is
+    not an owner issues a DELETE that matches nothing and gets a cheerful 200
+    while the organization stands. Checking first turns that into a 403 that
+    says why.
+
+    Everything below an organization is removed with it -- connections,
+    discovered subscriptions, assets, scans, findings, risks and audit history,
+    fourteen tables in all, by ``ON DELETE CASCADE``. There is no soft delete
+    and no undo.
+    """
+    membership = (
+        await session.execute(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    # Indistinguishable from "does not exist", deliberately: a non-member
+    # learning that an organization exists is a small leak, but a free one.
+    if membership is None:
+        raise OrganizationNotFound()
+
+    if Role(membership.role) != Role.OWNER:
+        raise PermissionDenied("Only an owner can delete an organization")
+
+    organization = await session.get(Organization, organization_id)
+    if organization is None:  # pragma: no cover -- membership implies existence
+        raise OrganizationNotFound()
+
+    await session.delete(organization)
+    await session.commit()

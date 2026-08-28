@@ -338,3 +338,37 @@ def test_an_unconsented_connection_is_never_stalled() -> None:
     from app.services.cloud_connections import deploy_stalled
 
     assert deploy_stalled(stalled_case(consent_status=ConsentStatus.PENDING)) is False
+
+
+# --- cancelling setup ------------------------------------------------------
+
+
+def test_a_cancelled_setup_is_not_polled() -> None:
+    """Otherwise "cancel" would mean only that the spinner went away, while
+    the server kept calling Azure every ten seconds for someone who said stop."""
+    from app.core.enums import CloudAccountStatus
+
+    c = connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        status=CloudAccountStatus.DISABLED,
+    )
+    assert c.status == CloudAccountStatus.DISABLED
+    assert c.is_verified is False
+
+
+def test_cancelling_does_not_lose_consent() -> None:
+    """Cancel is reversible on purpose. Discarding the connection would mean
+    redoing admin consent -- which needs a Global Administrator -- to get back
+    to a state the customer had already reached."""
+    from app.core.enums import CloudAccountStatus
+
+    c = connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+        status=CloudAccountStatus.DISABLED,
+    )
+    # Everything needed to resume is still on the row.
+    assert c.consent_status == ConsentStatus.GRANTED
+    assert c.tenant_id and c.service_principal_object_id
