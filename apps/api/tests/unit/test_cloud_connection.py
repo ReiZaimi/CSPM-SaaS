@@ -372,3 +372,46 @@ def test_cancelling_does_not_lose_consent() -> None:
     # Everything needed to resume is still on the row.
     assert c.consent_status == ConsentStatus.GRANTED
     assert c.tenant_id and c.service_principal_object_id
+
+
+# --- revocation ------------------------------------------------------------
+
+
+def test_revocation_is_instructions_not_an_action() -> None:
+    """CloudGuard cannot revoke its own access, and should not be able to.
+
+    Deleting its role assignment needs roleAssignments/delete; removing its
+    service principal needs Graph write. A CloudGuard holding the first could
+    strip access from the customer's own administrators. The role has no write
+    action at all, so the commands are generated for the customer to run.
+    """
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS
+    from app.services.cloud_connections import revocation_steps
+
+    assert all(a.endswith("/read") for a in ARM_READ_ACTIONS)
+
+    steps = revocation_steps(
+        granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9")
+    )
+    assert steps["why_manual"]
+    commands = [s["command"] for s in steps["steps"]]
+    assert any("az role assignment delete" in c for c in commands)
+    assert any("az ad sp delete" in c for c in commands)
+
+
+def test_revocation_commands_are_filled_in_for_this_connection() -> None:
+    principal = "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+    from app.services.cloud_connections import revocation_steps
+
+    steps = revocation_steps(granted(service_principal_object_id=principal))
+    for step in steps["steps"]:
+        assert "<" not in step["command"], step["command"]
+    assert all(principal in s["command"] or "role definition" in s["command"]
+               for s in steps["steps"])
+
+
+def test_no_commands_before_there_is_anything_to_revoke() -> None:
+    """Nothing was granted yet, so nothing is offered to take away."""
+    from app.services.cloud_connections import revocation_steps
+
+    assert revocation_steps(connection())["steps"] == []

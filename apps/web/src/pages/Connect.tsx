@@ -2,7 +2,12 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
-import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
+import type {
+  CloudConnection,
+  DiscoveredSubscription,
+  Revocation,
+  RevocationCheck,
+} from "@/lib/types";
 import { useT } from "@/i18n";
 import { Button, Card, EmptyState, ErrorNote, Spinner, StatusPill } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
@@ -364,6 +369,7 @@ function ConnectionCard({
       {/* Actions */}
       {confirmingRemove ? (
         <RemoveConfirm
+          connectionId={connection.id}
           busy={remove.isPending}
           onConfirm={() => remove.mutate()}
           onCancel={() => setConfirmingRemove(false)}
@@ -402,24 +408,101 @@ function ConnectionCard({
 }
 
 function RemoveConfirm({
+  connectionId,
   busy,
   onConfirm,
   onCancel,
 }: {
+  connectionId: string;
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   const t = useT();
+  const [checked, setChecked] = useState<RevocationCheck | null>(null);
+
+  const revocation = useQuery({
+    queryKey: ["connection-revocation", connectionId],
+    queryFn: () =>
+      api
+        .get<Revocation>(`/api/v1/cloud-connections/${connectionId}/revocation`)
+        .then((r) => r.data),
+  });
+
+  const check = useMutation({
+    mutationFn: () =>
+      api.post<RevocationCheck>(
+        `/api/v1/cloud-connections/${connectionId}/check-revoked`,
+      ),
+    onSuccess: ({ data }) => setChecked(data),
+  });
+
+  const steps = revocation.data?.steps ?? [];
+
   return (
     <div className="mt-4 rounded-lg border border-critical-border bg-critical-bg px-4 py-3">
       <p className="text-sm font-medium text-critical">{t.connection.removeTitle}</p>
       <p className="mt-1 text-xs leading-relaxed text-stone-700">
         {t.connection.removeDetail}
       </p>
-      <p className="mt-2 text-xs leading-relaxed text-stone-700">
-        {t.connection.removeAzureNote}
-      </p>
+
+      {/* Revocation sits inside the removal confirmation on purpose. It is the
+          only moment the customer is thinking about ending this, and once the
+          connection is deleted the principal id and scope needed to write these
+          commands are gone with it. */}
+      {steps.length > 0 && (
+        <div className="mt-3 rounded-lg border border-stone-200 bg-white px-3 py-2.5">
+          <p className="text-xs font-medium text-stone-800">{t.connection.revokeTitle}</p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {t.connection.revokeIntro}
+          </p>
+          <ol className="mt-2 space-y-2">
+            {steps.map((step) => (
+              <li key={step.title}>
+                <p className="text-xs font-medium text-stone-700">{step.title}</p>
+                <p className="text-[11px] leading-relaxed text-stone-500">
+                  {step.detail}
+                </p>
+                <pre className="mt-1 overflow-x-auto rounded bg-stone-900 px-2.5 py-1.5 text-[11px] text-stone-100">
+                  {step.command}
+                </pre>
+              </li>
+            ))}
+          </ol>
+          {revocation.data && (
+            <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
+              {revocation.data.why_manual}
+            </p>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => check.mutate()}
+              disabled={check.isPending}
+            >
+              {check.isPending ? t.connection.checking : t.connection.checkRevoked}
+            </Button>
+            {checked && (
+              <span
+                className={
+                  checked.revoked
+                    ? "text-xs font-medium text-ok"
+                    : "text-xs font-medium text-high"
+                }
+              >
+                {checked.revoked ? t.connection.accessGone : t.connection.stillHasAccess}
+              </span>
+            )}
+          </div>
+          {checked && (
+            <p className="mt-1 text-[11px] leading-relaxed text-stone-600">
+              {checked.detail}
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="mt-3 flex flex-wrap gap-2">
         <Button variant="danger" onClick={onConfirm} disabled={busy}>
           {busy ? t.connection.removing : t.connection.remove}

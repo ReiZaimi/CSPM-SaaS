@@ -178,6 +178,13 @@ export const en = {
     removeTitle: "Remove this connection?",
     removeDetail:
       "Its discovered subscriptions, their assets, scan history and findings are deleted with it. This cannot be undone.",
+    revokeTitle: "Revoke access in Azure",
+    revokeIntro:
+      "Removing the connection here deletes CloudGuard's copy of the data. It does not take away the access you granted \u2014 run these in Azure to do that.",
+    checkRevoked: "Check whether access is gone",
+    checking: "Checking\u2026",
+    stillHasAccess: "CloudGuard can still read this environment",
+    accessGone: "Confirmed: access revoked",
     removeAzureNote:
       "This does not revoke anything in Azure. To withdraw the access you granted, remove CloudGuard from Enterprise applications in Entra ID and delete its role assignment.",
     keep: "Keep it",

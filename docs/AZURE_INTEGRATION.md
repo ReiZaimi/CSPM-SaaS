@@ -191,6 +191,27 @@ plus the read permissions they are about to review. The header is set on this
 endpoint alone; the API's global CORS policy still names only this product's
 frontend.
 
+### Revocation is the customer's action, and CloudGuard verifies it
+
+Removing a connection deletes CloudGuard's copy of the data. It cannot take
+away the access that was granted, and deliberately never will be able to.
+
+Deleting its own role assignment would need
+`Microsoft.Authorization/roleAssignments/delete`; removing its service principal
+would need Graph `Application.ReadWrite.All`. A CloudGuard holding the first
+could strip access from the customer's own administrators. Holding the second it
+could rewrite any application in the directory. Both are far more dangerous than
+the read access they would revoke, and asking every customer to grant them
+permanently to support a rare teardown is the wrong trade — it would also end
+the claim that the product holds no write permission of any kind.
+
+So the removal confirmation generates the `az` commands, filled in with this
+connection's principal id, scope and role name, and `POST
+/cloud-connections/{id}/check-revoked` confirms afterwards by trying to read.
+Revocation is verified by the access failing, using the same read-only probe
+that verified it working — the product does not assert an outcome it has not
+checked.
+
 ### The role is exactly what the scanner reads
 
 The custom role declares 13 read actions, and every one is exercised by a real

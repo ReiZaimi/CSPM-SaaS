@@ -249,3 +249,25 @@ export interface DiscoveredSubscription {
   last_scan_at: string | null;
   is_scannable: boolean;
 }
+
+export interface RevocationStep {
+  title: string;
+  detail: string;
+  command: string;
+}
+
+export interface Revocation {
+  principal_id: string | null;
+  scope_path: string | null;
+  role_name: string;
+  tenant_id: string | null;
+  steps: RevocationStep[];
+  /** Why CloudGuard cannot do this itself. */
+  why_manual: string;
+  portal_url: string;
+}
+
+export interface RevocationCheck {
+  revoked: boolean;
+  detail: string;
+}

@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.azure.auth import build_consent_url, sign_state
 from app.connectors.azure.client import ArmClient, AzureApiError, GraphClient
-from app.connectors.azure.rbac import ARM_READ_ACTIONS, ROLE_VERSION, TemplateContext, arm_template
+from app.connectors.azure.rbac import (
+    ARM_READ_ACTIONS,
+    ROLE_NAME,
+    ROLE_VERSION,
+    TemplateContext,
+    arm_template,
+)
 from app.connectors.base import ConnectionCheck
 from app.core.config import settings
 from app.core.deps import TenantContext
@@ -708,3 +714,107 @@ async def set_setup_cancelled(
 
     await session.commit()
     return connection
+
+
+# ---------------------------------------------------------------------------
+# Revocation
+# ---------------------------------------------------------------------------
+
+
+def revocation_steps(connection: CloudConnection) -> dict:
+    """What the customer must run to take CloudGuard's access away.
+
+    CloudGuard cannot do this itself, and that is a design decision rather than
+    a gap. Deleting its own role assignment needs
+    ``Microsoft.Authorization/roleAssignments/delete``, and removing its service
+    principal needs Graph ``Application.ReadWrite.All`` -- write permissions on
+    the two most sensitive surfaces in a tenant. A CloudGuard holding the first
+    could strip access from the customer's own administrators; holding the
+    second it could rewrite any application in the directory. Both are far more
+    dangerous than the read access they would revoke, and asking every customer
+    to grant them permanently to support a rare teardown is the wrong trade.
+
+    So the commands are generated instead, filled in for this connection, and
+    :func:`check_access_revoked` proves afterwards whether they worked. Read
+    access is the one thing CloudGuard can honestly report on, because losing it
+    is observable.
+    """
+    principal = connection.service_principal_object_id
+    scope = connection.scope_path
+    role = f"{ROLE_NAME} ({connection.role_version})"
+
+    steps: list[dict[str, str]] = []
+    if principal and scope:
+        steps.append(
+            {
+                "title": "Remove the scanner role assignment",
+                "detail": "Ends CloudGuard's ability to read Azure resources.",
+                "command": (
+                    f"az role assignment delete --assignee {principal} --scope {scope}"
+                ),
+            }
+        )
+        steps.append(
+            {
+                "title": "Delete the custom role definition",
+                "detail": "Optional. Removes the now-unused role from the scope.",
+                "command": f'az role definition delete --name "{role}" --scope {scope}',
+            }
+        )
+    if principal:
+        steps.append(
+            {
+                "title": "Remove CloudGuard from your directory",
+                "detail": (
+                    "Withdraws admin consent by deleting the enterprise "
+                    "application, ending directory access as well."
+                ),
+                "command": f"az ad sp delete --id {principal}",
+            }
+        )
+
+    return {
+        "principal_id": principal,
+        "scope_path": scope,
+        "role_name": role,
+        "tenant_id": connection.tenant_id,
+        "steps": steps,
+        # Stated plainly so nobody expects a button that cannot exist.
+        "why_manual": (
+            "CloudGuard holds read-only access and no write permission of any "
+            "kind, so it cannot remove its own access. These run under your "
+            "credentials, not CloudGuard's."
+        ),
+        "portal_url": (
+            "https://portal.azure.com/#view/Microsoft_AAD_IAM/"
+            "StartboardApplicationsMenuBlade/~/AppAppsPreview"
+        ),
+    }
+
+
+async def check_access_revoked(connection: CloudConnection) -> dict:
+    """Ask Azure whether CloudGuard can still read this environment.
+
+    The one honest confirmation available: revocation is verified by the access
+    failing, using the same read-only probe that verified it working. A product
+    that said "revoked" because a button was pressed would be asserting
+    something it had not checked -- the same move this codebase refuses
+    everywhere else.
+    """
+    if not connection.tenant_id:
+        return {"revoked": True, "detail": "No tenant is bound to this connection."}
+
+    check = await _probe_silently(connection)
+    if check.ok:
+        return {
+            "revoked": False,
+            "detail": (
+                "CloudGuard can still read this environment. The role "
+                "assignment is in place; Azure can take a minute to apply a "
+                "removal."
+            ),
+        }
+    return {
+        "revoked": True,
+        "detail": "Confirmed: CloudGuard can no longer read this environment.",
+    }

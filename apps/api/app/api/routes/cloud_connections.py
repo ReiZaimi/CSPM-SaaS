@@ -237,6 +237,26 @@ async def resume_setup(connection_id: UUID, session: DbSession, tenant: Tenant) 
     return envelope(_serialize(connection))
 
 
+@router.get("/{connection_id}/revocation")
+async def revocation(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """What to run in Azure to take CloudGuard's access away.
+
+    Generated rather than performed: CloudGuard has no write permission in a
+    customer tenant and deliberately never asks for one, so revocation is the
+    customer's action. See ``service.revocation_steps``.
+    """
+    connection = await service.get_connection(session, tenant, connection_id)
+    return envelope(service.revocation_steps(connection))
+
+
+@router.post("/{connection_id}/check-revoked")
+async def check_revoked(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Confirm by trying: revocation is verified by the access failing."""
+    tenant.require_write()
+    connection = await service.get_connection(session, tenant, connection_id)
+    return envelope(await service.check_access_revoked(connection))
+
+
 @router.delete("/{connection_id}", status_code=status.HTTP_200_OK)
 async def delete_connection(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     tenant.require_role(Role.OWNER, Role.ADMIN)
