@@ -6,6 +6,14 @@ could read the contents of a customer's storage or database. The claim
 "CloudGuard cannot perform a single write in your environment" is checkable
 from this file, and a test enforces it.
 
+**Actions declared ahead of use are unverified, and ARM validates the role
+definition atomically.** One string that is not a real provider operation fails
+the entire deployment with ``InvalidActionOrNotAction`` -- the customer sees a
+failed deployment, not a note about one permission. An action reached by a real
+collector call is proven correct by that call succeeding; an action nothing
+calls has never been checked against Azure by anything. Check a new one with
+``az provider operation show --namespace <Namespace>`` before adding it.
+
 **The role is deliberately wider than the scanner currently reads.** Some
 actions are declared ahead of the rules that will use them, so that a customer
 who deploys the role today does not have to redeploy it when those rules ship
@@ -78,9 +86,13 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.Authorization/policyAssignments/read",
     "Microsoft.Authorization/locks/read",
     # Defender for Cloud
+    # Microsoft.Security/autoProvisioningSettings/read was here and is not a
+    # real provider operation -- ARM rejects the whole role definition with
+    # InvalidActionOrNotAction, so one wrong string blocks the entire
+    # deployment. Do not re-add without checking it against
+    # `az provider operation show --namespace Microsoft.Security`.
     "Microsoft.Security/pricings/read",
     "Microsoft.Security/securityContacts/read",
-    "Microsoft.Security/autoProvisioningSettings/read",
 )
 
 # Which ARM action each collector call needs. This is the link between the code
