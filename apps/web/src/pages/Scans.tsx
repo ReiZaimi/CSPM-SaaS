@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import type { CloudAccount, Scan, ScanDetail } from "@/lib/types";
+import type { CloudAccount, Scan, ScanDetail, WorkerStatus } from "@/lib/types";
 import { useT } from "@/i18n";
 import {
   Button,
@@ -143,14 +143,7 @@ function ScanRow({ scan }: { scan: Scan }) {
       {/* Queued far longer than a worker takes to collect one. The progress bar
           above keeps implying imminent work, so the reason has to say
           otherwise -- this is almost always no worker running at all. */}
-      {scan.stuck_in_queue && (
-        <div className="mt-3 rounded-lg border border-high-border bg-high-bg px-3 py-2">
-          <p className="text-xs font-medium text-high">{t.scans.stuckTitle}</p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-700">
-            {t.scans.stuckDetail}
-          </p>
-        </div>
-      )}
+      {scan.stuck_in_queue && <StuckNote />}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {running && (
@@ -380,6 +373,43 @@ function DeleteScanConfirm({
       <Button variant="ghost" className="mt-3" onClick={onCancel} disabled={busy}>
         {t.findings.cancel}
       </Button>
+    </div>
+  );
+}
+
+
+/**
+ * Why a scan is not moving, checked rather than guessed.
+ *
+ * `stuck_in_queue` is inferred from elapsed time, which is only ever a
+ * suspicion. This asks the broker how many workers answer, which turns it into
+ * a fact — and the fact matters, because the failure looks like success from
+ * every other angle: the worker service reports Online, passes health checks,
+ * and is simply running the wrong process.
+ *
+ * Queried only once a scan already looks stuck. A broker round trip on every
+ * poll would be a cost paid by every healthy deployment.
+ */
+function StuckNote() {
+  const t = useT();
+  const status = useQuery({
+    queryKey: ["worker-status"],
+    queryFn: () =>
+      api.get<WorkerStatus>("/api/v1/scans/worker-status").then((r) => r.data),
+    staleTime: 30_000,
+  });
+
+  return (
+    <div className="mt-3 rounded-lg border border-high-border bg-high-bg px-3 py-2">
+      <p className="text-xs font-medium text-high">{t.scans.stuckTitle}</p>
+      <p className="mt-1 text-xs leading-relaxed text-stone-700">
+        {status.data ? status.data.detail : t.scans.stuckDetail}
+      </p>
+      {status.data && status.data.workers === 0 && (
+        <p className="mt-1 text-xs leading-relaxed text-stone-600">
+          {t.scans.stuckDetail}
+        </p>
+      )}
     </div>
   );
 }

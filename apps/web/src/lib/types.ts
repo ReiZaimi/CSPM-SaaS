@@ -296,3 +296,10 @@ export interface ScanDetail extends Scan {
   /** How many unresolved findings a purge would take with it. */
   purgeable_finding_count: number;
 }
+
+export interface WorkerStatus {
+  workers: number;
+  /** False when the broker itself could not be reached. */
+  reachable: boolean;
+  detail: string;
+}

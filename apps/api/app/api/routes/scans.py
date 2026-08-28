@@ -12,6 +12,7 @@ from app.models.scan import Scan, ScanEvaluationGap, ScanRuleResult
 from app.schemas.scan import CoverageOut, ScanCreate, ScanDetailOut, ScanOut
 from app.services import cloud_accounts as accounts_service
 from app.services import scans as scans_service
+from app.workers.celery_app import celery_app
 from app.workers.scan_tasks import run_scan
 
 log = get_logger(__name__)
@@ -127,6 +128,58 @@ async def list_scans(session: DbSession, tenant: Tenant, limit: int = 25) -> dic
         .all()
     )
     return envelope([ScanOut.model_validate(s).model_dump(mode="json") for s in rows])
+
+
+# Declared before the parameterised routes below: FastAPI matches in order,
+# so `/{scan_id}` would otherwise swallow this and answer it with a 422 for
+# an id that is not a UUID.
+
+@router.get("/worker-status")
+async def worker_status(tenant: Tenant) -> dict:
+    """Whether any Celery worker is actually listening.
+
+    The scans page infers trouble from elapsed time, which is a guess: a scan
+    queued for five minutes *probably* means no worker. This asks the broker
+    instead and turns that into a fact, which matters because the failure looks
+    like success from every other angle -- the worker service reports Online,
+    passes health checks, and is simply running the wrong process.
+
+    Called only when a scan already looks stuck. A broker round trip on every
+    poll would be a cost paid by every healthy deployment to diagnose a rare
+    broken one.
+    """
+    try:
+        replies = celery_app.control.ping(timeout=1.0) or []
+    except Exception as exc:
+        log.warning("scan.worker_ping_failed", error=str(exc))
+        return envelope(
+            {
+                "workers": 0,
+                "reachable": False,
+                "detail": f"Could not reach the task broker: {exc}",
+            }
+        )
+
+    if not replies:
+        return envelope(
+            {
+                "workers": 0,
+                "reachable": True,
+                "detail": (
+                    "The task broker is reachable but no worker answered. The "
+                    "Celery worker service is not running -- check that its "
+                    "start command runs celery rather than the API."
+                ),
+            }
+        )
+
+    return envelope(
+        {
+            "workers": len(replies),
+            "reachable": True,
+            "detail": f"{len(replies)} worker(s) responding.",
+        }
+    )
 
 
 @router.get("/{scan_id}/detail")
