@@ -227,6 +227,21 @@ class TestCloudConnections:
         )
         assert response.status_code == 422
 
+    async def test_the_template_is_readable_from_any_origin(self, client) -> None:
+        """Azure Portal fetches this from the customer's browser.
+
+        Without the header the portal reports only that the template could not
+        be downloaded and asks whether CORS is enabled -- while the endpoint
+        answers 200 to anything that is not a browser, so it looks fine from
+        every angle except the one that matters. Asserted on the error path
+        because that is the one reachable without a live Azure tenant, and the
+        header has to be on every response for the portal to read any of them.
+        """
+        response = await client.get(
+            f"/api/v1/cloud-connections/{uuid.uuid4()}/template?token=forged.deadbeef"
+        )
+        assert response.headers.get("access-control-allow-origin") == "*"
+
     async def test_template_token_must_be_signed(self, client) -> None:
         """The ARM template endpoint is unauthenticated by design — Azure Portal
         fetches it server-side. A forged token must be rejected."""

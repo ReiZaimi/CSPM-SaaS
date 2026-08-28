@@ -149,6 +149,22 @@ The way through is a member account in that tenant, usually
 Entra ID → Users → New user, assign the role, sign in as that account, and
 consent again.
 
+### The template endpoint is deliberately public and CORS-open
+
+Azure Portal fetches the ARM template **from the customer's browser**, not
+server-side, so `/cloud-connections/{id}/template` returns
+`Access-Control-Allow-Origin: *`. The portal's origins are not enumerable
+(regional and sovereign variants exist), and without the header it reports only
+that the template could not be downloaded — while the endpoint answers 200 to
+`curl`, so it looks healthy from every angle except the one that matters.
+
+The wildcard gives nothing away. Access is gated by the HMAC-signed,
+time-limited token in the query string rather than by origin, and the document
+names a service principal object id the customer's own directory already lists
+plus the read permissions they are about to review. The header is set on this
+endpoint alone; the API's global CORS policy still names only this product's
+frontend.
+
 ### Why the role is wider than the scanner reads
 
 The custom role declares 30 read actions; the collector currently reaches 13.

@@ -22,6 +22,14 @@ from app.services import cloud_connections as service
 
 router = APIRouter(prefix="/cloud-connections", tags=["cloud-connections"])
 
+# Applied to the ARM template endpoint only, not to the API at large. The
+# global CORS policy names this product's own frontend; Azure Portal is a
+# third-party origin fetching one deliberately public, token-gated document.
+TEMPLATE_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "no-store",
+}
+
 
 def _serialize(
     connection: CloudConnection,
@@ -70,19 +78,45 @@ async def arm_template(
 ) -> JSONResponse:
     """Serve the ARM template for the Deploy to Azure button.
 
-    Unauthenticated — Azure Portal fetches this server-side. The signed token
-    is what makes it safe.
+    Unauthenticated, and readable from any origin. Both are requirements rather
+    than conveniences.
+
+    Azure Portal fetches this **from the customer's browser**, not server-side,
+    so the response needs CORS headers naming an origin CloudGuard does not
+    control and cannot enumerate (portal.azure.com has regional and sovereign
+    variants). Without them the portal reports only "There was an error
+    downloading the template ... ensure the template is publicly accessible and
+    that the publisher has enabled CORS policy on the endpoint" -- which reads
+    as an outage, while the endpoint answers 200 to anything that is not a
+    browser.
+
+    A wildcard is safe here specifically. Nothing served is secret: the template
+    names a service principal object id the customer's own directory already
+    lists, and a set of read permissions they are about to review in the portal.
+    Access is gated by the HMAC-signed, time-limited token in the query string,
+    not by the origin of the request -- so allowing every origin gives away
+    nothing that the token does not already control.
     """
     try:
         payload = verify_state(token, max_age_seconds=service.TEMPLATE_TOKEN_TTL_SECONDS)
     except ConsentStateError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"error": str(exc)}, status_code=400, headers=TEMPLATE_CORS_HEADERS
+        )
 
     if payload.get("purpose") != "template":
-        return JSONResponse({"error": "Invalid template token"}, status_code=400)
+        return JSONResponse(
+            {"error": "Invalid template token"},
+            status_code=400,
+            headers=TEMPLATE_CORS_HEADERS,
+        )
 
     if str(connection_id) != payload.get("cloud_connection_id"):
-        return JSONResponse({"error": "Token does not match connection"}, status_code=400)
+        return JSONResponse(
+            {"error": "Token does not match connection"},
+            status_code=400,
+            headers=TEMPLATE_CORS_HEADERS,
+        )
 
     async with service_session() as session:
         connection = await session.get(CloudConnection, connection_id)
@@ -93,7 +127,10 @@ async def arm_template(
     return JSONResponse(
         content=json.loads(body),
         media_type="application/json",
-        headers={"Content-Disposition": 'inline; filename="cloudguard-scanner.json"'},
+        headers={
+            "Content-Disposition": 'inline; filename="cloudguard-scanner.json"',
+            **TEMPLATE_CORS_HEADERS,
+        },
     )
 
 
