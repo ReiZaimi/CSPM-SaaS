@@ -28,3 +28,4 @@ apps/web/.vite/
 .DS_Store
 .idea/
 .vscode/
+temp/
