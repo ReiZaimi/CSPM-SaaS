@@ -106,6 +106,13 @@ export interface Scan {
   error_message: string | null;
   collection_errors: Record<string, string>;
   created_at: string;
+  /** Queued long enough that no worker is likely running. */
+  stuck_in_queue?: boolean;
+  triggered_by_user_id?: string | null;
+  progress_done?: number;
+  progress_total?: number;
+  /** Live while running, fixed once finished. */
+  duration_seconds?: number | null;
 }
 
 export interface Dashboard {
@@ -235,6 +242,8 @@ export interface CloudConnection {
   subscriptions: DiscoveredSubscription[];
   consent_url: string | null;
   template_url: string | null;
+  /** True once waiting no longer explains why read access has not appeared. */
+  deploy_stalled: boolean;
 }
 
 export interface DiscoveredSubscription {
@@ -246,4 +255,51 @@ export interface DiscoveredSubscription {
   discovered_at: string | null;
   last_scan_at: string | null;
   is_scannable: boolean;
+}
+
+export interface RevocationStep {
+  title: string;
+  detail: string;
+  command: string;
+}
+
+export interface Revocation {
+  principal_id: string | null;
+  scope_path: string | null;
+  role_name: string;
+  tenant_id: string | null;
+  steps: RevocationStep[];
+  /** Why CloudGuard cannot do this itself. */
+  why_manual: string;
+  portal_url: string;
+}
+
+export interface RevocationCheck {
+  revoked: boolean;
+  detail: string;
+}
+
+export interface ScanScope {
+  subscription_id: string | null;
+  subscription_name: string | null;
+  tenant_id: string | null;
+  connection_name: string | null;
+  scope_type: string | null;
+  scope_path: string | null;
+  service_principal_object_id: string | null;
+  role_version: string | null;
+}
+
+export interface ScanDetail extends Scan {
+  scope: ScanScope;
+  findings_by_severity: Record<string, number>;
+  /** How many unresolved findings a purge would take with it. */
+  purgeable_finding_count: number;
+}
+
+export interface WorkerStatus {
+  workers: number;
+  /** False when the broker itself could not be reached. */
+  reachable: boolean;
+  detail: string;
 }

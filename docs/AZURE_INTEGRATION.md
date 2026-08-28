@@ -59,10 +59,19 @@ one reads customers' environments. Separate trust boundaries, separate apps.
 
    ```
    AZURE_CLIENT_ID=<application (client) id>
-   AZURE_CLIENT_SECRET=<the secret value, not its id>
+   AZURE_CLIENT_SECRET=<the secret VALUE, not the Secret ID>
    AZURE_TENANT_ID=<your own directory id>
    AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-connections/azure/consent/callback
    ```
+
+The portal lists a secret's **Value** and its **Secret ID** side by side, and
+only the Secret ID survives past the moment of creation — so the ID is what is
+still on screen when people come back to copy it. Pasting it yields
+`AADSTS7000215: Invalid client secret provided` from inside a token request,
+*after* consent has already succeeded. CloudGuard now refuses to start a consent
+flow when `AZURE_CLIENT_SECRET` is GUID-shaped, since a secret value never is.
+If the Value has been lost it cannot be recovered: add a new client secret and
+copy its Value.
 
 `AZURE_REDIRECT_URI` must match the registered value exactly — Entra compares
 it character for character and refuses the round-trip otherwise. The path
@@ -120,6 +129,123 @@ Note the two grants need *different* permissions from different people: admin
 consent needs a **Global Administrator**, and the role assignment needs **Owner
 or User Access Administrator** on the chosen scope. The wizard says so before it
 sends anyone anywhere.
+
+It also needs a *work or school* account, which is a separate requirement from
+the role and the one people hit first. The consent link targets the
+`organizations` endpoint, so Entra refuses a personal Microsoft account
+(outlook.com, hotmail.com, live.com) with:
+
+> You can't sign in here with a personal account. Use your work or school
+> account instead.
+
+That refusal is correct rather than a misconfiguration. Tenant-wide admin
+consent is a directory operation, and a personal account is not a member of the
+directory even when it is the account that pays for the subscription beneath it
+— a subscription created with a personal account still gets its own Entra
+tenant, and the personal account sits outside it.
+
+The way through is a member account in that tenant, usually
+`admin@<tenant>.onmicrosoft.com`, granted Global Administrator. Create it under
+Entra ID → Users → New user, assign the role, sign in as that account, and
+consent again.
+
+### Deploying the role needs rights at the scope, not below it
+
+The scanner role is deployed by the customer, and the commonest failure is
+choosing a scope they cannot deploy at:
+
+> You don't have authorization to perform action
+> `Microsoft.Resources/deployments/validate/action`.
+
+Azure RBAC inherits **downward only**. Owner on a subscription grants nothing at
+the management group above it, and by default *nobody* — including a Global
+Administrator — holds Azure RBAC at the tenant root management group. Entra
+directory roles and Azure resource roles are separate systems.
+
+Two ways through, and the second is usually right:
+
+1. **Elevate access.** Entra ID → Properties → *Access management for Azure
+   resources* → Yes. That grants User Access Administrator at root scope, from
+   which the deployer can assign themselves Owner on the tenant root management
+   group. Turn it back off afterwards.
+2. **Pick a narrower scope.** A single subscription the customer already owns
+   needs no elevation at all. Coverage is narrower — new subscriptions are not
+   discovered — but it completes in one step.
+
+The scope chooser states the requirement against each option, so the choice is
+made on what the customer can finish rather than on coverage alone.
+
+### The template endpoint is deliberately public and CORS-open
+
+Azure Portal fetches the ARM template **from the customer's browser**, not
+server-side, so `/cloud-connections/{id}/template` returns
+`Access-Control-Allow-Origin: *`. The portal's origins are not enumerable
+(regional and sovereign variants exist), and without the header it reports only
+that the template could not be downloaded — while the endpoint answers 200 to
+`curl`, so it looks healthy from every angle except the one that matters.
+
+The wildcard gives nothing away. Access is gated by the HMAC-signed,
+time-limited token in the query string rather than by origin, and the document
+names a service principal object id the customer's own directory already lists
+plus the read permissions they are about to review. The header is set on this
+endpoint alone; the API's global CORS policy still names only this product's
+frontend.
+
+### Revocation is the customer's action, and CloudGuard verifies it
+
+Removing a connection deletes CloudGuard's copy of the data. It cannot take
+away the access that was granted, and deliberately never will be able to.
+
+Deleting its own role assignment would need
+`Microsoft.Authorization/roleAssignments/delete`; removing its service principal
+would need Graph `Application.ReadWrite.All`. A CloudGuard holding the first
+could strip access from the customer's own administrators. Holding the second it
+could rewrite any application in the directory. Both are far more dangerous than
+the read access they would revoke, and asking every customer to grant them
+permanently to support a rare teardown is the wrong trade — it would also end
+the claim that the product holds no write permission of any kind.
+
+So the removal confirmation generates the `az` commands, filled in with this
+connection's principal id, scope and role name, and `POST
+/cloud-connections/{id}/check-revoked` confirms afterwards by trying to read.
+Revocation is verified by the access failing, using the same read-only probe
+that verified it working — the product does not assert an outcome it has not
+checked.
+
+### The role is exactly what the scanner reads
+
+The custom role declares 13 read actions, and every one is exercised by a real
+call in `app/connectors/azure/client.py`. Nothing is granted speculatively.
+
+It was briefly wider — 30 actions, with 17 declared ahead of the rules that
+would use them, on the reasoning that a customer should deploy the role once
+rather than twice. That reasoning was sound and the outcome was not:
+`Microsoft.Security/autoProvisioningSettings/read` is not a real provider
+operation, and because ARM validates a role definition **atomically**, one bad
+string failed the entire deployment with `InvalidActionOrNotAction`. The
+customer saw "Deployment Failed", not a note about one permission.
+
+The asymmetry that decided it: an action a collector call exercises is proven
+correct the first time that call succeeds. An action nothing calls has never
+been checked against Azure by anything — it is only a plausible-looking string.
+
+Both directions are enforced by tests. Every call must have an action (a missing
+one is a 403 inside one collection category, which the engine records as UNKNOWN
+rather than as an error anyone reads). And every action must have a call, so
+nothing appears on a customer's consent screen that cannot be justified when
+they ask what it is for.
+
+Adding a permission ahead of its rule is still legitimate — but verify the
+string first:
+
+```bash
+az provider operation show --namespace Microsoft.KeyVault \
+  --query "resourceTypes[].operations[].name"
+```
+
+`ROLE_VERSION` stays at `v1`. It exists to flag a deployed role that is
+*insufficient* for a newer rule; narrowing is backward compatible, and bumping
+it would create a second role definition in every customer's tenant for no gain.
 
 ### Permission modes
 

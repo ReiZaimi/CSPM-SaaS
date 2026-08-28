@@ -102,3 +102,86 @@ def test_arm_template_management_group_schema() -> None:
     body = arm_template(context(ConnectionScope.TENANT_ROOT))
     parsed = json.loads(body)
     assert "managementGroupDeploymentTemplate" in parsed["$schema"]
+
+
+# --- the forward guard -----------------------------------------------------
+#
+# Only one direction is enforced. A collector call with no matching action
+# fails in production as a 403 inside one collection category, which the engine
+# records as UNKNOWN rather than as an error anyone reads -- a scan that looks
+# like it worked. The reverse (an action no call reaches) is deliberate here:
+# see ROLE_ONLY_ACTIONS.
+
+
+def arm_client_calls() -> set[str]:
+    """Every ARM request method, read off the class rather than a list."""
+    import inspect
+
+    from app.connectors.azure.client import ArmClient
+
+    return {
+        name
+        for name, member in vars(ArmClient).items()
+        if not name.startswith("_") and inspect.iscoroutinefunction(member)
+    }
+
+
+def test_every_arm_call_has_a_matching_action() -> None:
+    from app.connectors.azure.rbac import CLIENT_ACTIONS
+
+    missing = sorted(arm_client_calls() - set(CLIENT_ACTIONS))
+    assert missing == [], (
+        f"ArmClient methods with no RBAC action: {missing}. "
+        "Add them to CLIENT_ACTIONS and to ARM_READ_ACTIONS, or a custom-role "
+        "customer loses that whole collection category to a silent 403."
+    )
+
+
+def test_every_mapped_action_is_actually_granted() -> None:
+    """The mapping must not promise a permission the role does not contain."""
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS, CLIENT_ACTIONS
+
+    granted = set(ARM_READ_ACTIONS)
+    ungranted = sorted(
+        {a for actions in CLIENT_ACTIONS.values() for a in actions} - granted
+    )
+    assert ungranted == [], f"Mapped to actions the role does not grant: {ungranted}"
+
+
+def test_mapped_methods_all_exist() -> None:
+    """Stops the mapping rotting into a list of methods that were renamed."""
+    from app.connectors.azure.rbac import CLIENT_ACTIONS
+
+    stale = sorted(set(CLIENT_ACTIONS) - arm_client_calls())
+    assert stale == [], f"CLIENT_ACTIONS names methods that no longer exist: {stale}"
+
+
+def test_no_permission_is_requested_that_nothing_uses() -> None:
+    """The reverse guard, reinstated now the role matches the collector.
+
+    Two reasons it earns its place. A permission nothing calls appears on the
+    customer's consent screen and cannot be justified when they ask. And it has
+    never been checked against Azure by anything: an action a call exercises is
+    proven the first time that call succeeds, while an unused one is only ever
+    a plausible-looking string. One such string
+    (``Microsoft.Security/autoProvisioningSettings/read``) was not real, and
+    because ARM validates a role definition atomically it failed the entire
+    deployment rather than one permission.
+    """
+    from app.connectors.azure.rbac import ROLE_ONLY_ACTIONS
+
+    assert ROLE_ONLY_ACTIONS == (), (
+        f"Granted but never used: {list(ROLE_ONLY_ACTIONS)}. Add the collector "
+        "call that needs it, or drop it from ARM_READ_ACTIONS. If you are "
+        "deliberately declaring ahead of a rule, verify the string first with "
+        "`az provider operation show --namespace <Namespace>` -- an invalid one "
+        "fails the whole ARM deployment, not just that permission."
+    )
+
+
+def test_the_role_is_small_enough_to_read() -> None:
+    """Reader is `*/read` across every provider. The point of a custom role is
+    that a human can check this list in full."""
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS
+
+    assert len(ARM_READ_ACTIONS) <= 20

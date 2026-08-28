@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
-import { auth } from "@/lib/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, auth } from "@/lib/api";
 import { supabaseSignOut } from "@/lib/supabase";
 import { useAuthEmail } from "@/lib/useAuth";
 import type { Organization } from "@/lib/types";
 import { useT } from "@/i18n";
+import { Button } from "@/components/ui";
 import { cn, label } from "@/lib/format";
 
 /**
@@ -35,7 +36,25 @@ export function AccountMenu({
   const queryClient = useQueryClient();
   const email = useAuthEmail();
   const [open, setOpen] = useState(false);
+  // The organization the menu is currently asking about deleting. Held here
+  // rather than as a boolean so the confirmation can name it -- "remove
+  // Acme sh.p.k." is a different question from "remove organization".
+  const [confirming, setConfirming] = useState<Organization | null>(null);
   const container = useRef<HTMLDivElement>(null);
+
+  const removeOrg = useMutation({
+    mutationFn: (organization: Organization) =>
+      api.del(`/api/v1/organizations/${organization.id}`),
+    onSuccess: (_result, organization) => {
+      setConfirming(null);
+      setOpen(false);
+      // If the deleted one was selected, drop the stale preference before any
+      // refetch: requests carry it as a header, and it now names nothing.
+      if (auth.organizationId === organization.id) auth.organizationId = null;
+      queryClient.clear();
+      navigate("/", { replace: true });
+    },
+  });
 
   // Close on an outside click or Escape. Both are bound only while the menu is
   // open, so a closed menu costs nothing.
@@ -55,6 +74,10 @@ export function AccountMenu({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) setConfirming(null);
   }, [open]);
 
   function switchTo(organization: Organization) {
@@ -108,6 +131,33 @@ export function AccountMenu({
             </p>
           </Section>
 
+          {confirming ? (
+            <Section label={t.account.removeOrgTitle}>
+              <div className="px-3 pb-2">
+                <p className="text-sm font-medium text-critical">
+                  {t.account.removeOrgTitle} {confirming.name}?
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-stone-600">
+                  {t.account.removeOrgDetail}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="danger"
+                    onClick={() => removeOrg.mutate(confirming)}
+                    disabled={removeOrg.isPending}
+                  >
+                    {removeOrg.isPending ? t.account.removingOrg : t.account.removeOrg}
+                  </Button>
+                  <Button variant="secondary" onClick={() => setConfirming(null)}>
+                    {t.account.keep}
+                  </Button>
+                </div>
+                {removeOrg.isError && (
+                  <p className="mt-2 text-xs text-critical">{t.common.error}</p>
+                )}
+              </div>
+            </Section>
+          ) : (
           <Section label={t.account.organization}>
             <ul>
               {organizations.map((organization) => (
@@ -135,7 +185,21 @@ export function AccountMenu({
                 </li>
               ))}
             </ul>
+
+            {/* Owner-only, and acting on the *current* organization: deleting
+                one you are not looking at is a mistake waiting to happen. */}
+            {current?.role === "OWNER" && (
+              <button
+                role="menuitem"
+                onClick={() => setConfirming(current)}
+                className="mt-1 w-full px-3 py-2 text-left text-sm text-critical transition hover:bg-critical-bg"
+              >
+                {t.account.removeOrg}
+                <span className="ml-1 text-stone-400">· {current.name}</span>
+              </button>
+            )}
           </Section>
+          )}
 
           <div className="border-t border-stone-100 p-1">
             <button

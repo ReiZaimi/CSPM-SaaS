@@ -241,12 +241,46 @@ class TestAzureConsentReadiness:
     below produced exactly that, indistinguishably.
     """
 
-    def azure(self, uri: str) -> Settings:
+    # Shaped like the real thing, because the checks now read the shape: a
+    # client id is a GUID and a secret value is emphatically not one.
+    CLIENT_ID = "8f39c34c-e523-4914-89ca-d6de1a8691ab"
+    SECRET_VALUE = "aBc7Q~exampleSecretValue.With-Punctuation_123"
+
+    def azure(self, uri: str, **overrides: str) -> Settings:
         return settings_with(
-            azure_client_id="app-id",
-            azure_client_secret="secret",
+            azure_client_id=overrides.get("client_id", self.CLIENT_ID),
+            azure_client_secret=overrides.get("client_secret", self.SECRET_VALUE),
             azure_redirect_uri=uri,
         )
+
+    def test_a_secret_id_pasted_instead_of_the_value_is_caught(self) -> None:
+        """The mistake Azure Portal invites.
+
+        It lists Value and Secret ID side by side, and only the ID survives
+        past the moment of creation -- so the ID is what people still have to
+        copy later. Entra reports it as AADSTS7000215 from inside a token
+        request, three steps into onboarding and after a Global Administrator
+        has already been involved. A secret value is never a bare GUID, so it
+        is decidable here instead.
+        """
+        s = self.azure(
+            f"https://api.example.com{CONSENT_CALLBACK_PATH}",
+            client_secret="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+        )
+        problem = s.azure_consent_problem or ""
+        assert "Secret ID" in problem
+        assert "Value column" in problem
+
+    def test_a_client_id_that_is_not_a_guid_is_caught(self) -> None:
+        s = self.azure(
+            f"https://api.example.com{CONSENT_CALLBACK_PATH}", client_id="app-id"
+        )
+        assert "not a GUID" in (s.azure_consent_problem or "")
+
+    def test_a_real_looking_secret_value_is_accepted(self) -> None:
+        """The check must not reject the credential it is protecting."""
+        s = self.azure(f"https://api.example.com{CONSENT_CALLBACK_PATH}")
+        assert s.azure_consent_problem is None
 
     def test_a_correct_redirect_uri_is_ready(self) -> None:
         s = self.azure(f"https://api.example.com{CONSENT_CALLBACK_PATH}")

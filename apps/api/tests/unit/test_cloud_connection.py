@@ -131,3 +131,371 @@ def test_template_renders_once_the_principal_is_known() -> None:
         ),
     )
     assert "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9" in body
+
+
+# --- the template URL points at the API, not the frontend ------------------
+
+
+def test_template_url_prefers_the_api_url() -> None:
+    from app.core.config import settings
+    from app.services.cloud_connections import public_api_base
+
+    original = (settings.api_url, settings.azure_redirect_uri)
+    try:
+        settings.api_url = "https://api.example.com/"
+        settings.azure_redirect_uri = "https://other.example.com/callback"
+        assert public_api_base() == "https://api.example.com"
+    finally:
+        settings.api_url, settings.azure_redirect_uri = original
+
+
+def test_template_url_falls_back_to_the_consent_callback_origin() -> None:
+    """API_URL is not a required variable, so it is often unset.
+
+    The redirect URI is the dependable stand-in: Entra compares it character
+    for character, so a deployment that has completed consent is proof that
+    this value names the API's real public origin.
+    """
+    from app.core.config import settings
+    from app.services.cloud_connections import public_api_base
+
+    original = (settings.api_url, settings.azure_redirect_uri)
+    try:
+        settings.api_url = ""
+        settings.azure_redirect_uri = (
+            "https://api.up.railway.app/api/v1/cloud-connections/azure/consent/callback"
+        )
+        assert public_api_base() == "https://api.up.railway.app"
+    finally:
+        settings.api_url, settings.azure_redirect_uri = original
+
+
+def test_no_template_url_rather_than_a_guessed_one() -> None:
+    """A hidden button is recoverable; a link to the wrong host is not."""
+    from app.core.config import settings
+    from app.services.cloud_connections import template_url
+
+    original = (settings.api_url, settings.azure_redirect_uri)
+    try:
+        settings.api_url = ""
+        settings.azure_redirect_uri = ""
+        ready = granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9")
+        assert template_url(ready) is None
+    finally:
+        settings.api_url, settings.azure_redirect_uri = original
+
+
+# --- the lookup explains itself --------------------------------------------
+#
+# Every failure here used to return None and log a warning nobody reads, so
+# the connection card showed one spinner for four unrelated situations. These
+# pin the reasons apart, because they need different people to do different
+# things.
+
+
+async def resolve_with(monkeypatch, raises: Exception | None = None, found=None):
+    from app.connectors.azure import client as client_module
+    from app.services import cloud_connections as service
+
+    class FakeGraph:
+        def __init__(self, *a, **kw) -> None: ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a) -> None: ...
+        async def find_service_principal(self, app_id: str):
+            if raises:
+                raise raises
+            return found
+
+    monkeypatch.setattr(service, "GraphClient", FakeGraph)
+    monkeypatch.setattr(
+        "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
+    )
+    assert client_module  # imported for the AzureApiError type used by callers
+    return await service._resolve_service_principal(granted())
+
+
+async def test_a_refused_lookup_names_the_app_registration(monkeypatch) -> None:
+    """403 is not the customer's problem, and must not read like one."""
+    from app.connectors.azure.client import AzureApiError
+
+    problem = await resolve_with(monkeypatch, raises=AzureApiError("denied", 403))
+    assert problem is not None
+    assert "app registration" in problem
+    assert "CloudGuard's side" in problem
+
+
+async def test_an_unpublished_principal_says_to_wait(monkeypatch) -> None:
+    """Consent succeeded; Entra simply has not replicated yet. Different fix."""
+    problem = await resolve_with(monkeypatch, found=None)
+    assert problem is not None
+    assert "not visible in this directory yet" in problem
+
+
+async def test_a_successful_lookup_reports_no_problem(monkeypatch) -> None:
+    problem = await resolve_with(monkeypatch, found={"id": "spn-object-id"})
+    assert problem is None
+
+
+# --- the consent link must survive a page reload ---------------------------
+
+
+def test_consent_url_is_regenerated_not_stored(monkeypatch) -> None:
+    """The link was previously returned only from the create response.
+
+    A reload lost the button, leaving the connection in PENDING with no route
+    forward but deletion. The signed state also expires in 30 minutes, so a
+    stored one would usually be dead by the time an administrator looked.
+    """
+    from app.connectors.azure import auth
+    from app.core.config import Settings
+    from app.services.cloud_connections import consent_url_for
+
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            azure_client_id="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+            azure_client_secret="aBc7Q~exampleSecretValue.With-Punctuation_123",
+            azure_redirect_uri=(
+                "https://api.example.com/api/v1/cloud-connections/azure/consent/callback"
+            ),
+            azure_consent_state_secret="a-real-random-32-character-string-here",
+        ),
+    )
+    url, problem = consent_url_for(connection())
+    assert problem is None
+    assert url is not None and url.startswith("https://login.microsoftonline.com/")
+
+
+def test_a_misconfigured_deployment_returns_the_reason(monkeypatch) -> None:
+    """Not None-and-silence: without the reason the card renders empty."""
+    from app.connectors.azure import auth
+    from app.core.config import Settings
+    from app.services.cloud_connections import consent_url_for
+
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            azure_client_id="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+            # The Secret ID rather than the value.
+            azure_client_secret="1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901",
+            azure_redirect_uri=(
+                "https://api.example.com/api/v1/cloud-connections/azure/consent/callback"
+            ),
+            azure_consent_state_secret="a-real-random-32-character-string-here",
+        ),
+    )
+    url, problem = consent_url_for(connection())
+    assert url is None
+    assert problem is not None and "Secret ID" in problem
+
+
+# --- waiting has a limit ---------------------------------------------------
+
+
+def stalled_case(**kwargs: object) -> CloudConnection:
+    from datetime import timedelta
+
+    from app.services.cloud_connections import DEPLOY_PATIENCE_SECONDS
+
+    defaults: dict = {
+        "consent_status": ConsentStatus.GRANTED,
+        "tenant_id": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+        "consented_at": datetime.now(UTC)
+        - timedelta(seconds=DEPLOY_PATIENCE_SECONDS + 60),
+    }
+    return connection(**{**defaults, **kwargs})
+
+
+def test_a_fresh_consent_is_not_stalled() -> None:
+    """Deploying needs a second person; a slow start is normal, not a fault."""
+    from app.services.cloud_connections import deploy_stalled
+
+    fresh = connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        consented_at=datetime.now(UTC),
+    )
+    assert deploy_stalled(fresh) is False
+
+
+def test_a_long_unverified_wait_is_stalled() -> None:
+    from app.services.cloud_connections import deploy_stalled
+
+    assert deploy_stalled(stalled_case()) is True
+
+
+def test_a_verified_connection_is_never_stalled() -> None:
+    from app.services.cloud_connections import deploy_stalled
+
+    assert deploy_stalled(stalled_case(rbac_verified_at=datetime.now(UTC))) is False
+
+
+def test_an_unconsented_connection_is_never_stalled() -> None:
+    """Nothing is outstanding yet — the customer has not been asked to deploy."""
+    from app.services.cloud_connections import deploy_stalled
+
+    assert deploy_stalled(stalled_case(consent_status=ConsentStatus.PENDING)) is False
+
+
+# --- cancelling setup ------------------------------------------------------
+
+
+def test_a_cancelled_setup_is_not_polled() -> None:
+    """Otherwise "cancel" would mean only that the spinner went away, while
+    the server kept calling Azure every ten seconds for someone who said stop."""
+    from app.core.enums import CloudAccountStatus
+
+    c = connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        status=CloudAccountStatus.DISABLED,
+    )
+    assert c.status == CloudAccountStatus.DISABLED
+    assert c.is_verified is False
+
+
+def test_cancelling_does_not_lose_consent() -> None:
+    """Cancel is reversible on purpose. Discarding the connection would mean
+    redoing admin consent -- which needs a Global Administrator -- to get back
+    to a state the customer had already reached."""
+    from app.core.enums import CloudAccountStatus
+
+    c = connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+        status=CloudAccountStatus.DISABLED,
+    )
+    # Everything needed to resume is still on the row.
+    assert c.consent_status == ConsentStatus.GRANTED
+    assert c.tenant_id and c.service_principal_object_id
+
+
+# --- revocation ------------------------------------------------------------
+
+
+def test_revocation_is_instructions_not_an_action() -> None:
+    """CloudGuard cannot revoke its own access, and should not be able to.
+
+    Deleting its role assignment needs roleAssignments/delete; removing its
+    service principal needs Graph write. A CloudGuard holding the first could
+    strip access from the customer's own administrators. The role has no write
+    action at all, so the commands are generated for the customer to run.
+    """
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS
+    from app.services.cloud_connections import revocation_steps
+
+    assert all(a.endswith("/read") for a in ARM_READ_ACTIONS)
+
+    steps = revocation_steps(
+        granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9")
+    )
+    assert steps["why_manual"]
+    commands = [s["command"] for s in steps["steps"]]
+    assert any("az role assignment delete" in c for c in commands)
+    assert any("az ad sp delete" in c for c in commands)
+
+
+def test_revocation_commands_are_filled_in_for_this_connection() -> None:
+    principal = "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+    from app.services.cloud_connections import revocation_steps
+
+    steps = revocation_steps(granted(service_principal_object_id=principal))
+    for step in steps["steps"]:
+        assert "<" not in step["command"], step["command"]
+    assert all(principal in s["command"] or "role definition" in s["command"]
+               for s in steps["steps"])
+
+
+def test_no_commands_before_there_is_anything_to_revoke() -> None:
+    """Nothing was granted yet, so nothing is offered to take away."""
+    from app.services.cloud_connections import revocation_steps
+
+    assert revocation_steps(connection())["steps"] == []
+
+
+# --- a scan nobody collects ------------------------------------------------
+
+
+def scan_queued_for(seconds: int):
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    scan = Scan(status=ScanStatus.QUEUED)
+    scan.created_at = datetime.now(UTC) - timedelta(seconds=seconds)
+    return scan
+
+
+def test_a_freshly_queued_scan_is_not_stuck() -> None:
+    from app.models.scan import Scan
+
+    assert scan_queued_for(5).stuck_in_queue is False
+    assert Scan.QUEUE_PATIENCE_SECONDS >= 60
+
+
+def test_a_long_queued_scan_is_reported_stuck() -> None:
+    """A worker collects work in seconds. Minutes of silence means none is
+    running, which the progress bar alone would never say."""
+    from app.models.scan import Scan
+
+    assert scan_queued_for(Scan.QUEUE_PATIENCE_SECONDS + 60).stuck_in_queue is True
+
+
+def test_a_finished_scan_is_never_stuck() -> None:
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    for status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED):
+        scan = Scan(status=status)
+        scan.created_at = datetime.now(UTC) - timedelta(hours=1)
+        assert scan.stuck_in_queue is False, status
+
+
+def test_cancelled_is_a_terminal_status() -> None:
+    """The pipeline checks this before starting, and the cancel route refuses
+    to act on a scan that has already finished."""
+    from app.core.enums import ScanStatus
+
+    assert ScanStatus.CANCELLED.is_terminal is True
+    assert ScanStatus.QUEUED.is_terminal is False
+
+
+# --- scan duration ---------------------------------------------------------
+
+
+def test_duration_is_none_before_a_scan_starts() -> None:
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    assert Scan(status=ScanStatus.QUEUED).duration_seconds is None
+
+
+def test_duration_runs_live_while_scanning() -> None:
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    scan = Scan(status=ScanStatus.EVALUATING)
+    scan.started_at = datetime.now(UTC) - timedelta(seconds=90)
+    assert 89 <= (scan.duration_seconds or 0) <= 95
+
+
+def test_duration_freezes_when_the_scan_completes() -> None:
+    """Otherwise a finished scan would appear to keep running forever."""
+    from datetime import timedelta
+
+    from app.core.enums import ScanStatus
+    from app.models.scan import Scan
+
+    scan = Scan(status=ScanStatus.COMPLETED)
+    scan.started_at = datetime.now(UTC) - timedelta(hours=2)
+    scan.completed_at = scan.started_at + timedelta(seconds=120)
+    assert scan.duration_seconds == 120

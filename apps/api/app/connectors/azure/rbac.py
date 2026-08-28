@@ -1,11 +1,28 @@
 """What CloudGuard needs Azure RBAC to allow, and the ARM template that grants it.
 
-The list below is not aspirational. Every action corresponds to a read
-operation CloudGuard performs during a scan. The custom role contains exactly
-these actions and nothing else -- no ``*/action`` entries, no ``listKeys``,
-no data plane, nothing that could read the contents of a customer's storage
-or database. The claim "CloudGuard cannot perform a single write in your
-environment" is checkable from this file.
+Every action here is ``*/read``. The custom role contains these and nothing
+else -- no ``*/action`` entries, no ``listKeys``, no data plane, nothing that
+could read the contents of a customer's storage or database. The claim
+"CloudGuard cannot perform a single write in your environment" is checkable
+from this file, and a test enforces it.
+
+**Every action here is reached by a real collector call, and nothing else is.**
+The role was briefly wider, carrying permissions declared ahead of the rules
+that would use them. That is no longer the trade being made, for a reason worth
+recording: ARM validates a role definition atomically, so a single string that
+is not a genuine provider operation fails the entire deployment with
+``InvalidActionOrNotAction`` -- and the customer sees "Deployment Failed", not a
+note about one permission. ``Microsoft.Security/autoProvisioningSettings/read``
+looked exactly as plausible as its neighbours and was not real.
+
+An action a collector call exercises is proven correct the first time that call
+succeeds. An action nothing calls has never been checked against Azure by
+anything. So the list is now exactly the former, and both directions are
+enforced by tests: every call has an action, and every action has a call.
+
+Adding a permission ahead of its rule is still reasonable, but not on trust --
+verify the string first with
+``az provider operation show --namespace <Namespace>``.
 
 Bump ``ROLE_VERSION`` when the action list changes, so a deployed role that
 predates a new rule can be identified and the customer offered a redeploy
@@ -32,42 +49,56 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.Network/networkSecurityGroups/read",
     "Microsoft.Network/networkInterfaces/read",
     "Microsoft.Network/publicIPAddresses/read",
-    "Microsoft.Network/virtualNetworks/read",
-    "Microsoft.Network/virtualNetworks/subnets/read",
     # Compute
     "Microsoft.Compute/virtualMachines/read",
-    "Microsoft.Compute/disks/read",
-    # Containers
-    "Microsoft.ContainerService/managedClusters/read",
     # Storage
     "Microsoft.Storage/storageAccounts/read",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/read",
     # SQL
     "Microsoft.Sql/servers/read",
     "Microsoft.Sql/servers/firewallRules/read",
-    "Microsoft.Sql/servers/auditingSettings/read",
-    "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
-    "Microsoft.Sql/servers/advancedThreatProtectionSettings/read",
-    # PostgreSQL
+    # PostgreSQL -- flexible servers only; single-server is not collected.
     "Microsoft.DBforPostgreSQL/flexibleServers/read",
-    # Key Vault (metadata only -- not secret values)
-    "Microsoft.KeyVault/vaults/read",
-    # App Services
-    "Microsoft.Web/sites/read",
-    "Microsoft.Web/sites/config/read",
     # Monitoring & diagnostics
     "Microsoft.Insights/diagnosticSettings/read",
-    "Microsoft.OperationalInsights/workspaces/read",
-    # Identity & authorization
+    # Authorization -- who already has access, and under which definitions
     "Microsoft.Authorization/roleAssignments/read",
     "Microsoft.Authorization/roleDefinitions/read",
-    "Microsoft.Authorization/policyAssignments/read",
-    "Microsoft.Authorization/locks/read",
-    # Defender for Cloud
-    "Microsoft.Security/pricings/read",
-    "Microsoft.Security/securityContacts/read",
-    "Microsoft.Security/autoProvisioningSettings/read",
 )
+
+# Which ARM action each collector call needs. This is the link between the code
+# and the permission set, and it is what the forward guard checks: add a call to
+# ArmClient without adding it here and the test fails, rather than a customer
+# discovering it as a 403 buried in one collection category.
+#
+# Keys are method names on app.connectors.azure.client.ArmClient.
+CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
+    "list_subscriptions": ("Microsoft.Resources/subscriptions/read",),
+    "list_resources": ("Microsoft.Resources/subscriptions/resources/read",),
+    "list_network_security_groups": ("Microsoft.Network/networkSecurityGroups/read",),
+    "list_network_interfaces": ("Microsoft.Network/networkInterfaces/read",),
+    "list_public_ips": ("Microsoft.Network/publicIPAddresses/read",),
+    "list_virtual_machines": ("Microsoft.Compute/virtualMachines/read",),
+    "list_storage_accounts": ("Microsoft.Storage/storageAccounts/read",),
+    "list_sql_servers": ("Microsoft.Sql/servers/read",),
+    "list_sql_firewall_rules": ("Microsoft.Sql/servers/firewallRules/read",),
+    "list_postgresql_servers": ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
+    "list_diagnostic_settings": ("Microsoft.Insights/diagnosticSettings/read",),
+    "list_role_assignments": ("Microsoft.Authorization/roleAssignments/read",),
+    "list_role_assignments_at_scope": ("Microsoft.Authorization/roleAssignments/read",),
+    "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
+}
+
+# Anything granted that no collector call reaches. Expected to be empty: the
+# role is trimmed to what the scanner proves it needs. Derived rather than
+# hand-listed so it cannot disagree with the two definitions above, and
+# asserted empty by the tests -- a non-empty value means a permission is being
+# requested on a customer's consent screen that nothing has ever used.
+ROLE_ONLY_ACTIONS: tuple[str, ...] = tuple(
+    action
+    for action in ARM_READ_ACTIONS
+    if action not in {a for actions in CLIENT_ACTIONS.values() for a in actions}
+)
+
 
 
 @dataclass(frozen=True)

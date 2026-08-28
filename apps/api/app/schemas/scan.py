@@ -24,6 +24,30 @@ class ScanOut(BaseModel):
     error_message: str | None = None
     collection_errors: dict = Field(default_factory=dict)
     created_at: datetime
+    # True when nothing has collected this scan for long enough that a worker
+    # is probably not running at all.
+    stuck_in_queue: bool = False
+
+    triggered_by_user_id: UUID | None = None
+    progress_done: int = 0
+    progress_total: int = 0
+    # Live while running, fixed once finished.
+    duration_seconds: int | None = None
+
+
+class ScanDetailOut(ScanOut):
+    """A single scan with everything the detail panel shows.
+
+    Separate from ``ScanOut`` because the list renders dozens of these and none
+    of it is cheap: the scope panel reads two more tables and the breakdown
+    aggregates findings.
+    """
+
+    scope: dict = Field(default_factory=dict)
+    findings_by_severity: dict = Field(default_factory=dict)
+    # How many unresolved findings a purge would take with it, so the
+    # confirmation can state a number rather than a category.
+    purgeable_finding_count: int = 0
 
 
 class CoverageOut(BaseModel):

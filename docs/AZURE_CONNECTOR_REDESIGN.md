@@ -99,6 +99,13 @@ include/exclude toggles.
 
 ### ARM — Custom Role (30 actions, v1)
 
+> **Superseded 2026-08-28.** The role is now the 13 actions the collector
+> actually calls. One of the 17 declared ahead of use
+> (`Microsoft.Security/autoProvisioningSettings/read`) is not a real provider
+> operation, and ARM validates role definitions atomically, so it failed every
+> deployment. See `AZURE_INTEGRATION.md` §"The role is exactly what the scanner
+> reads". The list below is kept as the original design record.
+
 Always a custom role named "CloudGuard Security Scanner." No permission
 mode choice exposed to the customer.
 

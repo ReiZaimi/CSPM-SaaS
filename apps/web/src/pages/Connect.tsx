@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
-import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
+import type {
+  CloudConnection,
+  DiscoveredSubscription,
+  Revocation,
+  RevocationCheck,
+} from "@/lib/types";
 import { useT } from "@/i18n";
 import { Button, Card, EmptyState, ErrorNote, Spinner, StatusPill } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
@@ -143,6 +148,20 @@ function ConnectionCard({
       setError(err instanceof Error ? err.message : "Could not save scope"),
   });
 
+  const cancelled = connection.status === "DISABLED" && !connection.is_verified;
+  // Setup is "in progress" from creation until the first successful probe.
+  const inProgress = !connection.is_verified && !cancelled;
+
+  const setCancelled = useMutation({
+    mutationFn: (value: boolean) =>
+      api.post(
+        `/api/v1/cloud-connections/${connection.id}/${value ? "cancel" : "resume"}`,
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cloud-connections"] }),
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : "Could not update the connection"),
+  });
+
   const remove = useMutation({
     mutationFn: () => api.del(`/api/v1/cloud-connections/${connection.id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cloud-connections"] }),
@@ -187,8 +206,23 @@ function ConnectionCard({
         />
       </div>
 
+      {/* Not consented and no link to offer — the deployment cannot start a
+          consent flow. Previously this rendered nothing at all: a card with
+          three grey ticks and no explanation or button, which is the same
+          dead end whether the cause is fixable or not. */}
+      {!cancelled && connection.consent_status !== "GRANTED" && !connection.consent_url && (
+        <div className="mt-4 rounded-lg border border-high-border bg-high-bg px-4 py-3">
+          <p className="text-sm font-medium text-high">
+            {t.connection.cannotStartConsent}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+            {connection.status_detail}
+          </p>
+        </div>
+      )}
+
       {/* Consent step: not yet granted */}
-      {connection.consent_status !== "GRANTED" && connection.consent_url && (
+      {!cancelled && connection.consent_status !== "GRANTED" && connection.consent_url && (
         <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
           <p className="text-sm text-stone-700">{connection.status_detail}</p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -205,7 +239,8 @@ function ConnectionCard({
       )}
 
       {/* Deploy step: consented but not yet verified */}
-      {connection.consent_status === "GRANTED" &&
+      {!cancelled &&
+        connection.consent_status === "GRANTED" &&
         !connection.rbac_verified_at &&
         connection.template_url && (
           <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
@@ -219,17 +254,35 @@ function ConnectionCard({
                 <Button>Deploy to Azure</Button>
               </a>
             </div>
-            <WaitingNote text={t.connection.waitingForAccess} />
+            {connection.deploy_stalled ? (
+              /* Past the point where waiting explains it. A spinner here would
+                 keep implying progress, and gives no way to tell a colleague
+                 who has not got round to it from a deployment that failed or
+                 landed at the wrong scope. */
+              <p className="mt-3 text-xs leading-relaxed text-high">
+                {connection.status_detail}
+              </p>
+            ) : (
+              <WaitingNote text={t.connection.waitingForAccess} />
+            )}
           </div>
         )}
 
-      {/* Waiting for consent — no deploy URL yet */}
-      {connection.consent_status === "GRANTED" &&
+      {/* Consented, but no template to deploy — CloudGuard is blocked, not
+          waiting. A spinner here claimed progress that was not happening: the
+          only thing that advances this state is the message being read and
+          acted on, so it is shown as a problem with no spinner. */}
+      {!cancelled &&
+        connection.consent_status === "GRANTED" &&
         !connection.rbac_verified_at &&
         !connection.template_url && (
-          <div className="mt-4">
-            <p className="text-sm text-stone-600">{connection.status_detail}</p>
-            <WaitingNote text={t.connection.waitingForAccess} />
+          <div className="mt-4 rounded-lg border border-high-border bg-high-bg px-4 py-3">
+            <p className="text-sm font-medium text-high">
+              {t.connection.cannotDeployYet}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-stone-700">
+              {connection.status_detail}
+            </p>
           </div>
         )}
 
@@ -287,15 +340,60 @@ function ConnectionCard({
           <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
         )}
 
+      {/* Verified with subscriptions in scope. Scanning lives on another page,
+          and nothing here said so — the flow ended on a green tick and left
+          the customer to guess what came next. */}
+      {connection.is_verified && scoped.length > 0 && (
+        <div className="mt-4 rounded-lg border border-ok-border bg-ok-bg px-4 py-3">
+          <p className="text-sm font-medium text-ok">{t.connection.readyToScan}</p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+            {scoped.length} {t.connection.inScopeCount}.
+          </p>
+          <Link to="/scans" className="mt-3 inline-block">
+            <Button>{t.connection.runFirstScan}</Button>
+          </Link>
+        </div>
+      )}
+
+      {cancelled && (
+        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+          <p className="text-sm font-medium text-stone-800">
+            {t.connection.setupCancelled}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {connection.status_detail}
+          </p>
+        </div>
+      )}
+
       {/* Actions */}
       {confirmingRemove ? (
         <RemoveConfirm
+          connectionId={connection.id}
           busy={remove.isPending}
           onConfirm={() => remove.mutate()}
           onCancel={() => setConfirmingRemove(false)}
         />
       ) : (
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {inProgress && (
+            <Button
+              variant="secondary"
+              onClick={() => setCancelled.mutate(true)}
+              disabled={setCancelled.isPending}
+            >
+              {t.connection.cancelSetupAction}
+            </Button>
+          )}
+          {cancelled && (
+            <Button
+              variant="secondary"
+              onClick={() => setCancelled.mutate(false)}
+              disabled={setCancelled.isPending}
+            >
+              {t.connection.resumeSetup}
+            </Button>
+          )}
           <Button
             variant="ghost"
             className="ml-auto text-critical hover:bg-critical-bg"
@@ -310,24 +408,101 @@ function ConnectionCard({
 }
 
 function RemoveConfirm({
+  connectionId,
   busy,
   onConfirm,
   onCancel,
 }: {
+  connectionId: string;
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   const t = useT();
+  const [checked, setChecked] = useState<RevocationCheck | null>(null);
+
+  const revocation = useQuery({
+    queryKey: ["connection-revocation", connectionId],
+    queryFn: () =>
+      api
+        .get<Revocation>(`/api/v1/cloud-connections/${connectionId}/revocation`)
+        .then((r) => r.data),
+  });
+
+  const check = useMutation({
+    mutationFn: () =>
+      api.post<RevocationCheck>(
+        `/api/v1/cloud-connections/${connectionId}/check-revoked`,
+      ),
+    onSuccess: ({ data }) => setChecked(data),
+  });
+
+  const steps = revocation.data?.steps ?? [];
+
   return (
     <div className="mt-4 rounded-lg border border-critical-border bg-critical-bg px-4 py-3">
       <p className="text-sm font-medium text-critical">{t.connection.removeTitle}</p>
       <p className="mt-1 text-xs leading-relaxed text-stone-700">
         {t.connection.removeDetail}
       </p>
-      <p className="mt-2 text-xs leading-relaxed text-stone-700">
-        {t.connection.removeAzureNote}
-      </p>
+
+      {/* Revocation sits inside the removal confirmation on purpose. It is the
+          only moment the customer is thinking about ending this, and once the
+          connection is deleted the principal id and scope needed to write these
+          commands are gone with it. */}
+      {steps.length > 0 && (
+        <div className="mt-3 rounded-lg border border-stone-200 bg-white px-3 py-2.5">
+          <p className="text-xs font-medium text-stone-800">{t.connection.revokeTitle}</p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {t.connection.revokeIntro}
+          </p>
+          <ol className="mt-2 space-y-2">
+            {steps.map((step) => (
+              <li key={step.title}>
+                <p className="text-xs font-medium text-stone-700">{step.title}</p>
+                <p className="text-[11px] leading-relaxed text-stone-500">
+                  {step.detail}
+                </p>
+                <pre className="mt-1 overflow-x-auto rounded bg-stone-900 px-2.5 py-1.5 text-[11px] text-stone-100">
+                  {step.command}
+                </pre>
+              </li>
+            ))}
+          </ol>
+          {revocation.data && (
+            <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
+              {revocation.data.why_manual}
+            </p>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => check.mutate()}
+              disabled={check.isPending}
+            >
+              {check.isPending ? t.connection.checking : t.connection.checkRevoked}
+            </Button>
+            {checked && (
+              <span
+                className={
+                  checked.revoked
+                    ? "text-xs font-medium text-ok"
+                    : "text-xs font-medium text-high"
+                }
+              >
+                {checked.revoked ? t.connection.accessGone : t.connection.stillHasAccess}
+              </span>
+            )}
+          </div>
+          {checked && (
+            <p className="mt-1 text-[11px] leading-relaxed text-stone-600">
+              {checked.detail}
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="mt-3 flex flex-wrap gap-2">
         <Button variant="danger" onClick={onConfirm} disabled={busy}>
           {busy ? t.connection.removing : t.connection.remove}

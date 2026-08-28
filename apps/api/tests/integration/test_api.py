@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.main import app
@@ -153,6 +154,106 @@ class TestTenantIsolationOverHttp:
         assert body["meta"]["total"] == 0
 
 
+class TestOrganizationDeletion:
+    async def test_an_owner_can_delete_their_organization(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Departing Ltd")
+
+        response = await client.delete(
+            f"/api/v1/organizations/{org}", headers=auth_header(user)
+        )
+        assert response.status_code == 200
+
+        remaining = (
+            await client.get("/api/v1/organizations", headers=auth_header(user))
+        ).json()["data"]
+        assert org not in [o["id"] for o in remaining]
+
+    async def test_a_non_owner_is_refused_rather_than_silently_ignored(
+        self, client, cleanup_orgs
+    ) -> None:
+        """RLS filters rows, it does not raise.
+
+        Without the app-layer role check a member who is not an owner would
+        issue a DELETE that matches nothing and receive a cheerful 200, while
+        the organization stands. That is the worst of both worlds: no deletion
+        and no complaint.
+        """
+        owner, member = uuid.uuid4(), uuid.uuid4()
+        org = await make_org(client, owner, "Shared Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        # No members API yet, so the membership is inserted directly. The
+        # service connection is the owner role, which bypasses RLS — exactly
+        # what a fixture needs and exactly what the API must never do.
+        from app.core.db import service_session
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO organization_members (organization_id, user_id, role) "
+                    "VALUES (:org, :user, 'SECURITY_ANALYST')"
+                ),
+                {"org": uuid.UUID(org), "user": member},
+            )
+            await session.commit()
+
+        response = await client.delete(
+            f"/api/v1/organizations/{org}", headers=auth_header(member)
+        )
+        assert response.status_code in (403, 404)
+
+        still_there = (
+            await client.get("/api/v1/organizations", headers=auth_header(owner))
+        ).json()["data"]
+        assert org in [o["id"] for o in still_there]
+
+    async def test_a_stranger_cannot_delete_an_organization(
+        self, client, cleanup_orgs
+    ) -> None:
+        owner, stranger = uuid.uuid4(), uuid.uuid4()
+        org = await make_org(client, owner, "Private Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.delete(
+            f"/api/v1/organizations/{org}", headers=auth_header(stranger)
+        )
+        assert response.status_code == 404
+
+
+class TestConnectionListing:
+    async def test_the_list_carries_subscriptions_not_just_a_count(
+        self, client, cleanup_orgs
+    ) -> None:
+        """The connections page renders from this endpoint.
+
+        When it returned only a count, a verified connection showed no
+        subscriptions at all: the per-connection request that would have
+        supplied them never fired, because a card with nothing left to poll for
+        stops polling. The data has to be here.
+        """
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Listing Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        await client.post(
+            "/api/v1/cloud-connections",
+            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
+            headers=auth_header(user),
+        )
+
+        rows = (
+            await client.get("/api/v1/cloud-connections", headers=auth_header(user))
+        ).json()["data"]
+        assert len(rows) == 1
+        # Present and empty, rather than absent: the card distinguishes "none
+        # discovered" from "not told", and they render differently.
+        assert rows[0]["subscriptions"] == []
+        assert rows[0]["subscription_count"] == 0
+
+
 class TestCloudConnections:
     async def test_connection_screen_never_asks_for_a_credential(self, client) -> None:
         """The published contract: read-only, no customer secret."""
@@ -226,6 +327,21 @@ class TestCloudConnections:
             headers=auth_header(user),
         )
         assert response.status_code == 422
+
+    async def test_the_template_is_readable_from_any_origin(self, client) -> None:
+        """Azure Portal fetches this from the customer's browser.
+
+        Without the header the portal reports only that the template could not
+        be downloaded and asks whether CORS is enabled -- while the endpoint
+        answers 200 to anything that is not a browser, so it looks fine from
+        every angle except the one that matters. Asserted on the error path
+        because that is the one reachable without a live Azure tenant, and the
+        header has to be on every response for the portal to read any of them.
+        """
+        response = await client.get(
+            f"/api/v1/cloud-connections/{uuid.uuid4()}/template?token=forged.deadbeef"
+        )
+        assert response.headers.get("access-control-allow-origin") == "*"
 
     async def test_template_token_must_be_signed(self, client) -> None:
         """The ARM template endpoint is unauthenticated by design — Azure Portal

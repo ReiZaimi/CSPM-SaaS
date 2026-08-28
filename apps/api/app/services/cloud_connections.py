@@ -14,14 +14,21 @@ discovers subscriptions once it detects access.
 
 import time
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.azure.auth import build_consent_url, sign_state
 from app.connectors.azure.client import ArmClient, AzureApiError, GraphClient
-from app.connectors.azure.rbac import ARM_READ_ACTIONS, ROLE_VERSION, TemplateContext, arm_template
+from app.connectors.azure.rbac import (
+    ARM_READ_ACTIONS,
+    ROLE_NAME,
+    ROLE_VERSION,
+    TemplateContext,
+    arm_template,
+)
 from app.connectors.base import ConnectionCheck
 from app.core.config import settings
 from app.core.deps import TenantContext
@@ -30,7 +37,7 @@ from app.core.enums import (
     ConnectionScope,
     ConsentStatus,
 )
-from app.core.errors import CloudAccountNotFound, ValidationFailed
+from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
 from app.core.logging import get_logger
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
@@ -76,11 +83,26 @@ async def create_connection(
     session.add(connection)
     await session.flush()
 
-    consent_url = _build_consent_url(connection)
+    consent_url, problem = consent_url_for(connection)
+    if problem:
+        connection.status_detail = problem
     return connection, consent_url
 
 
-def _build_consent_url(connection: CloudConnection) -> str | None:
+def consent_url_for(connection: CloudConnection) -> tuple[str | None, str | None]:
+    """A fresh consent link, or the reason there cannot be one.
+
+    Regenerated on every read rather than stored, for two reasons. The state is
+    signed with a 30-minute TTL, so a URL persisted at creation would be dead
+    long before most customers get their administrator's attention. And it used
+    to be returned *only* from the create response, which meant a page reload
+    lost the consent button entirely and stranded the connection in PENDING
+    with no way forward but deleting it.
+
+    The failure reason is returned rather than swallowed. A deployment whose
+    Entra credentials are wrong cannot produce this URL at all, and the
+    customer needs to see that instead of a card with nothing on it.
+    """
     try:
         state = sign_state(
             {
@@ -89,9 +111,14 @@ def _build_consent_url(connection: CloudConnection) -> str | None:
                 "issued_at": time.time(),
             }
         )
-        return build_consent_url(state)
-    except Exception:
-        return None
+        return build_consent_url(state), None
+    except NotConfigured as exc:
+        return None, str(exc)
+    except Exception as exc:  # pragma: no cover -- signing failure is unexpected
+        log.warning(
+            "azure.consent_url_failed", connection_id=str(connection.id), error=str(exc)
+        )
+        return None, f"Could not build a consent link: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -126,21 +153,50 @@ async def get_connection_with_subscriptions(
 
 async def list_connections(
     session: AsyncSession, tenant: TenantContext
-) -> list[tuple[CloudConnection, int]]:
-    """All connections for the org, each with a subscription count."""
-    rows = (
-        await session.execute(
-            select(
-                CloudConnection,
-                func.count(CloudAccount.id).label("sub_count"),
+) -> list[tuple[CloudConnection, list[CloudAccount]]]:
+    """All connections for the org, each with its discovered subscriptions.
+
+    The subscriptions come back here, not only from the per-connection
+    endpoint. The connections page renders from this list, and when it carried
+    only a count the cards showed no subscriptions at all for a verified
+    connection -- the detail request that would have supplied them never fired,
+    because a card that is already verified has nothing left to poll for.
+    """
+    connections = list(
+        (
+            await session.execute(
+                select(CloudConnection)
+                .where(CloudConnection.organization_id == tenant.organization_id)
+                .order_by(CloudConnection.created_at.desc())
             )
-            .outerjoin(CloudAccount, CloudAccount.connection_id == CloudConnection.id)
-            .where(CloudConnection.organization_id == tenant.organization_id)
-            .group_by(CloudConnection.id)
-            .order_by(CloudConnection.created_at.desc())
         )
-    ).all()
-    return [(row[0], row[1]) for row in rows]
+        .scalars()
+        .all()
+    )
+    if not connections:
+        return []
+
+    # One query for every connection's subscriptions rather than one each.
+    accounts = list(
+        (
+            await session.execute(
+                select(CloudAccount)
+                .where(
+                    CloudAccount.connection_id.in_([c.id for c in connections]),
+                )
+                .order_by(CloudAccount.display_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    grouped: dict[UUID, list[CloudAccount]] = {}
+    for account in accounts:
+        if account.connection_id:
+            grouped.setdefault(account.connection_id, []).append(account)
+
+    return [(c, grouped.get(c.id, [])) for c in connections]
 
 
 async def _list_subscriptions(
@@ -157,6 +213,9 @@ async def _list_subscriptions(
         .scalars()
         .all()
     )
+
+
+READY_TO_DEPLOY = "Admin consent granted. Deploy the scanner role next."
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +238,12 @@ async def record_consent(
     connection.consent_status = ConsentStatus.GRANTED
     connection.consented_at = datetime.now(UTC)
     connection.tenant_id = tenant_id or connection.tenant_id
-    connection.status_detail = "Admin consent granted. Deploy the scanner role next."
+    connection.status_detail = READY_TO_DEPLOY
 
     if connection.tenant_id:
-        await _resolve_service_principal(connection)
+        problem = await _resolve_service_principal(connection)
+        if problem and not connection.service_principal_object_id:
+            connection.status_detail = problem
 
     await session.commit()
     return connection
@@ -208,30 +269,75 @@ async def ensure_service_principal(
     if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
         return False
 
-    await _resolve_service_principal(connection)
+    problem = await _resolve_service_principal(connection)
     if connection.service_principal_object_id:
+        connection.status_detail = READY_TO_DEPLOY
         await session.commit()
         return True
+
+    # Committed so it survives the request and reaches the card. Without this
+    # the connection kept reporting the cheerful "deploy the scanner role next"
+    # under a spinner, while the thing that would let anyone deploy had failed.
+    if problem:
+        connection.status_detail = problem
+        await session.commit()
     return False
 
 
-async def _resolve_service_principal(connection: CloudConnection) -> None:
+async def _resolve_service_principal(connection: CloudConnection) -> str | None:
+    """Look the principal up. Returns None on success, or why it failed.
+
+    Returning the reason rather than swallowing it is the point. Every way this
+    can fail used to collapse into the same silent nothing, and the connection
+    card showed a spinner that would never stop -- identical whether Entra
+    needed another few seconds or the app registration had no permissions to
+    grant in the first place. Those need different actions from different
+    people, so they have to read differently.
+    """
     from app.connectors.azure.auth import TokenProvider
 
     if not connection.tenant_id:
-        return
+        return "No Entra tenant is bound to this connection yet."
+
     try:
         tokens = TokenProvider(connection.tenant_id)
         async with GraphClient(tokens) as graph:
             principal = await graph.find_service_principal(settings.azure_client_id)
-        if principal and principal.get("id"):
-            connection.service_principal_object_id = str(principal["id"])
+    except AzureApiError as exc:
+        log.warning(
+            "azure.service_principal_lookup_failed",
+            connection_id=str(connection.id),
+            status_code=exc.azure_status_code,
+            error=str(exc),
+        )
+        if exc.azure_status_code in (401, 403):
+            # The overwhelmingly likely cause, and not something the customer
+            # can fix in their own tenant: consent can only grant permissions
+            # the app registration actually declares, so a registration with
+            # none grants nothing and every Graph call is refused afterwards.
+            return (
+                "Microsoft Graph refused this lookup. CloudGuard's own app "
+                "registration is most likely missing its API permissions, so "
+                "admin consent had nothing to grant. This is a setup step on "
+                "CloudGuard's side (AZURE_INTEGRATION.md §2.1)."
+            )
+        return f"Microsoft Graph could not be read: {exc}"
     except Exception as exc:
         log.warning(
             "azure.service_principal_lookup_failed",
             connection_id=str(connection.id),
             error=str(exc),
         )
+        return f"Could not reach Microsoft Graph for this tenant: {exc}"
+
+    if principal and principal.get("id"):
+        connection.service_principal_object_id = str(principal["id"])
+        return None
+
+    return (
+        "Admin consent completed, but CloudGuard's service principal is not "
+        "visible in this directory yet. Entra can take a minute to publish it."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,12 +360,41 @@ def template_token(connection: CloudConnection) -> str:
     )
 
 
+def public_api_base() -> str | None:
+    """The API's own public origin, for a URL Azure Portal will fetch.
+
+    Not ``app_url``: that is the *frontend*, and the two are separate hosts in
+    this deployment (Vercel and Railway). Pointing a template URL at the
+    frontend returns the SPA's index.html, and Azure Portal fails to parse it
+    as ARM -- a failure that reads as a broken template rather than a wrong
+    host.
+
+    ``API_URL`` is the direct answer but is not a required variable, so it may
+    be unset. ``AZURE_REDIRECT_URI`` is the reliable fallback: it is this API's
+    own public callback URL, and it cannot be subtly wrong, because Entra
+    compares it character for character and consent fails outright otherwise.
+    Anything reaching this function has already completed consent.
+
+    None rather than a guess when neither is available -- a hidden button is
+    recoverable, a link to the wrong host is a support ticket.
+    """
+    if settings.api_url:
+        return settings.api_url.rstrip("/")
+    if settings.azure_redirect_uri:
+        parts = urlsplit(settings.azure_redirect_uri)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    return None
+
+
 def template_url(connection: CloudConnection) -> str | None:
     """The full URL for the ARM template endpoint, or None if not ready."""
     if not connection.service_principal_object_id or not connection.scope_path:
         return None
+    base = public_api_base()
+    if not base:
+        return None
     token = template_token(connection)
-    base = settings.app_url.rstrip("/")
     return f"{base}/api/v1/cloud-connections/{connection.id}/template?token={token}"
 
 
@@ -295,22 +430,64 @@ def deploy_to_azure_url(connection: CloudConnection) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+# How long a connection may sit consented-but-unverified before the UI stops
+# implying that waiting is the answer. Generous on purpose: the deployment step
+# usually needs a *different* person -- whoever holds Owner or User Access
+# Administrator on the scope -- so a slow hour here is normal, not a fault.
+DEPLOY_PATIENCE_SECONDS = 30 * 60
+
+
+def deploy_stalled(connection: CloudConnection) -> bool:
+    """True once waiting has stopped being a plausible explanation.
+
+    A failing probe is indistinguishable from "not deployed yet" for as long as
+    deploying is still plausibly in progress. After that the two need to read
+    differently: an unattended spinner claims progress that is not happening,
+    and the customer has no way to tell a colleague who has not got round to it
+    from a deployment that failed or landed at the wrong scope.
+    """
+    if connection.consent_status != ConsentStatus.GRANTED:
+        return False
+    if connection.rbac_verified_at or not connection.consented_at:
+        return False
+    waited = datetime.now(UTC) - connection.consented_at
+    return waited.total_seconds() > DEPLOY_PATIENCE_SECONDS
+
+
+DEPLOY_STALLED_DETAIL = (
+    "CloudGuard still cannot read this environment. The scanner role may not "
+    "have been deployed yet, or it may have been deployed at a different scope "
+    "than this connection covers. Check that the deployment succeeded in Azure "
+    "and that its scope matches, then it will verify on its own."
+)
+
+
 async def try_auto_validate(
     session: AsyncSession, connection: CloudConnection
 ) -> CloudConnection:
-    """Attempt validation and discovery silently during polling.
+    """Attempt validation and discovery during polling.
 
-    Failures are silent — they mean the customer hasn't deployed the role yet.
-    The UI shows "Waiting for deployment..." rather than an error.
+    A failing probe stays quiet while the customer is plausibly still deploying
+    -- that is the normal state for the whole of this step. Past
+    ``DEPLOY_PATIENCE_SECONDS`` it stops being quiet, because by then silence is
+    indistinguishable from a deployment that went wrong.
     """
+    # A cancelled setup stops being polled. Otherwise "cancel" would mean only
+    # that the spinner went away, while the server kept calling Azure every ten
+    # seconds on behalf of a customer who said stop.
+    if connection.status == CloudAccountStatus.DISABLED:
+        return connection
+
     if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
         return connection
 
-    # Retry service principal lookup if still missing
-    if not connection.service_principal_object_id:
-        await _resolve_service_principal(connection)
-        if not connection.service_principal_object_id:
-            return connection
+    # Retry the lookup if it is still missing, through the committing wrapper.
+    # The bare call left a resolved id in memory only: when the probe below
+    # then failed -- which it does every poll until the role is deployed --
+    # nothing committed, so the id was rediscovered from Graph on every single
+    # poll and never actually stored.
+    if not await ensure_service_principal(session, connection):
+        return connection
 
     # Attempt RBAC validation if not yet verified
     if not connection.rbac_verified_at:
@@ -320,7 +497,13 @@ async def try_auto_validate(
             connection.rbac_verified_at = datetime.now(UTC)
             connection.status_detail = "Connection verified."
             await session.commit()
-        # If probe fails, stay silent — customer hasn't deployed yet
+        elif deploy_stalled(connection):
+            # Committed so the message survives the request. Status is left
+            # alone: nothing here is known to be broken, and marking a
+            # connection ERROR because a colleague is slow would be a lie.
+            if connection.status_detail != DEPLOY_STALLED_DETAIL:
+                connection.status_detail = DEPLOY_STALLED_DETAIL
+                await session.commit()
 
     # Auto-discover subscriptions once validated
     if connection.rbac_verified_at and not connection.last_discovery_at:
@@ -485,3 +668,153 @@ def graph_permissions() -> list[str]:
 
 def arm_actions() -> list[str]:
     return list(ARM_READ_ACTIONS)
+
+
+SETUP_CANCELLED_DETAIL = (
+    "Setup cancelled. Nothing was scanned. Resume when you are ready, or "
+    "remove the connection."
+)
+
+
+async def set_setup_cancelled(
+    session: AsyncSession,
+    tenant: TenantContext,
+    connection_id: UUID,
+    cancelled: bool,
+) -> CloudConnection:
+    """Stop or restart the setup process for a connection.
+
+    Deliberately reversible, and deliberately not a delete. Cancelling is what
+    someone wants when the person who has to run the Azure deployment is not
+    available today -- throwing the connection away would mean redoing admin
+    consent, which needs a Global Administrator, to get back to exactly where
+    they already were.
+
+    A verified connection cannot be cancelled: there is no setup left to stop,
+    and DISABLED there would read as "stop scanning", which is a different
+    feature and not this one.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if cancelled and connection.is_verified:
+        raise ValidationFailed(
+            "This connection is already verified, so there is no setup to cancel."
+        )
+
+    if cancelled:
+        connection.status = CloudAccountStatus.DISABLED
+        connection.status_detail = SETUP_CANCELLED_DETAIL
+    else:
+        connection.status = CloudAccountStatus.PENDING
+        connection.status_detail = (
+            READY_TO_DEPLOY
+            if connection.consent_status == ConsentStatus.GRANTED
+            else "Grant admin consent to continue."
+        )
+
+    await session.commit()
+    return connection
+
+
+# ---------------------------------------------------------------------------
+# Revocation
+# ---------------------------------------------------------------------------
+
+
+def revocation_steps(connection: CloudConnection) -> dict:
+    """What the customer must run to take CloudGuard's access away.
+
+    CloudGuard cannot do this itself, and that is a design decision rather than
+    a gap. Deleting its own role assignment needs
+    ``Microsoft.Authorization/roleAssignments/delete``, and removing its service
+    principal needs Graph ``Application.ReadWrite.All`` -- write permissions on
+    the two most sensitive surfaces in a tenant. A CloudGuard holding the first
+    could strip access from the customer's own administrators; holding the
+    second it could rewrite any application in the directory. Both are far more
+    dangerous than the read access they would revoke, and asking every customer
+    to grant them permanently to support a rare teardown is the wrong trade.
+
+    So the commands are generated instead, filled in for this connection, and
+    :func:`check_access_revoked` proves afterwards whether they worked. Read
+    access is the one thing CloudGuard can honestly report on, because losing it
+    is observable.
+    """
+    principal = connection.service_principal_object_id
+    scope = connection.scope_path
+    role = f"{ROLE_NAME} ({connection.role_version})"
+
+    steps: list[dict[str, str]] = []
+    if principal and scope:
+        steps.append(
+            {
+                "title": "Remove the scanner role assignment",
+                "detail": "Ends CloudGuard's ability to read Azure resources.",
+                "command": (
+                    f"az role assignment delete --assignee {principal} --scope {scope}"
+                ),
+            }
+        )
+        steps.append(
+            {
+                "title": "Delete the custom role definition",
+                "detail": "Optional. Removes the now-unused role from the scope.",
+                "command": f'az role definition delete --name "{role}" --scope {scope}',
+            }
+        )
+    if principal:
+        steps.append(
+            {
+                "title": "Remove CloudGuard from your directory",
+                "detail": (
+                    "Withdraws admin consent by deleting the enterprise "
+                    "application, ending directory access as well."
+                ),
+                "command": f"az ad sp delete --id {principal}",
+            }
+        )
+
+    return {
+        "principal_id": principal,
+        "scope_path": scope,
+        "role_name": role,
+        "tenant_id": connection.tenant_id,
+        "steps": steps,
+        # Stated plainly so nobody expects a button that cannot exist.
+        "why_manual": (
+            "CloudGuard holds read-only access and no write permission of any "
+            "kind, so it cannot remove its own access. These run under your "
+            "credentials, not CloudGuard's."
+        ),
+        "portal_url": (
+            "https://portal.azure.com/#view/Microsoft_AAD_IAM/"
+            "StartboardApplicationsMenuBlade/~/AppAppsPreview"
+        ),
+    }
+
+
+async def check_access_revoked(connection: CloudConnection) -> dict:
+    """Ask Azure whether CloudGuard can still read this environment.
+
+    The one honest confirmation available: revocation is verified by the access
+    failing, using the same read-only probe that verified it working. A product
+    that said "revoked" because a button was pressed would be asserting
+    something it had not checked -- the same move this codebase refuses
+    everywhere else.
+    """
+    if not connection.tenant_id:
+        return {"revoked": True, "detail": "No tenant is bound to this connection."}
+
+    check = await _probe_silently(connection)
+    if check.ok:
+        return {
+            "revoked": False,
+            "detail": (
+                "CloudGuard can still read this environment. The role "
+                "assignment is in place; Azure can take a minute to apply a "
+                "removal."
+            ),
+        }
+    return {
+        "revoked": True,
+        "detail": "Confirmed: CloudGuard can no longer read this environment.",
+    }

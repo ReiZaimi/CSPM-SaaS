@@ -8,7 +8,7 @@ from app.connectors.azure.auth import ConsentStateError, verify_state
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.deps import DbSession, Tenant
-from app.core.enums import Role
+from app.core.enums import ConsentStatus, Role
 from app.core.errors import CloudAccountNotFound, envelope
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
@@ -22,6 +22,14 @@ from app.services import cloud_connections as service
 
 router = APIRouter(prefix="/cloud-connections", tags=["cloud-connections"])
 
+# Applied to the ARM template endpoint only, not to the API at large. The
+# global CORS policy names this product's own frontend; Azure Portal is a
+# third-party origin fetching one deliberately public, token-gated document.
+TEMPLATE_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "no-store",
+}
+
 
 def _serialize(
     connection: CloudConnection,
@@ -34,6 +42,19 @@ def _serialize(
     data["scope_path"] = connection.scope_path
     data["subscription_count"] = subscription_count
     data["template_url"] = service.deploy_to_azure_url(connection)
+    # Lets the card stop showing a spinner once waiting has stopped being a
+    # plausible explanation for the silence.
+    data["deploy_stalled"] = service.deploy_stalled(connection)
+
+    # Regenerated on every read, not just on create. Returning it only from the
+    # create response meant a page reload lost the consent button and left the
+    # connection stuck in PENDING with no route forward. The signed state also
+    # expires in 30 minutes, so a stored one would usually be dead anyway.
+    if connection.consent_status != ConsentStatus.GRANTED:
+        fresh, problem = service.consent_url_for(connection)
+        consent_url = consent_url or fresh
+        if problem:
+            data["status_detail"] = problem
     if consent_url:
         data["consent_url"] = consent_url
     if subscriptions is not None:
@@ -57,19 +78,45 @@ async def arm_template(
 ) -> JSONResponse:
     """Serve the ARM template for the Deploy to Azure button.
 
-    Unauthenticated — Azure Portal fetches this server-side. The signed token
-    is what makes it safe.
+    Unauthenticated, and readable from any origin. Both are requirements rather
+    than conveniences.
+
+    Azure Portal fetches this **from the customer's browser**, not server-side,
+    so the response needs CORS headers naming an origin CloudGuard does not
+    control and cannot enumerate (portal.azure.com has regional and sovereign
+    variants). Without them the portal reports only "There was an error
+    downloading the template ... ensure the template is publicly accessible and
+    that the publisher has enabled CORS policy on the endpoint" -- which reads
+    as an outage, while the endpoint answers 200 to anything that is not a
+    browser.
+
+    A wildcard is safe here specifically. Nothing served is secret: the template
+    names a service principal object id the customer's own directory already
+    lists, and a set of read permissions they are about to review in the portal.
+    Access is gated by the HMAC-signed, time-limited token in the query string,
+    not by the origin of the request -- so allowing every origin gives away
+    nothing that the token does not already control.
     """
     try:
         payload = verify_state(token, max_age_seconds=service.TEMPLATE_TOKEN_TTL_SECONDS)
     except ConsentStateError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"error": str(exc)}, status_code=400, headers=TEMPLATE_CORS_HEADERS
+        )
 
     if payload.get("purpose") != "template":
-        return JSONResponse({"error": "Invalid template token"}, status_code=400)
+        return JSONResponse(
+            {"error": "Invalid template token"},
+            status_code=400,
+            headers=TEMPLATE_CORS_HEADERS,
+        )
 
     if str(connection_id) != payload.get("cloud_connection_id"):
-        return JSONResponse({"error": "Token does not match connection"}, status_code=400)
+        return JSONResponse(
+            {"error": "Token does not match connection"},
+            status_code=400,
+            headers=TEMPLATE_CORS_HEADERS,
+        )
 
     async with service_session() as session:
         connection = await session.get(CloudConnection, connection_id)
@@ -80,7 +127,10 @@ async def arm_template(
     return JSONResponse(
         content=json.loads(body),
         media_type="application/json",
-        headers={"Content-Disposition": 'inline; filename="cloudguard-scanner.json"'},
+        headers={
+            "Content-Disposition": 'inline; filename="cloudguard-scanner.json"',
+            **TEMPLATE_CORS_HEADERS,
+        },
     )
 
 
@@ -134,7 +184,9 @@ async def create_connection(
 @router.get("")
 async def list_connections(session: DbSession, tenant: Tenant) -> dict:
     rows = await service.list_connections(session, tenant)
-    return envelope([_serialize(c, sub_count) for c, sub_count in rows])
+    return envelope(
+        [_serialize(c, len(subs), subs) for c, subs in rows]
+    )
 
 
 @router.get("/{connection_id}")
@@ -163,6 +215,46 @@ async def set_scope(
         session, tenant, connection_id, payload.in_scope
     )
     return envelope([_serialize_subscription(a) for a in accounts])
+
+
+@router.post("/{connection_id}/cancel")
+async def cancel_setup(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Stop the setup process without discarding the connection."""
+    tenant.require_write()
+    connection = await service.set_setup_cancelled(
+        session, tenant, connection_id, cancelled=True
+    )
+    return envelope(_serialize(connection))
+
+
+@router.post("/{connection_id}/resume")
+async def resume_setup(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Pick setup back up where it was left."""
+    tenant.require_write()
+    connection = await service.set_setup_cancelled(
+        session, tenant, connection_id, cancelled=False
+    )
+    return envelope(_serialize(connection))
+
+
+@router.get("/{connection_id}/revocation")
+async def revocation(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """What to run in Azure to take CloudGuard's access away.
+
+    Generated rather than performed: CloudGuard has no write permission in a
+    customer tenant and deliberately never asks for one, so revocation is the
+    customer's action. See ``service.revocation_steps``.
+    """
+    connection = await service.get_connection(session, tenant, connection_id)
+    return envelope(service.revocation_steps(connection))
+
+
+@router.post("/{connection_id}/check-revoked")
+async def check_revoked(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Confirm by trying: revocation is verified by the access failing."""
+    tenant.require_write()
+    connection = await service.get_connection(session, tenant, connection_id)
+    return envelope(await service.check_access_revoked(connection))
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_200_OK)

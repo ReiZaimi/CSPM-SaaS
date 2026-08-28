@@ -65,6 +65,14 @@ class ScanPipeline:
                 await self._fail(session, scan, "Cloud account no longer exists")
                 return
 
+            # Cancelled between being queued and being picked up. The worker
+            # may sit behind a backlog for minutes, which is exactly the window
+            # someone uses the cancel button in -- starting anyway would ignore
+            # them and write findings they asked not to collect.
+            if scan.status == ScanStatus.CANCELLED:
+                log.info("scan.cancelled_before_start", scan_id=str(self.scan_id))
+                return
+
             scan.started_at = datetime.now(UTC)
             org_id = scan.organization_id  # authoritative; never from a request
 
@@ -96,6 +104,13 @@ class ScanPipeline:
                 state = connector.normalize(snapshot)
                 id_map = await self._persist_resources(session, org_id, account.id, state)
                 scan.resource_count = len(state.resources)
+
+                # Now the size of the job is known, so progress can be a count
+                # rather than a phase name. Committed here so a long evaluation
+                # shows a denominator immediately rather than at the end.
+                scan.progress_total = len(state.resources)
+                scan.progress_done = len(state.resources)
+                await session.commit()
 
                 # --- evaluate -----------------------------------------------
                 await self._set_status(session, scan, ScanStatus.EVALUATING)

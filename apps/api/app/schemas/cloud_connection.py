@@ -52,6 +52,9 @@ class CloudConnectionOut(BaseModel):
     subscriptions: list["DiscoveredSubscription"] = Field(default_factory=list)
     consent_url: str | None = None
     template_url: str | None = None
+    # True once the deployment has been outstanding long enough that "still in
+    # progress" no longer explains it.
+    deploy_stalled: bool = False
 
 
 class DiscoveredSubscription(BaseModel):

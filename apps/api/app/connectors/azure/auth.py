@@ -85,6 +85,15 @@ def build_consent_url(state: str, tenant_hint: str = "organizations") -> str:
 
     Only Graph is consented. ARM needs no consent at all -- subscription access
     comes from the RBAC role assignment, which is the separate second grant.
+
+    ``tenant_hint`` defaults to ``organizations``, which accepts work and school
+    accounts and refuses personal Microsoft accounts outright ("You can't sign
+    in here with a personal account"). That refusal is correct, not a
+    misconfiguration: tenant-wide admin consent is a directory operation, and an
+    MSA is not a member of the directory even when it owns the subscription
+    underneath it. A customer in that position needs a member account in their
+    own tenant -- typically ``admin@<tenant>.onmicrosoft.com`` -- holding Global
+    Administrator.
     """
     # Checked here rather than left to Entra. A malformed redirect URI comes
     # back as AADSTS90013 on Microsoft's domain, after the administrator has

@@ -39,6 +39,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # a healthy boot is visible in the deploy logs, not just a failed one.
     log.info("config.validated", environment=settings.app_env)
 
+    # Azure misconfiguration deliberately does not stop the API booting — it
+    # breaks consent and nothing else, and refusing to start would cost the
+    # whole dashboard to fix one button. But it was previously invisible until
+    # a customer walked into it, so the operator who can actually fix it never
+    # saw it. Warned here, where deploy logs are read.
+    if settings.azure_configured and (problem := settings.azure_consent_problem):
+        log.warning("azure.consent_misconfigured", problem=problem)
+
     if settings.sentry_dsn:
         sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
 

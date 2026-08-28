@@ -93,8 +93,11 @@ def test_a_misconfigured_deployment_refuses_to_build_a_url(
         auth,
         "settings",
         Settings(
-            azure_client_id="app-id",
-            azure_client_secret="secret",
+            # Shaped like real credentials so this exercises the redirect-URI
+            # path: the identity checks run first and would otherwise be what
+            # this test caught.
+            azure_client_id="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+            azure_client_secret="aBc7Q~exampleSecretValue.With-Punctuation_123",
             azure_redirect_uri=f"https://<placeholder>{CONSENT_CALLBACK_PATH}",
         ),
     )
@@ -108,3 +111,24 @@ def test_the_state_survives_the_round_trip(configured: Settings) -> None:
     state = auth.sign_state({"cloud_connection_id": "abc", "issued_at": time.time()})
     returned = query(build_consent_url(state))["state"]
     assert verify_state(returned, max_age_seconds=3600)["cloud_connection_id"] == "abc"
+
+
+def test_a_secret_id_stops_the_flow_before_microsoft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AADSTS7000215 is only raised at token acquisition -- which happens
+    *after* consent, so a customer would have involved their Global
+    Administrator before anything said the credential was wrong. The shape is
+    knowable up front, so the flow stops here instead."""
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            azure_client_id="8f39c34c-e523-4914-89ca-d6de1a8691ab",
+            # The Secret ID, not the secret value.
+            azure_client_secret="1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901",
+            azure_redirect_uri=REDIRECT_URI,
+        ),
+    )
+    with pytest.raises(NotConfigured, match="Secret ID"):
+        build_consent_url("state")

@@ -147,13 +147,25 @@ Node installed on your machine.
    time, Root Directory again empty.
 
    The worker runs Celery rather than the web server, so it needs a different
-   start command than the root `railway.json` provides. Either point its
-   **Config-as-code** field at `infrastructure/railway/worker.json`, or just
-   override the one field:
+   start command than the root `railway.json` provides.
+
+   **Preferred:** set its **Config-as-code** field to
+   `infrastructure/railway/worker.json`. That file already carries the right
+   start command, and nothing has to be retyped.
+
+   Otherwise set **Custom Start Command** — the *Start* one, in the Deploy
+   section:
 
    ```
    celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
    ```
+
+   > **Not Custom Build Command.** They sit near each other in Railway's
+   > settings and the mistake is silent: a build command runs at build time,
+   > the container then starts with the Dockerfile's own `CMD` — uvicorn — and
+   > the service reports **Online** while running a second copy of the API.
+   > Scans queue and nothing ever collects them. See the troubleshooting entry
+   > below.
 
    No public domain and no health check — nothing calls the worker over HTTP.
 
@@ -329,6 +341,27 @@ permission. It must be the **postgres** user (the table owner), not
 `cloudguard_app` — the app role deliberately owns nothing and cannot create
 tables.
 
+### The worker service is Online but scans stay Queued
+
+`Online` means the container is running, not that it is running *Celery*. The
+usual cause is the Celery command typed into **Custom Build Command** instead
+of **Custom Start Command**: the build command runs during the build, the
+container then starts with the Dockerfile's `CMD`, and the service quietly
+becomes a second copy of the API. It passes every health check because it *is*
+a healthy API.
+
+Check, in order:
+
+1. The worker's **Deploy → Custom Start Command** contains `celery`, or its
+   **Config-as-code** field points at `infrastructure/railway/worker.json`.
+   Clear the build command if the celery line ended up there.
+2. Its logs show Celery's startup banner and then `scan.task_received` when a
+   scan is queued. An API access log instead means it is running uvicorn.
+3. It has the same `REDIS_URL` as the API — they must share one broker.
+
+`GET /api/v1/scans/worker-status` answers this directly: it pings the broker
+and reports how many workers respond.
+
 ### Vercel: "No Output Directory named 'dist' found"
 
 Vercel built from the wrong directory. Either set Root Directory to `apps/web`,
@@ -385,6 +418,31 @@ Entra app registration in `AZURE_INTEGRATION.md` §2.1 — that's a separate
 setup, not a hosting one. Without it the app works fully up to the point of
 starting a consent flow, and the connection wizard tells you so rather than
 failing at the button.
+
+### Scans stay Queued forever
+
+`QUEUED` means the scan row was written and the task handed to Redis. Nothing
+else has happened. A worker collects it within seconds when one is running, so
+minutes in that state means nothing is listening — and the scans page now says
+so rather than showing a progress bar indefinitely.
+
+Almost always: **the Celery worker is not deployed.** It is a *second* Railway
+service, built from the same image but started with
+`infrastructure/railway/worker.json`:
+
+```
+celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+```
+
+Check, in order:
+
+1. A worker service exists in the Railway project and is running.
+2. It has the same `DATABASE_URL`, `REDIS_URL` and `APP_ENV` as the API — it
+   shares the whole codebase and reads the scan row itself.
+3. Its logs show `scan.task_received`. If they do not, it is not reaching Redis.
+
+Cancelling a stuck scan is safe: the pipeline re-reads the status before it
+starts, so a task collected later stops instead of writing findings.
 
 ### Seeing the product loop before Azure is registered
 
