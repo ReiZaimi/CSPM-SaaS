@@ -395,13 +395,47 @@ def deploy_to_azure_url(connection: CloudConnection) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+# How long a connection may sit consented-but-unverified before the UI stops
+# implying that waiting is the answer. Generous on purpose: the deployment step
+# usually needs a *different* person -- whoever holds Owner or User Access
+# Administrator on the scope -- so a slow hour here is normal, not a fault.
+DEPLOY_PATIENCE_SECONDS = 30 * 60
+
+
+def deploy_stalled(connection: CloudConnection) -> bool:
+    """True once waiting has stopped being a plausible explanation.
+
+    A failing probe is indistinguishable from "not deployed yet" for as long as
+    deploying is still plausibly in progress. After that the two need to read
+    differently: an unattended spinner claims progress that is not happening,
+    and the customer has no way to tell a colleague who has not got round to it
+    from a deployment that failed or landed at the wrong scope.
+    """
+    if connection.consent_status != ConsentStatus.GRANTED:
+        return False
+    if connection.rbac_verified_at or not connection.consented_at:
+        return False
+    waited = datetime.now(UTC) - connection.consented_at
+    return waited.total_seconds() > DEPLOY_PATIENCE_SECONDS
+
+
+DEPLOY_STALLED_DETAIL = (
+    "CloudGuard still cannot read this environment. The scanner role may not "
+    "have been deployed yet, or it may have been deployed at a different scope "
+    "than this connection covers. Check that the deployment succeeded in Azure "
+    "and that its scope matches, then it will verify on its own."
+)
+
+
 async def try_auto_validate(
     session: AsyncSession, connection: CloudConnection
 ) -> CloudConnection:
-    """Attempt validation and discovery silently during polling.
+    """Attempt validation and discovery during polling.
 
-    Failures are silent — they mean the customer hasn't deployed the role yet.
-    The UI shows "Waiting for deployment..." rather than an error.
+    A failing probe stays quiet while the customer is plausibly still deploying
+    -- that is the normal state for the whole of this step. Past
+    ``DEPLOY_PATIENCE_SECONDS`` it stops being quiet, because by then silence is
+    indistinguishable from a deployment that went wrong.
     """
     if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
         return connection
@@ -422,7 +456,13 @@ async def try_auto_validate(
             connection.rbac_verified_at = datetime.now(UTC)
             connection.status_detail = "Connection verified."
             await session.commit()
-        # If probe fails, stay silent — customer hasn't deployed yet
+        elif deploy_stalled(connection):
+            # Committed so the message survives the request. Status is left
+            # alone: nothing here is known to be broken, and marking a
+            # connection ERROR because a colleague is slow would be a lie.
+            if connection.status_detail != DEPLOY_STALLED_DETAIL:
+                connection.status_detail = DEPLOY_STALLED_DETAIL
+                await session.commit()
 
     # Auto-discover subscriptions once validated
     if connection.rbac_verified_at and not connection.last_discovery_at:

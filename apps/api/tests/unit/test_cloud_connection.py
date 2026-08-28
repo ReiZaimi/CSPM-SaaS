@@ -290,3 +290,51 @@ def test_a_misconfigured_deployment_returns_the_reason(monkeypatch) -> None:
     url, problem = consent_url_for(connection())
     assert url is None
     assert problem is not None and "Secret ID" in problem
+
+
+# --- waiting has a limit ---------------------------------------------------
+
+
+def stalled_case(**kwargs: object) -> CloudConnection:
+    from datetime import timedelta
+
+    from app.services.cloud_connections import DEPLOY_PATIENCE_SECONDS
+
+    defaults: dict = {
+        "consent_status": ConsentStatus.GRANTED,
+        "tenant_id": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+        "consented_at": datetime.now(UTC)
+        - timedelta(seconds=DEPLOY_PATIENCE_SECONDS + 60),
+    }
+    return connection(**{**defaults, **kwargs})
+
+
+def test_a_fresh_consent_is_not_stalled() -> None:
+    """Deploying needs a second person; a slow start is normal, not a fault."""
+    from app.services.cloud_connections import deploy_stalled
+
+    fresh = connection(
+        consent_status=ConsentStatus.GRANTED,
+        tenant_id="72f988bf-86f1-41af-91ab-2d7cd011db47",
+        consented_at=datetime.now(UTC),
+    )
+    assert deploy_stalled(fresh) is False
+
+
+def test_a_long_unverified_wait_is_stalled() -> None:
+    from app.services.cloud_connections import deploy_stalled
+
+    assert deploy_stalled(stalled_case()) is True
+
+
+def test_a_verified_connection_is_never_stalled() -> None:
+    from app.services.cloud_connections import deploy_stalled
+
+    assert deploy_stalled(stalled_case(rbac_verified_at=datetime.now(UTC))) is False
+
+
+def test_an_unconsented_connection_is_never_stalled() -> None:
+    """Nothing is outstanding yet — the customer has not been asked to deploy."""
+    from app.services.cloud_connections import deploy_stalled
+
+    assert deploy_stalled(stalled_case(consent_status=ConsentStatus.PENDING)) is False

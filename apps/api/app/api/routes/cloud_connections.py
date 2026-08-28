@@ -34,6 +34,9 @@ def _serialize(
     data["scope_path"] = connection.scope_path
     data["subscription_count"] = subscription_count
     data["template_url"] = service.deploy_to_azure_url(connection)
+    # Lets the card stop showing a spinner once waiting has stopped being a
+    # plausible explanation for the silence.
+    data["deploy_stalled"] = service.deploy_stalled(connection)
 
     # Regenerated on every read, not just on create. Returning it only from the
     # create response meant a page reload lost the consent button and left the

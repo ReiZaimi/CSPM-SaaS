@@ -149,6 +149,25 @@ The way through is a member account in that tenant, usually
 Entra ID → Users → New user, assign the role, sign in as that account, and
 consent again.
 
+### Why the role is wider than the scanner reads
+
+The custom role declares 30 read actions; the collector currently reaches 13.
+The surplus is deliberate. Updating a deployed role means going back to whoever
+holds Owner or User Access Administrator on the subscription, which is a far
+worse tax on a customer than a slightly wider read-only grant — so actions are
+declared ahead of the rules that will use them.
+
+`app/connectors/azure/rbac.py` records both halves: `CLIENT_ACTIONS` maps every
+ARM call the collector makes to the action it needs, and `ROLE_ONLY_ACTIONS` is
+derived from the difference, so the surplus is a named decision rather than
+something nobody noticed.
+
+Only the forward direction is enforced by tests: every collector call must have
+a matching action. That is the direction that breaks production — a call with no
+permission returns 403 inside one collection category, and the engine records
+that as UNKNOWN rather than as an error anyone reads, so the scan looks like it
+worked. If `ROLE_ONLY_ACTIONS` ever empties, the reverse guard can be reinstated.
+
 ### Permission modes
 
 `Reader` (`*/read`) is the default: one line, never needs revisiting. The

@@ -102,3 +102,68 @@ def test_arm_template_management_group_schema() -> None:
     body = arm_template(context(ConnectionScope.TENANT_ROOT))
     parsed = json.loads(body)
     assert "managementGroupDeploymentTemplate" in parsed["$schema"]
+
+
+# --- the forward guard -----------------------------------------------------
+#
+# Only one direction is enforced. A collector call with no matching action
+# fails in production as a 403 inside one collection category, which the engine
+# records as UNKNOWN rather than as an error anyone reads -- a scan that looks
+# like it worked. The reverse (an action no call reaches) is deliberate here:
+# see ROLE_ONLY_ACTIONS.
+
+
+def arm_client_calls() -> set[str]:
+    """Every ARM request method, read off the class rather than a list."""
+    import inspect
+
+    from app.connectors.azure.client import ArmClient
+
+    return {
+        name
+        for name, member in vars(ArmClient).items()
+        if not name.startswith("_") and inspect.iscoroutinefunction(member)
+    }
+
+
+def test_every_arm_call_has_a_matching_action() -> None:
+    from app.connectors.azure.rbac import CLIENT_ACTIONS
+
+    missing = sorted(arm_client_calls() - set(CLIENT_ACTIONS))
+    assert missing == [], (
+        f"ArmClient methods with no RBAC action: {missing}. "
+        "Add them to CLIENT_ACTIONS and to ARM_READ_ACTIONS, or a custom-role "
+        "customer loses that whole collection category to a silent 403."
+    )
+
+
+def test_every_mapped_action_is_actually_granted() -> None:
+    """The mapping must not promise a permission the role does not contain."""
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS, CLIENT_ACTIONS
+
+    granted = set(ARM_READ_ACTIONS)
+    ungranted = sorted(
+        {a for actions in CLIENT_ACTIONS.values() for a in actions} - granted
+    )
+    assert ungranted == [], f"Mapped to actions the role does not grant: {ungranted}"
+
+
+def test_mapped_methods_all_exist() -> None:
+    """Stops the mapping rotting into a list of methods that were renamed."""
+    from app.connectors.azure.rbac import CLIENT_ACTIONS
+
+    stale = sorted(set(CLIENT_ACTIONS) - arm_client_calls())
+    assert stale == [], f"CLIENT_ACTIONS names methods that no longer exist: {stale}"
+
+
+def test_the_surplus_is_declared_rather_than_accidental() -> None:
+    """The wider-than-needed role is a decision, so it is written down.
+
+    If this ever reaches zero the role has caught up with the collector and the
+    reverse guard could be reinstated.
+    """
+    from app.connectors.azure.rbac import ARM_READ_ACTIONS, ROLE_ONLY_ACTIONS
+
+    assert set(ROLE_ONLY_ACTIONS) <= set(ARM_READ_ACTIONS)
+    for action in ROLE_ONLY_ACTIONS:
+        assert action.endswith("/read"), action

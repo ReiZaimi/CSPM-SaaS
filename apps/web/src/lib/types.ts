@@ -235,6 +235,8 @@ export interface CloudConnection {
   subscriptions: DiscoveredSubscription[];
   consent_url: string | null;
   template_url: string | null;
+  /** True once waiting no longer explains why read access has not appeared. */
+  deploy_stalled: boolean;
 }
 
 export interface DiscoveredSubscription {

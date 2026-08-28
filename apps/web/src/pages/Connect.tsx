@@ -234,7 +234,17 @@ function ConnectionCard({
                 <Button>Deploy to Azure</Button>
               </a>
             </div>
-            <WaitingNote text={t.connection.waitingForAccess} />
+            {connection.deploy_stalled ? (
+              /* Past the point where waiting explains it. A spinner here would
+                 keep implying progress, and gives no way to tell a colleague
+                 who has not got round to it from a deployment that failed or
+                 landed at the wrong scope. */
+              <p className="mt-3 text-xs leading-relaxed text-high">
+                {connection.status_detail}
+              </p>
+            ) : (
+              <WaitingNote text={t.connection.waitingForAccess} />
+            )}
           </div>
         )}
 

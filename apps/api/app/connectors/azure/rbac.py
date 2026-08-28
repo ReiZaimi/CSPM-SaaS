@@ -1,11 +1,25 @@
 """What CloudGuard needs Azure RBAC to allow, and the ARM template that grants it.
 
-The list below is not aspirational. Every action corresponds to a read
-operation CloudGuard performs during a scan. The custom role contains exactly
-these actions and nothing else -- no ``*/action`` entries, no ``listKeys``,
-no data plane, nothing that could read the contents of a customer's storage
-or database. The claim "CloudGuard cannot perform a single write in your
-environment" is checkable from this file.
+Every action here is ``*/read``. The custom role contains these and nothing
+else -- no ``*/action`` entries, no ``listKeys``, no data plane, nothing that
+could read the contents of a customer's storage or database. The claim
+"CloudGuard cannot perform a single write in your environment" is checkable
+from this file, and a test enforces it.
+
+**The role is deliberately wider than the scanner currently reads.** Some
+actions are declared ahead of the rules that will use them, so that a customer
+who deploys the role today does not have to redeploy it when those rules ship
+-- a role update means going back to whoever holds Owner on the subscription,
+which is a far worse tax than a slightly wider read-only grant.
+``CLIENT_ACTIONS`` below records which actions the collector reaches today, and
+``ROLE_ONLY_ACTIONS`` names the surplus explicitly, so "requested but unused"
+is a documented decision rather than something nobody noticed.
+
+The guarantee that *is* enforced runs the other way: every ARM call the
+collector makes must have a matching action. A missing one fails in production
+as a 403 inside one collection category, which surfaces as UNKNOWN results
+rather than as an error anyone reads
+(``tests/unit/test_azure_rbac.py::test_every_arm_call_has_a_matching_action``).
 
 Bump ``ROLE_VERSION`` when the action list changes, so a deployed role that
 predates a new rule can be identified and the customer offered a redeploy
@@ -68,6 +82,39 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.Security/securityContacts/read",
     "Microsoft.Security/autoProvisioningSettings/read",
 )
+
+# Which ARM action each collector call needs. This is the link between the code
+# and the permission set, and it is what the forward guard checks: add a call to
+# ArmClient without adding it here and the test fails, rather than a customer
+# discovering it as a 403 buried in one collection category.
+#
+# Keys are method names on app.connectors.azure.client.ArmClient.
+CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
+    "list_subscriptions": ("Microsoft.Resources/subscriptions/read",),
+    "list_resources": ("Microsoft.Resources/subscriptions/resources/read",),
+    "list_network_security_groups": ("Microsoft.Network/networkSecurityGroups/read",),
+    "list_network_interfaces": ("Microsoft.Network/networkInterfaces/read",),
+    "list_public_ips": ("Microsoft.Network/publicIPAddresses/read",),
+    "list_virtual_machines": ("Microsoft.Compute/virtualMachines/read",),
+    "list_storage_accounts": ("Microsoft.Storage/storageAccounts/read",),
+    "list_sql_servers": ("Microsoft.Sql/servers/read",),
+    "list_sql_firewall_rules": ("Microsoft.Sql/servers/firewallRules/read",),
+    "list_postgresql_servers": ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
+    "list_diagnostic_settings": ("Microsoft.Insights/diagnosticSettings/read",),
+    "list_role_assignments": ("Microsoft.Authorization/roleAssignments/read",),
+    "list_role_assignments_at_scope": ("Microsoft.Authorization/roleAssignments/read",),
+    "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
+}
+
+# Granted but not yet reached by any collector call -- declared ahead of the
+# rules that will use them so customers deploy the role once rather than twice.
+# Derived, not hand-listed, so it cannot fall out of step with the two above.
+ROLE_ONLY_ACTIONS: tuple[str, ...] = tuple(
+    action
+    for action in ARM_READ_ACTIONS
+    if action not in {a for actions in CLIENT_ACTIONS.values() for a in actions}
+)
+
 
 
 @dataclass(frozen=True)
