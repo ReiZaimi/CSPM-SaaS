@@ -121,6 +121,24 @@ async def run_scan(org_id: uuid.UUID, account_id: uuid.UUID) -> uuid.UUID:
     return scan_id
 
 
+async def run_replay(
+    org_id: uuid.UUID, account_id: uuid.UUID, source_scan_id: uuid.UUID
+) -> uuid.UUID:
+    async with service_session() as session:
+        scan = Scan(
+            organization_id=org_id,
+            cloud_account_id=account_id,
+            status=ScanStatus.QUEUED,
+            replay_of_scan_id=source_scan_id,
+        )
+        session.add(scan)
+        await session.commit()
+        scan_id = scan.id
+
+    await ScanPipeline(scan_id).replay()
+    return scan_id
+
+
 async def fetch(sql: str, params: dict) -> list:
     async with service_session() as session:
         return list((await session.execute(text(sql), params)).all())
@@ -444,3 +462,198 @@ class TestSecurityScoreMoves:
         assert after["security_score"] > before["security_score"]
         assert after["open_finding_count"] < before["open_finding_count"]
         assert after["verified_resolved_last_30_days"] >= 2
+
+
+class TestSnapshotReplay:
+    """Re-evaluating a stored capture, without going back to Azure.
+
+    Every scan above wrote a snapshot before interpreting anything, on the
+    promise that it could be re-evaluated later against improved rules. These
+    tests are that promise being kept -- and the guard rail that stops it
+    becoming a way to fabricate evidence.
+    """
+
+    async def test_a_replay_reproduces_the_scan_it_replayed(
+        self, replay, connected_account
+    ) -> None:
+        """Same snapshot, same rules, same answer. If this ever diverged, a
+        stored snapshot would stop being worth keeping."""
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+
+        replayed_id = await run_replay(org_id, account_id, original_id)
+
+        async with service_session() as session:
+            original = await session.get(Scan, original_id)
+            replayed = await session.get(Scan, replayed_id)
+
+        assert replayed.status == original.status
+        assert replayed.resource_count == original.resource_count
+        assert replayed.rule_count == original.rule_count
+        assert replayed.finding_count == original.finding_count
+        assert replayed.replay_of_scan_id == original_id
+
+    async def test_a_replay_makes_no_azure_call(
+        self, replay, connected_account, monkeypatch
+    ) -> None:
+        """The point of the feature. A connector that raises on ``collect``
+        proves the replay path never reaches for the network."""
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+
+        async def explode() -> RawSnapshot:
+            raise AssertionError("a replay must not collect")
+
+        monkeypatch.setattr(ReplayConnector, "collect", lambda self: explode())
+
+        replayed_id = await run_replay(org_id, account_id, original_id)
+        async with service_session() as session:
+            replayed = await session.get(Scan, replayed_id)
+        assert replayed.status == ScanStatus.COMPLETED
+
+    async def test_a_replay_writes_no_second_snapshot(
+        self, replay, connected_account
+    ) -> None:
+        """One snapshot per collection, not one per evaluation."""
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+        await run_replay(org_id, account_id, original_id)
+
+        rows = await fetch(
+            "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert rows[0][0] == 1
+
+    async def test_a_replay_of_the_newest_snapshot_verifies_fixes(
+        self, replay, connected_account
+    ) -> None:
+        """A replay of current state is a scan that skipped collection, so the
+        remediation loop still closes -- including the case that matters, where
+        the rule proving the fix was written after the fix was made."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+        fixed_scan_id = await run_scan(org_id, account_id)
+
+        # Replaying that same, newest snapshot must reach the same verdict.
+        replayed_id = await run_replay(org_id, account_id, fixed_scan_id)
+
+        async with service_session() as session:
+            replayed = await session.get(Scan, replayed_id)
+            rows = list(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT status FROM findings "
+                            "WHERE organization_id = :o AND rule_id = 'AZ-NET-001'"
+                        ),
+                        {"o": org_id},
+                    )
+                ).scalars()
+            )
+
+        assert replayed.evaluation_only is False
+        assert rows and all(s == FindingStatus.RESOLVED for s in rows)
+
+    async def test_a_replay_of_a_superseded_snapshot_resolves_nothing(
+        self, replay, connected_account
+    ) -> None:
+        """The interlock, end to end.
+
+        The first snapshot shows RDP open. The second shows it closed, which
+        resolves the finding. Replaying the *first* one now produces FAIL again
+        -- and must not reopen anything, because that capture is a statement
+        about the past. A month-old snapshot cannot testify to the present in
+        either direction.
+        """
+        org_id, account_id = connected_account
+        stale_scan_id = await run_scan(org_id, account_id)
+
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+        await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT id, status, resolved_by_scan_id FROM findings "
+            "WHERE organization_id = :o ORDER BY id",
+            {"o": org_id},
+        )
+        replayed_id = await run_replay(org_id, account_id, stale_scan_id)
+        after = await fetch(
+            "SELECT id, status, resolved_by_scan_id FROM findings "
+            "WHERE organization_id = :o ORDER BY id",
+            {"o": org_id},
+        )
+
+        assert after == before, "a superseded snapshot must not change any finding"
+
+        async with service_session() as session:
+            replayed = await session.get(Scan, replayed_id)
+        # It still reports what the rules would have found, and still records
+        # coverage -- what could and could not be determined about that capture
+        # is true whatever its age.
+        assert replayed.evaluation_only is True
+        assert replayed.status == ScanStatus.COMPLETED
+        assert replayed.finding_count > 0
+
+        gaps = await fetch(
+            "SELECT count(*) FROM scan_rule_results WHERE scan_id = :s",
+            {"s": replayed_id},
+        )
+        assert gaps[0][0] > 0
+
+    async def test_a_replay_does_not_backdate_last_seen_on_assets(
+        self, replay, connected_account
+    ) -> None:
+        """``last_seen_at`` means when the resource was observed. A replay of an
+        old capture must not report a resource as seen today, nor drag a
+        currently-seen one backwards."""
+        org_id, account_id = connected_account
+        stale_scan_id = await run_scan(org_id, account_id)
+        before = await fetch(
+            "SELECT id, last_seen_at FROM cloud_resources "
+            "WHERE organization_id = :o ORDER BY id",
+            {"o": org_id},
+        )
+
+        await run_replay(org_id, account_id, stale_scan_id)
+        after = await fetch(
+            "SELECT id, last_seen_at FROM cloud_resources "
+            "WHERE organization_id = :o ORDER BY id",
+            {"o": org_id},
+        )
+        assert after == before
+
+    async def test_replaying_a_scan_with_no_snapshot_fails_with_a_reason(
+        self, replay, connected_account
+    ) -> None:
+        """A scan that failed before collection finished has nothing to replay,
+        and must say so rather than raising."""
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            empty = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.FAILED,
+            )
+            session.add(empty)
+            await session.commit()
+            empty_id = empty.id
+
+        replayed_id = await run_replay(org_id, account_id, empty_id)
+        async with service_session() as session:
+            replayed = await session.get(Scan, replayed_id)
+
+        assert replayed.status == ScanStatus.FAILED
+        assert "no stored snapshot" in replayed.error_message

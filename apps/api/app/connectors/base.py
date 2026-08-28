@@ -59,6 +59,26 @@ class RawSnapshot:
             "errors": self.errors,
         }
 
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "RawSnapshot":
+        """Rebuild a snapshot from its stored form, for replay.
+
+        The inverse of :meth:`to_json`, and the reason storing raw provider
+        JSON was worth the disk: a stored snapshot can be fed back through
+        ``normalize`` and the rule engine without re-contacting the customer's
+        cloud. ``errors`` round-trips too -- a category that failed at
+        collection time must keep failing on replay, or a rule that degraded to
+        UNKNOWN would silently become a PASS the second time it is evaluated.
+        """
+        return cls(
+            provider=Provider(payload["provider"]),
+            tenant_id=payload["tenant_id"],
+            subscription_id=payload.get("subscription_id"),
+            version=payload.get("version", "1.0"),
+            data=dict(payload.get("data") or {}),
+            errors=dict(payload.get("errors") or {}),
+        )
+
 
 @dataclass
 class NormalizedState:

@@ -2,7 +2,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import ClassVar
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -13,6 +24,13 @@ from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrim
 
 class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     __tablename__ = "scans"
+    __table_args__ = (
+        Index(
+            "ix_scans_replay_of_scan_id",
+            "replay_of_scan_id",
+            postgresql_where=text("replay_of_scan_id IS NOT NULL"),
+        ),
+    )
 
     cloud_account_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE"), nullable=False
@@ -31,6 +49,20 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
 
     # Who asked for this run. Not an FK: auth.users belongs to Supabase.
     triggered_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    # Set when this run re-evaluated an earlier scan's stored snapshot instead
+    # of collecting. ``SET NULL`` so pruning the original execution log does not
+    # take the replay with it.
+    replay_of_scan_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="SET NULL")
+    )
+    # True when this run evaluated a snapshot that is no longer the newest for
+    # its account, and therefore wrote coverage but touched no findings. A
+    # month-old capture can say what the rules would have found; it cannot say
+    # what is true now, and must never resolve or reopen anything.
+    evaluation_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # How far along a running scan is. Status moves in five coarse jumps, so a
     # large tenant sits on one of them long enough to look stalled.

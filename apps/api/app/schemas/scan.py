@@ -29,6 +29,12 @@ class ScanOut(BaseModel):
     stuck_in_queue: bool = False
 
     triggered_by_user_id: UUID | None = None
+    # Set when this run re-evaluated an earlier scan's snapshot rather than
+    # collecting. ``evaluation_only`` says it re-evaluated a capture that is no
+    # longer current, so its counts describe what the rules would have found and
+    # no finding was created, resolved or reopened.
+    replay_of_scan_id: UUID | None = None
+    evaluation_only: bool = False
     progress_done: int = 0
     progress_total: int = 0
     # Live while running, fixed once finished.

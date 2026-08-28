@@ -13,11 +13,22 @@ from app.schemas.scan import CoverageOut, ScanCreate, ScanDetailOut, ScanOut
 from app.services import cloud_accounts as accounts_service
 from app.services import scans as scans_service
 from app.workers.celery_app import celery_app
-from app.workers.scan_tasks import run_scan
+from app.workers.scan_tasks import replay_scan, run_scan
 
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/scans", tags=["scans"])
+
+# A scan already in flight for the same account. Shared by the create and
+# replay routes so the two cannot drift into disagreeing about what
+# "already running" means.
+ACTIVE_SCAN_STATUSES = [
+    ScanStatus.QUEUED,
+    ScanStatus.DISCOVERING,
+    ScanStatus.NORMALIZING,
+    ScanStatus.EVALUATING,
+    ScanStatus.CALCULATING_RISK,
+]
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -37,15 +48,7 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
         await session.execute(
             select(Scan).where(
                 Scan.cloud_account_id == account.id,
-                Scan.status.in_(
-                    [
-                        ScanStatus.QUEUED,
-                        ScanStatus.DISCOVERING,
-                        ScanStatus.NORMALIZING,
-                        ScanStatus.EVALUATING,
-                        ScanStatus.CALCULATING_RISK,
-                    ]
-                ),
+                Scan.status.in_(ACTIVE_SCAN_STATUSES),
             )
         )
     ).scalar_one_or_none()
@@ -74,6 +77,67 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
         scan.status = ScanStatus.FAILED
         scan.error_message = (
             "CloudGuard could not put this scan on the queue. The task broker "
+            f"is unreachable: {exc}"
+        )
+        await session.commit()
+
+    return envelope(ScanOut.model_validate(scan).model_dump(mode="json"))
+
+
+@router.post("/{scan_id}/replay", status_code=status.HTTP_202_ACCEPTED)
+async def replay_scan_endpoint(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Re-evaluate a finished scan's stored snapshot against today's rules.
+
+    Costs nothing in the customer's cloud: no Azure call, no consent, no
+    throttle budget. Every scan already stored the provider's own JSON before
+    interpreting it, so a rule shipped after that scan ran can still be applied
+    to it.
+
+    Whether the result may change anything is decided in the pipeline, not
+    here, and it turns on one question: is that snapshot still the newest one
+    for the account? If it is, the replay behaves as a scan that skipped
+    collection. If it is not, it reports what the rules would have found and
+    writes no findings -- a capture from last month is evidence about last
+    month, and resolving a finding on the strength of it would put "verified
+    fixed" against something nobody looked at.
+    """
+    tenant.require_write()
+    source = await scans_service.get_scan(session, tenant, scan_id)
+
+    if not source.status.is_terminal:
+        raise ConflictError(
+            "That scan has not finished yet. Wait for it to complete before "
+            "replaying its snapshot."
+        )
+
+    running = (
+        await session.execute(
+            select(Scan).where(
+                Scan.cloud_account_id == source.cloud_account_id,
+                Scan.status.in_(ACTIVE_SCAN_STATUSES),
+            )
+        )
+    ).scalar_one_or_none()
+    if running is not None:
+        raise ConflictError("A scan is already running for this connection")
+
+    scan = Scan(
+        organization_id=tenant.organization_id,
+        cloud_account_id=source.cloud_account_id,
+        status=ScanStatus.QUEUED,
+        triggered_by_user_id=tenant.user.id,
+        replay_of_scan_id=source.id,
+    )
+    session.add(scan)
+    await session.commit()
+
+    try:
+        replay_scan.delay(str(scan.id))
+    except Exception as exc:
+        log.warning("scan.replay_enqueue_failed", scan_id=str(scan.id), error=str(exc))
+        scan.status = ScanStatus.FAILED
+        scan.error_message = (
+            "CloudGuard could not put this replay on the queue. The task broker "
             f"is unreachable: {exc}"
         )
         await session.commit()

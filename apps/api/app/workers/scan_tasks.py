@@ -30,6 +30,20 @@ def run_scan(self: object, scan_id: str) -> dict:
     return {"scan_id": scan_id}
 
 
+@celery_app.task(name="cloudguard.replay_scan", bind=True, max_retries=0)
+def replay_scan(self: object, scan_id: str) -> dict:
+    """Re-evaluate a stored snapshot against today's rules.
+
+    Same shape as :func:`run_scan` and the same no-retry reasoning. Cheaper by
+    an order of magnitude, because it makes no network call at all -- the
+    snapshot it needs is already in the database.
+    """
+    configure_logging()
+    log.info("scan.replay_task_received", scan_id=scan_id)
+    asyncio.run(_replay_and_release(UUID(scan_id)))
+    return {"scan_id": scan_id}
+
+
 async def _run_and_release(scan_id: UUID) -> None:
     """Run the pipeline, then hand back the connections before the loop dies.
 
@@ -42,5 +56,13 @@ async def _run_and_release(scan_id: UUID) -> None:
     """
     try:
         await ScanPipeline(scan_id).run()
+    finally:
+        await dispose_engines()
+
+
+async def _replay_and_release(scan_id: UUID) -> None:
+    """As above. The engine disposal matters here for the same reason."""
+    try:
+        await ScanPipeline(scan_id).replay()
     finally:
         await dispose_engines()
