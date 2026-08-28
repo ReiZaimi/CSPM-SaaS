@@ -169,9 +169,22 @@ async def app_registration(tenant: Tenant) -> dict:
         {
             "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
             "required_resource_access": manifest,
+            # Shell-safe by construction. An angle-bracket placeholder reads
+            # as a placeholder and parses as input redirection, so a copied
+            # command fails with "No such file or directory" and names the
+            # placeholder as the missing file -- an error that says nothing
+            # about what actually went wrong.
+            "lookup_command": (
+                'APP_ID=$(az ad app list --display-name CloudGuard '
+                '--query "[0].appId" -o tsv)'
+            ),
             "apply_command": (
-                "az ad app update --id <CLOUDGUARD_APP_ID> "
+                'az ad app update --id "$APP_ID" '
                 f"--required-resource-accesses '{json.dumps(manifest)}'"
+            ),
+            "verify_command": (
+                'az ad app show --id "$APP_ID" '
+                '--query "requiredResourceAccess[].resourceAccess[].id" -o tsv'
             ),
             "grant_command": (
                 "# Then, in each customer tenant, a Global Administrator "
