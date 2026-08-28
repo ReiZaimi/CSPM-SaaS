@@ -145,6 +145,22 @@ function ScanRow({ scan }: { scan: Scan }) {
           otherwise -- this is almost always no worker running at all. */}
       {scan.stuck_in_queue && <StuckNote />}
 
+      {/* Zero resources reads as a failure and is usually not one. The engine
+          already knows which: a category that errored is recorded in
+          collection_errors, so anything not listed there returned successfully
+          and was simply empty. Saying so separates "nothing to assess" from
+          "could not look", which the counters alone cannot. */}
+      {!running && scan.status !== "FAILED" && scan.resource_count === 0 && (
+        <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+          <p className="text-xs font-medium text-stone-800">{t.scans.nothingFound}</p>
+          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+            {Object.keys(scan.collection_errors).length > 0
+              ? t.scans.nothingFoundPartial
+              : t.scans.nothingFoundHelp}
+          </p>
+        </div>
+      )}
+
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {running && (
           <Button

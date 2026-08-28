@@ -278,6 +278,11 @@ export const en = {
     stuckTitle: "Nothing has picked this scan up",
     stuckDetail:
       "A scan is collected by CloudGuard's worker within seconds of being queued. Minutes of silence means no worker is running \u2014 check that the Celery worker service is deployed and can reach Redis.",
+    nothingFound: "No resources were found in this subscription",
+    nothingFoundHelp:
+      "Every resource category CloudGuard reads returned successfully and was empty, so there is nothing here to assess. If that is unexpected, check in Details which subscription this scan covered \u2014 a connection discovers every subscription it can see, including empty ones.",
+    nothingFoundPartial:
+      "Nothing was assessed, and some categories could not be read at all \u2014 see the gaps below. A category that failed is not the same as a category that was empty.",
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
   rules: { title: "Rule library", empty: "No rules loaded." },
