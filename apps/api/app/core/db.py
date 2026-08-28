@@ -69,6 +69,31 @@ def _owner_session_factory() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(get_owner_engine(), expire_on_commit=False, class_=AsyncSession)
 
 
+async def dispose_engines() -> None:
+    """Close every pooled connection, and do it inside the running loop.
+
+    asyncpg binds a connection to the event loop that opened it, while the
+    engines above are cached per *process*. That is fine for the API, which has
+    one loop for its lifetime, and wrong for the Celery worker, which calls
+    ``asyncio.run`` per task: the first scan fills the pool on loop one, that
+    loop closes, and the second scan is handed a connection belonging to a loop
+    that no longer exists --
+
+        RuntimeError: got Future attached to a different loop
+        RuntimeError: Event loop is closed
+
+    So a task disposes before its loop ends. The engine objects survive in the
+    cache -- they are not loop-bound, only their connections are -- and the next
+    task opens fresh ones on its own loop.
+
+    Must be awaited while the loop is still alive. Disposing afterwards would
+    need a loop to close the connections on, which is the very thing that has
+    gone.
+    """
+    for engine in (get_app_engine(), get_owner_engine()):
+        await engine.dispose()
+
+
 @asynccontextmanager
 async def rls_session(user_id: UUID | str) -> AsyncIterator[AsyncSession]:
     """A session that PostgreSQL itself will constrain to ``user_id``'s tenants.

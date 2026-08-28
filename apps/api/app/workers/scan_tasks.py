@@ -8,6 +8,7 @@ can never be the source of a tenant boundary decision.
 import asyncio
 from uuid import UUID
 
+from app.core.db import dispose_engines
 from app.core.logging import configure_logging, get_logger
 from app.services.scanner import ScanPipeline
 from app.workers.celery_app import celery_app
@@ -25,5 +26,21 @@ def run_scan(self: object, scan_id: str) -> dict:
     """
     configure_logging()
     log.info("scan.task_received", scan_id=scan_id)
-    asyncio.run(ScanPipeline(UUID(scan_id)).run())
+    asyncio.run(_run_and_release(UUID(scan_id)))
     return {"scan_id": scan_id}
+
+
+async def _run_and_release(scan_id: UUID) -> None:
+    """Run the pipeline, then hand back the connections before the loop dies.
+
+    ``asyncio.run`` gives every task its own event loop, while the engine pool
+    is cached for the life of the process. Without the disposal below the second
+    scan in a worker inherits connections bound to the first scan's loop, which
+    by then is closed -- the first scan succeeds, every later one fails with
+    "got Future attached to a different loop". Prefork makes that especially
+    confusing: each child gets exactly one working scan.
+    """
+    try:
+        await ScanPipeline(scan_id).run()
+    finally:
+        await dispose_engines()
