@@ -27,6 +27,7 @@ import httpx
 from app.connectors.azure.auth import TokenProvider
 from app.connectors.azure.client import (
     ArmClient,
+    AzureApiError,
     GraphClient,
     RequestLimiter,
     ResourceGraphClient,
@@ -297,12 +298,49 @@ class AzurePlanBuilder:
             actions=("Microsoft.Insights/diagnosticSettings/read",),
         )
 
+    def _name_missing_permissions(self) -> str:
+        """Which directory permissions this tenant's consent did not grant.
+
+        Empty when the answer cannot be established. Graph answers a missing
+        application permission with "Insufficient privileges to complete the
+        operation", which names neither the permission nor who can grant it,
+        and the collector's own hint could only ever guess at which of nine it
+        was. The token knows: a client-credentials token lists its granted
+        permissions in the ``roles`` claim, so the failure can be reported as a
+        list an administrator can act on rather than as a category that went
+        UNKNOWN for reasons.
+        """
+        from app.connectors.azure.auth import missing_permissions
+
+        try:
+            absent = missing_permissions(self.tokens.graph_token())
+        except Exception:
+            # A token that cannot be read or fetched says nothing about the
+            # grant, and inventing nine gaps would send someone to fix a
+            # directory that is configured correctly.
+            return ""
+        if not absent:
+            return ""
+        return f" Consent in this tenant did not grant: {', '.join(absent)}."
+
+    async def _graph_call(self, call: Awaitable[Any]) -> Any:
+        """Await a Graph call, naming the missing permissions behind a 403."""
+        try:
+            return await call
+        except AzureApiError as exc:
+            if exc.azure_status_code != 403:
+                raise
+            named = self._name_missing_permissions()
+            if not named:
+                raise
+            raise AzureApiError(f"{exc}{named}", status_code=403) from exc
+
     def _identity_tasks(self) -> list[CollectionTask]:
         """Directory state. Graph, so no ARM action grants any of it."""
 
         async def users(collected: dict[str, Any]) -> TaskData:
             graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
-            found = await graph.list_users()
+            found = await self._graph_call(graph.list_users())
             if graph.truncated:
                 return TaskData(
                     {"users": found},
@@ -312,7 +350,7 @@ class AzurePlanBuilder:
 
         async def roles(collected: dict[str, Any]) -> TaskData:
             graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
-            found = await graph.list_directory_roles()
+            found = await self._graph_call(graph.list_directory_roles())
             return TaskData({"directory_roles": found})
 
         return [

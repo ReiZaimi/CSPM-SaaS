@@ -53,15 +53,20 @@ def test_missing_permissions_keeps_the_declared_order() -> None:
 
 
 def test_a_token_with_no_roles_claim_reports_everything_missing() -> None:
-    """Consent that granted nothing at all is the case actually seen."""
+    """Consent that granted nothing at all is the case actually seen, and the
+    one that used to report no gaps -- an empty grant and an unreadable token
+    were the same value, so the worst outcome read as the healthiest."""
     assert granted_permissions(token_granting()) == frozenset()
-    assert missing_permissions(jwt.encode({"roles": []}, "x", algorithm="HS256")) == ()
+    assert missing_permissions(token_granting()) == tuple(REQUIRED_GRAPH_PERMISSIONS)
+    assert missing_permissions(
+        jwt.encode({"roles": []}, "x", algorithm="HS256")
+    ) == tuple(REQUIRED_GRAPH_PERMISSIONS)
 
 
 def test_an_unreadable_token_claims_no_knowledge() -> None:
     """An unreadable token is not evidence of a missing grant. Reporting nine
     phantom gaps would send an administrator to fix something that works."""
-    assert granted_permissions("not-a-jwt") == frozenset()
+    assert granted_permissions("not-a-jwt") is None
     assert missing_permissions("not-a-jwt") == ()
 
 

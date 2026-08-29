@@ -221,6 +221,68 @@ async def _list_subscriptions(
 
 READY_TO_DEPLOY = "Admin consent granted. Deploy the scanner role next."
 
+# Marks a status detail as being about the directory grant rather than the
+# subscription one. Checked as a prefix so a later step can tell the two apart
+# without a schema change: everything else on this connection may be healthy
+# while this is not, and the message must not be replaced by a cheerful one.
+GRANT_INCOMPLETE_PREFIX = "Admin consent did not grant"
+
+
+async def graph_grant_problem(connection: CloudConnection) -> str | None:
+    """What consent failed to grant, named, or None when it granted everything.
+
+    Consent resolves ``/.default`` to whatever CloudGuard's app registration
+    declares at the moment it is clicked, so a registration whose permissions
+    are missing -- or declared as delegated rather than application -- produces
+    a consent screen that looks entirely successful and a token carrying no
+    directory permissions at all. Nothing downstream could tell: the callback
+    recorded GRANTED on Entra's redirect alone, and the first evidence anyone
+    saw was the identity category failing mid-scan with "Insufficient
+    privileges to complete the operation", a sentence naming neither the
+    permission nor who can grant it.
+
+    The token answers it before any call is made. Read for diagnosis only --
+    Microsoft stays the enforcer (see ``granted_permissions``).
+    """
+    from app.connectors.azure.auth import (
+        REQUIRED_GRAPH_PERMISSIONS,
+        TokenProvider,
+        missing_permissions,
+    )
+
+    if not connection.tenant_id:
+        return None
+
+    try:
+        tokens = TokenProvider(connection.tenant_id)
+        absent = missing_permissions(tokens.graph_token())
+    except Exception as exc:
+        # Not evidence of a missing grant. A tenant that cannot issue a token
+        # has a different problem, and the probes report that one.
+        log.warning(
+            "azure.grant_check_failed",
+            connection_id=str(connection.id),
+            error=str(exc),
+        )
+        return None
+
+    if not absent:
+        return None
+
+    total = len(REQUIRED_GRAPH_PERMISSIONS)
+    if len(absent) == total:
+        scale = f"any of the {total} directory permissions CloudGuard needs"
+    else:
+        scale = f"{len(absent)} of the {total} directory permissions CloudGuard needs"
+    return (
+        f"{GRANT_INCOMPLETE_PREFIX} {scale}: {', '.join(absent)}. Subscription "
+        "scanning is unaffected; the identity checks cannot run until this is "
+        "granted. Add these to CloudGuard's app registration as *application* "
+        "permissions -- delegated ones do not appear in a service token -- then "
+        "re-run admin consent for this tenant, because consent covers only what "
+        "the registration declared at the moment it was granted."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Consent callback
@@ -249,6 +311,15 @@ async def record_consent(
         if problem and not connection.service_principal_object_id:
             connection.status_detail = problem
 
+        # Checked here because here is where the answer first exists, and
+        # because the alternative is a customer discovering it several minutes
+        # into a scan. It does not change ``consent_status``: consent did
+        # happen, and the subscription half of the connection is unaffected --
+        # what is missing is what the registration offered to grant.
+        gap = await graph_grant_problem(connection)
+        if gap:
+            connection.status_detail = gap
+
     await commit_unless_externally_managed(session)
     return connection
 
@@ -275,7 +346,14 @@ async def ensure_service_principal(
 
     problem = await _resolve_service_principal(connection)
     if connection.service_principal_object_id:
-        connection.status_detail = READY_TO_DEPLOY
+        # A resolved principal does not mean the directory grant is whole, and
+        # overwriting the message that says so would hide it behind a
+        # reassurance. Re-checked only while that message stands, so the happy
+        # path costs nothing and a re-consent still clears it.
+        detail = READY_TO_DEPLOY
+        if (connection.status_detail or "").startswith(GRANT_INCOMPLETE_PREFIX):
+            detail = await graph_grant_problem(connection) or READY_TO_DEPLOY
+        connection.status_detail = detail
         await commit_unless_externally_managed(session)
         return True
 

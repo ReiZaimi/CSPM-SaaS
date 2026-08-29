@@ -75,8 +75,13 @@ GRAPH_APP_ROLES: dict[str, str] = {
 }
 
 
-def granted_permissions(graph_token: str) -> frozenset[str]:
+def granted_permissions(graph_token: str) -> frozenset[str] | None:
     """The Graph application permissions this token actually carries.
+
+    ``None`` means the token could not be read at all, which is a different
+    fact from an empty set and has to stay one: an empty set is a tenant whose
+    consent granted nothing, which is the failure this function exists to
+    name.
 
     A client-credentials token lists its granted application permissions in the
     ``roles`` claim, so the authoritative answer to "what did consent actually
@@ -92,9 +97,9 @@ def granted_permissions(graph_token: str) -> frozenset[str]:
     """
     try:
         claims = jwt.decode(graph_token, options={"verify_signature": False})
-    except Exception as exc:  # pragma: no cover -- malformed token
+    except Exception as exc:
         log.warning("azure.token_undecodable", error=str(exc))
-        return frozenset()
+        return None
     roles = claims.get("roles") or []
     return frozenset(str(r) for r in roles)
 
@@ -105,9 +110,15 @@ def missing_permissions(graph_token: str) -> tuple[str, ...]:
     Empty when the token could not be read at all: an unreadable token is not
     evidence of a missing grant, and reporting nine phantom gaps would send an
     administrator to fix something that is not broken.
+
+    A token that reads fine and carries no ``roles`` at all is the opposite
+    case, and reporting *that* as nothing missing is what let a tenant whose
+    consent granted nothing look fully consented. It is the commonest failure
+    of the two -- a registration whose permissions are declared as delegated
+    rather than application produces exactly it -- so it returns all nine.
     """
     granted = granted_permissions(graph_token)
-    if not granted:
+    if granted is None:
         return ()
     return tuple(p for p in REQUIRED_GRAPH_PERMISSIONS if p not in granted)
 

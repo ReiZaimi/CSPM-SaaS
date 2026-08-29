@@ -274,6 +274,19 @@ Azure APIs → Collection → Raw snapshot → Normalization → Internal cloud 
 
 Every scan produces a `cloud_snapshots` row (see `DATABASE.md`), enabling historical comparison and future drift detection.
 
+**Consent is verified, not assumed.** Admin consent resolves `/.default` to
+whatever CloudGuard's app registration declares at the moment it is clicked, so
+a registration missing its permissions -- or declaring them as *delegated*
+rather than *application* -- produces a consent screen that succeeds and a
+service token carrying nothing. The callback therefore reads the token's
+`roles` claim (`graph_grant_problem`) and, when the grant is short, names the
+missing permissions on the connection instead of "Admin consent granted".
+Collection names them too: a Graph 403 during a scan carries the list rather
+than only Microsoft's "Insufficient privileges to complete the operation",
+which names neither the permission nor who can grant it. `consent_status` stays
+GRANTED either way -- the subscription half of the connection is separate and
+unaffected.
+
 **Validation probes both.** `validate_connection` proves ARM access by
 listing, and Resource Graph access by querying a single row. A Resource Graph
 failure is recorded as a *note* rather than a problem: it costs inventory and
