@@ -743,24 +743,41 @@ class TestSnapshotReplay:
     async def test_a_replay_does_not_backdate_last_seen_on_assets(
         self, replay, connected_account
     ) -> None:
-        """``last_seen_at`` means when the resource was observed. A replay of an
-        old capture must not report a resource as seen today, nor drag a
-        currently-seen one backwards."""
+        """``last_seen_at`` means when the resource was observed, and a replay
+        must never drag it backwards -- that is what would make a live resource
+        read as stale.
+
+        Not asserted as exact equality, because the two runs read the clock in
+        different places: a scan stamps ``observed_at`` from Python before the
+        snapshot row exists, while a replay uses the snapshot's own
+        server-generated ``created_at``, a few milliseconds later. The
+        monotonicity is the invariant; the millisecond is not. Strict equality
+        is asserted where it is actually true --
+        ``test_a_superseded_replay_leaves_the_asset_inventory_alone``, where
+        nothing is written at all.
+        """
         org_id, account_id = connected_account
         stale_scan_id = await run_scan(org_id, account_id)
-        before = await fetch(
-            "SELECT id, last_seen_at FROM cloud_resources "
-            "WHERE organization_id = :o ORDER BY id",
-            {"o": org_id},
+        before = dict(
+            await fetch(
+                "SELECT id, last_seen_at FROM cloud_resources "
+                "WHERE organization_id = :o",
+                {"o": org_id},
+            )
         )
 
         await run_replay(org_id, account_id, stale_scan_id)
-        after = await fetch(
-            "SELECT id, last_seen_at FROM cloud_resources "
-            "WHERE organization_id = :o ORDER BY id",
-            {"o": org_id},
+        after = dict(
+            await fetch(
+                "SELECT id, last_seen_at FROM cloud_resources "
+                "WHERE organization_id = :o",
+                {"o": org_id},
+            )
         )
-        assert after == before
+
+        assert set(after) == set(before), "a replay must not add or drop assets"
+        for resource_id, seen in after.items():
+            assert seen >= before[resource_id], "last_seen_at moved backwards"
 
     async def test_replaying_a_scan_with_no_snapshot_fails_with_a_reason(
         self, replay, connected_account

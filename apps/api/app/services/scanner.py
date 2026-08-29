@@ -894,7 +894,6 @@ class ScanPipeline:
         and the writes flush twice.
         """
         now = observed_at
-        open_count = 0
 
         # Identity is (organization, rule, resource), so that is the key.
         existing_findings = {
@@ -918,15 +917,23 @@ class ScanPipeline:
             .all()
         }
 
-        # Written after the findings are flushed, because a link needs an id.
-        pending: list[tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str]] = []
+        # Keyed on the finding's identity, not appended per failure. A rule can
+        # report the same resource twice in one scan -- AZ-CMP-001 does, when a
+        # VM is guarded by the same NSG through two NICs -- and findings are
+        # unique on (organization, rule, resource). Two entries for one row
+        # meant two INSERTs of the same key.
+        pending: dict[
+            tuple[str, UUID | None],
+            tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str],
+        ] = {}
 
         for failure in report.failures:
             rule = failure.rule
             resource = failure.resource
             resource_uuid = id_map.get(resource.provider_resource_id) if resource else None
+            key = (rule.rule_id, resource_uuid)
 
-            finding = existing_findings.get((rule.rule_id, resource_uuid))
+            finding = existing_findings.get(key)
             title = self._title(rule.name, resource)
             description = failure.result.message or rule.description
 
@@ -939,6 +946,9 @@ class ScanPipeline:
                     status=FindingStatus.OPEN,
                 )
                 session.add(finding)
+                # Registered immediately so a second failure on the same key
+                # updates this row rather than creating a rival for it.
+                existing_findings[key] = finding
 
             elif finding.status in {FindingStatus.RESOLVED, FindingStatus.FALSE_POSITIVE}:
                 # It came back. Reopen rather than leaving a stale RESOLVED --
@@ -970,36 +980,38 @@ class ScanPipeline:
                 )
             )
             finding.risk_score = scored.score
-            pending.append((finding, rule, resource, scored, title))
+            pending[key] = (finding, rule, resource, scored, title)
 
-            if finding.status.is_open:
-                open_count += 1
+        # Counted per finding, not per failure: one row is one finding however
+        # many times the rules named it.
+        open_count = sum(1 for entry in pending.values() if entry[0].status.is_open)
 
         # One flush for every new finding, rather than one per finding.
         await session.flush()
 
-        risks = {
-            risk.id: risk
-            for risk in (
-                await session.execute(
-                    select(Risk).where(
-                        Risk.id.in_(
-                            [
-                                risk_by_finding[f.id]
-                                for f, *_ in pending
-                                if f.id in risk_by_finding
-                            ]
-                        )
-                    )
+        linked_ids = [
+            risk_by_finding[f.id] for f, *_ in pending.values() if f.id in risk_by_finding
+        ]
+        risks = (
+            {
+                risk.id: risk
+                for risk in (
+                    await session.execute(select(Risk).where(Risk.id.in_(linked_ids)))
                 )
-            )
-            .scalars()
-            .all()
-        } if risk_by_finding else {}
+                .scalars()
+                .all()
+            }
+            if linked_ids
+            else {}
+        )
 
-        for finding, rule, resource, scored, title in pending:
+        # Risks whose junction row does not exist yet. The link needs both ids,
+        # so it is written after the risks are flushed rather than inside the
+        # loop -- ``RiskFinding`` has no ORM relationships, only the two columns.
+        unlinked: list[tuple[Risk, Finding]] = []
+        for finding, rule, resource, scored, title in pending.values():
             linked = risk_by_finding.get(finding.id)
-            self._upsert_risk(
+            risk = self._upsert_risk(
                 session,
                 org_id,
                 finding,
@@ -1009,6 +1021,19 @@ class ScanPipeline:
                 title,
                 risks.get(linked) if linked else None,
             )
+            if linked is None:
+                unlinked.append((risk, finding))
+
+        if unlinked:
+            await session.flush()
+            for risk, finding in unlinked:
+                session.add(
+                    RiskFinding(
+                        risk_id=risk.id,
+                        finding_id=finding.id,
+                        organization_id=org_id,
+                    )
+                )
 
         await session.commit()
         return open_count
@@ -1023,7 +1048,7 @@ class ScanPipeline:
         scored: ScoredRisk,
         title: str,
         risk: Risk | None,
-    ) -> None:
+    ) -> Risk:
         """One risk per finding for the MVP, joined through ``risk_findings``.
 
         Grouping several findings into a single risk later is a change in this
@@ -1053,9 +1078,6 @@ class ScanPipeline:
             # NOT NULL, so an empty insert would never reach the database.
             risk = Risk(organization_id=org_id, **values)
             session.add(risk)
-            session.add(
-                RiskFinding(risk=risk, finding=finding, organization_id=org_id)
-            )
         else:
             for key, value in values.items():
                 setattr(risk, key, value)
@@ -1063,6 +1085,8 @@ class ScanPipeline:
         if finding.status.is_open:
             risk.status = RiskStatus.OPEN
             risk.resolved_at = None
+
+        return risk
 
     # ----------------------------------------------------------- verification
     async def _verify_remediations(
