@@ -162,20 +162,22 @@ the concepts are neutral. Rename at the point a second provider maps onto them,
 not before — a rename with one caller is bookkeeping, a rename with two is a
 decision.
 
-### The one defect to fix now
+### The one defect to fix now — done
 
-```python
-def matches(self, resource: CloudResource) -> bool:
-    return resource.resource_type in self.applies_to
-```
+`SecurityRule.provider` was declared and never read, so `matches()` compared
+only the resource type. Types are cloud-neutral, so on the first day an AWS
+bucket normalized to `STORAGE_ACCOUNT` every Azure storage rule would have
+evaluated it and produced findings carrying `az storage account update` as the
+fix for something in AWS.
 
-`SecurityRule.provider` is declared and never read. Today that is harmless —
-every rule and every resource is Azure. On the first day an AWS resource
-normalizes to `STORAGE_ACCOUNT`, every Azure storage rule evaluates it, and
-produces findings with Azure remediation against a bucket in AWS.
+Fixed in two places, because it was two holes. `matches()` now compares the
+provider, which covers per-resource rules. AGGREGATE rules never call `matches`
+— they read `context.resources` and `get_resources_by_type` directly — so
+`RuleContext.for_provider()` narrows the context and `RuleEngine` scopes each
+rule to its own cloud, memoized per provider rather than per rule. A
+single-provider context returns itself unchanged, so today's scans pay nothing.
 
-This is three lines and it should be fixed while it is still theoretical. It is
-the only item in this document worth doing before a second provider exists.
+`tests/unit/test_rule_provider_scope.py` pins both paths.
 
 ---
 
@@ -191,7 +193,7 @@ class of misleading number the coverage ledger exists to prevent.
 
 ## 8. Order, when the time comes
 
-1. Fix `matches()`. Now, not later.
+1. ~~Fix `matches()`.~~ Done, along with the aggregate-path hole beside it.
 2. Second provider's connector, plan and normalizer — behind the existing
    `CloudConnector` seam, changing nothing above it.
 3. The permission-manifest pattern generalized out of `rbac.py`, once there are

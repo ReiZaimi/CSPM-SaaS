@@ -111,6 +111,34 @@ class RuleContext:
                 return self.collection_errors[category]
         return None
 
+    def for_provider(self, provider: Provider) -> "RuleContext":
+        """This context narrowed to one cloud.
+
+        ``matches`` keeps a per-resource rule away from another provider's
+        resources, but an AGGREGATE rule never goes through it -- it reads
+        ``resources`` and ``get_resources_by_type`` directly, and a
+        cloud-neutral resource type would hand it another cloud's inventory. An
+        Azure MFA rule counting AWS IAM users would be wrong in a way nothing
+        downstream could detect.
+
+        Returns ``self`` unchanged when everything already belongs to that
+        provider, which is every scan today.
+        """
+        if all(r.provider == provider for r in self.resources):
+            return self
+
+        kept = [r for r in self.resources if r.provider == provider]
+        ids = {r.provider_resource_id for r in kept}
+        return RuleContext(
+            resources=kept,
+            relationships={
+                (source, rel): [t for t in targets if t in ids]
+                for (source, rel), targets in self.relationships.items()
+                if source in ids
+            },
+            collection_errors=self.collection_errors,
+        )
+
 
 class SecurityRule(ABC):
     """Base class for every rule. Subclasses declare metadata, then evaluate."""
@@ -142,7 +170,22 @@ class SecurityRule(ABC):
         """Return the rule's verdict. Must be pure and deterministic."""
 
     def matches(self, resource: CloudResource) -> bool:
-        return resource.resource_type in self.applies_to
+        """Whether this rule has anything to say about this resource.
+
+        The provider check is not redundant with the type check. Resource types
+        are cloud-neutral by design -- an S3 bucket and an Azure storage account
+        both normalize to ``STORAGE_ACCOUNT`` -- so type alone would let an
+        Azure rule evaluate an AWS bucket and raise a finding carrying
+        ``az storage account update`` as the fix for it.
+
+        Harmless while Azure is the only provider, which is exactly why it is
+        worth fixing now: the day a second connector lands, this is a silent
+        wrong answer rather than a crash.
+        """
+        return (
+            resource.provider == self.provider
+            and resource.resource_type in self.applies_to
+        )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<{type(self).__name__} {self.rule_id} v{self.version}>"
