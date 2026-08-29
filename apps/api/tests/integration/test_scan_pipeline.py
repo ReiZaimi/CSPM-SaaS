@@ -29,6 +29,7 @@ from app.core.enums import (
     Provider,
     RiskStatus,
     ScanStatus,
+    TaskOutcome,
 )
 from app.models.cloud_account import CloudAccount
 from app.models.finding import Finding
@@ -62,14 +63,24 @@ class ReplayConnector(CloudConnector):
     async def collect(self, on_progress=None) -> RawSnapshot:
         if on_progress:
             await on_progress(1, 1)
-        return RawSnapshot(
-            provider=Provider.AZURE,
-            tenant_id=self.payload["tenant_id"],
-            subscription_id=self.payload["subscription_id"],
-            version=self.payload["version"],
-            data=copy.deepcopy(self.payload["data"]),
-            errors=copy.deepcopy(self.payload["errors"]),
-        )
+        snapshot = RawSnapshot.from_json(copy.deepcopy(self.payload))
+        self._align_coverage(snapshot)
+        return snapshot
+
+    @staticmethod
+    def _align_coverage(snapshot: RawSnapshot) -> None:
+        """Keep the recorded coverage consistent with injected errors.
+
+        A real run derives ``errors`` from ``coverage``; tests inject the
+        errors directly, so the derivation has to be run backwards here. Left
+        alone, a test that fails a category would still record every task of it
+        as COMPLETE, and the collection status would contradict the scan.
+        """
+        for entry in snapshot.coverage.values():
+            reason = snapshot.errors.get(entry["category"])
+            if reason:
+                entry["outcome"] = TaskOutcome.FAILED.value
+                entry["detail"] = reason
 
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
         return self._normalizer.normalize(snapshot)
