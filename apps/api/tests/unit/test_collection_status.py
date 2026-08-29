@@ -65,3 +65,35 @@ def test_a_reading_carries_the_category_the_rules_degrade_on() -> None:
 
     columns = {c.name for c in ScanCollectionResult.__table__.columns}
     assert {"task_key", "category", "outcome", "detail", "item_count"} <= columns
+
+
+# ------------------------------------------------------------ schema shape
+def test_a_snapshot_belongs_to_exactly_one_subscription() -> None:
+    """A snapshot is a capture of one provider account, which is why a
+    tenant-wide scan holds several rather than one wide one.
+
+    Pinned because it was briefly broken by accident: an edit making
+    ``Scan.cloud_account_id`` nullable matched the identical block in
+    ``CloudSnapshot`` too, and gave it a ``connection_id`` the database has no
+    column for. Every snapshot insert would have failed, and nothing that runs
+    without a database would have noticed.
+    """
+    from app.models.scan import CloudSnapshot
+
+    columns = {c.name: c for c in CloudSnapshot.__table__.columns}
+
+    assert "connection_id" not in columns, (
+        "cloud_snapshots has no such column; a scan is scoped to a connection, "
+        "a snapshot is not"
+    )
+    assert not columns["cloud_account_id"].nullable
+    assert not columns["scan_id"].nullable
+
+
+def test_a_scan_is_scoped_to_a_connection_or_a_subscription() -> None:
+    """Both nullable, because a scan carries one or the other."""
+    from app.models.scan import Scan
+
+    columns = {c.name: c for c in Scan.__table__.columns}
+    assert columns["cloud_account_id"].nullable
+    assert columns["connection_id"].nullable

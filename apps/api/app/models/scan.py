@@ -134,24 +134,11 @@ class CloudSnapshot(UUIDPrimaryKey, TenantOwned, Base):
         ),
     )
 
-    # One of these two says what the scan covers.
-    #
-    # ``connection_id`` is the tenant-wide form: every in-scope subscription
-    # beneath that connection, collected into one scan. ``cloud_account_id`` is
-    # the single-subscription form, which predates it and is still how a rescan
-    # of one finding works.
-    #
-    # Nullable on both sides rather than a discriminator column, because the
-    # honest statement is "a scan is scoped to one of these" and a third column
-    # asserting which would be a second source of truth for a fact the first two
-    # already carry.
-    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE")
-    )
-    connection_id: Mapped[uuid.UUID | None] = mapped_column(
-        PGUUID(as_uuid=True),
-        ForeignKey("cloud_connections.id", ondelete="CASCADE"),
-        index=True,
+    # Always exactly one subscription. A snapshot is a capture of one
+    # provider account, which is why a tenant-wide scan holds several of them
+    # rather than one wide one.
+    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE"), nullable=False
     )
     scan_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False

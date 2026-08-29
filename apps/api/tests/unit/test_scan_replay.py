@@ -338,4 +338,8 @@ async def test_resources_from_every_subscription_reach_one_evaluation(
     )
 
     assert scan.resource_count == 2, "both subscriptions counted in one scan"
-    assert pipeline.calls.count("resources") == 2, "assets persisted per subscription"
+    # Once for the whole scan, not once per subscription. Persisting per
+    # subscription meant a full read of the organization's relationship table
+    # for each one, plus a lookup per newly created resource -- tens of
+    # thousands of statements on a large tenant to write what this does in four.
+    assert pipeline.calls.count("resources") == 1, "assets persisted in one pass"

@@ -324,8 +324,19 @@ class ScanPipeline:
                 is_current = True
                 observed_at = min(row.created_at for row in stored)
 
+                # Both lookups are done for the whole set rather than inside
+                # the loop: one subscription's account and one subscription's
+                # newest snapshot are two statements each, which a tenant-wide
+                # replay would multiply by every subscription it covered.
+                accounts = await self._accounts_by_id(
+                    session, org_id, [row.cloud_account_id for row in stored]
+                )
+                newest_by_account = await self._newest_snapshot_ids(
+                    session, org_id, list(accounts)
+                )
+
                 for row in stored:
-                    account = await session.get(CloudAccount, row.cloud_account_id)
+                    account = accounts.get(row.cloud_account_id)
                     if account is None:
                         # The subscription is gone. Its capture is still real
                         # history, but there is nothing left to attribute the
@@ -333,8 +344,7 @@ class ScanPipeline:
                         is_current = False
                         continue
 
-                    newest = await self._newest_snapshot_id(session, org_id, account.id)
-                    if row.id != newest:
+                    if row.id != newest_by_account.get(account.id):
                         is_current = False
 
                     snapshot = RawSnapshot.from_json(row.data)
@@ -414,24 +424,20 @@ class ScanPipeline:
 
         # --- normalize ------------------------------------------------------
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
-        id_map: dict[str, UUID] = {}
-        for account, state in account_state:
-            if mutate_findings:
-                id_map.update(
-                    await self._persist_resources(
-                        session, org_id, account.id, state, observed_at
-                    )
-                )
-            else:
-                # A superseded capture describes an environment that has since
-                # moved on. Upserting from it would overwrite live criticality,
-                # exposure and metadata with historical values -- the columns
-                # the risk scorer reads -- and re-create resources deleted
-                # since. ``evaluation_only`` means the run changes nothing, and
-                # the asset inventory is part of "nothing".
-                id_map.update(
-                    await self._existing_resource_ids(session, org_id, account.id)
-                )
+        if mutate_findings:
+            id_map = await self._persist_resources(
+                session, org_id, account_state, observed_at
+            )
+        else:
+            # A superseded capture describes an environment that has since
+            # moved on. Upserting from it would overwrite live criticality,
+            # exposure and metadata with historical values -- the columns the
+            # risk scorer reads -- and re-create resources deleted since.
+            # ``evaluation_only`` means the run changes nothing, and the asset
+            # inventory is part of "nothing".
+            id_map = await self._existing_resource_ids(
+                session, org_id, [account.id for account, _ in account_state]
+            )
         scan.resource_count = len(merged.resources)
 
         # Now the size of the job is known, so progress can be a count
@@ -486,7 +492,7 @@ class ScanPipeline:
         )
 
     async def _existing_resource_ids(
-        self, session: AsyncSession, org_id: UUID, account_id: UUID
+        self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
     ) -> dict[str, UUID]:
         """Provider id -> database id, read without writing anything.
 
@@ -494,7 +500,12 @@ class ScanPipeline:
         the snapshot that no longer have a row simply have no id, so the gaps
         they produce are recorded against the scan rather than against an asset
         -- which is accurate: there is no asset to point at any more.
+
+        One query for every subscription, for the same reason its writing
+        counterpart takes them all at once.
         """
+        if not account_ids:
+            return {}
         rows = (
             (
                 await session.execute(
@@ -502,7 +513,7 @@ class ScanPipeline:
                         ResourceRecord.provider_resource_id, ResourceRecord.id
                     ).where(
                         ResourceRecord.organization_id == org_id,
-                        ResourceRecord.cloud_account_id == account_id,
+                        ResourceRecord.cloud_account_id.in_(account_ids),
                     )
                 )
             )
@@ -578,20 +589,57 @@ class ScanPipeline:
             .all()
         )
 
-    async def _newest_snapshot_id(
-        self, session: AsyncSession, org_id: UUID, account_id: UUID
-    ) -> UUID | None:
-        return (
-            await session.execute(
-                select(CloudSnapshot.id)
-                .where(
-                    CloudSnapshot.organization_id == org_id,
-                    CloudSnapshot.cloud_account_id == account_id,
+    async def _accounts_by_id(
+        self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
+    ) -> dict[UUID, CloudAccount]:
+        if not account_ids:
+            return {}
+        rows = (
+            (
+                await session.execute(
+                    select(CloudAccount).where(
+                        CloudAccount.organization_id == org_id,
+                        CloudAccount.id.in_(account_ids),
+                    )
                 )
-                .order_by(CloudSnapshot.created_at.desc(), CloudSnapshot.id.desc())
-                .limit(1)
             )
-        ).scalar_one_or_none()
+            .scalars()
+            .all()
+        )
+        return {account.id: account for account in rows}
+
+    async def _newest_snapshot_ids(
+        self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
+    ) -> dict[UUID, UUID]:
+        """The most recent snapshot for each of these subscriptions.
+
+        One grouped query rather than one per subscription. ``DISTINCT ON`` is
+        PostgreSQL-specific and this application targets exactly one database
+        (DECISIONS.md section 13), so the portable-but-slower alternative would
+        be paying for a portability nothing asks for.
+        """
+        if not account_ids:
+            return {}
+        rows = (
+            (
+                await session.execute(
+                    select(CloudSnapshot.cloud_account_id, CloudSnapshot.id)
+                    .where(
+                        CloudSnapshot.organization_id == org_id,
+                        CloudSnapshot.cloud_account_id.in_(account_ids),
+                    )
+                    .distinct(CloudSnapshot.cloud_account_id)
+                    .order_by(
+                        CloudSnapshot.cloud_account_id,
+                        CloudSnapshot.created_at.desc(),
+                        CloudSnapshot.id.desc(),
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        return dict(rows)
 
     # -------------------------------------------------------------- role drift
     async def _explain_role_drift(
@@ -649,11 +697,10 @@ class ScanPipeline:
         self,
         session: AsyncSession,
         org_id: UUID,
-        account_id: UUID,
-        state: NormalizedState,
+        account_state: list[tuple[CloudAccount, NormalizedState]],
         observed_at: datetime,
     ) -> dict[str, UUID]:
-        """Upsert assets, returning provider id -> database id.
+        """Upsert every subscription's assets, returning provider id -> row id.
 
         Resources are updated rather than replaced so ``first_seen_at`` survives
         and a finding keeps pointing at the same asset row across scans.
@@ -662,15 +709,26 @@ class ScanPipeline:
         processed. The two are the same for a live scan and months apart for a
         replay, and ``last_seen_at`` means nothing if a replay of an old
         snapshot can report a deleted resource as seen today.
+
+        Every subscription is handled in one pass on purpose. Per-subscription
+        this was one query for the existing rows, one more for *each newly
+        created resource* to read back an id the flush had already assigned, and
+        a scan of the organization's whole relationship table -- so a tenant of
+        fifty subscriptions holding five hundred resources each issued tens of
+        thousands of statements to write what is now four.
         """
         now = observed_at
+        account_ids = [account.id for account, _ in account_state]
+        if not account_ids:
+            return {}
+
         existing = {
-            row.provider_resource_id: row
+            (row.cloud_account_id, row.provider_resource_id): row
             for row in (
                 await session.execute(
                     select(ResourceRecord).where(
                         ResourceRecord.organization_id == org_id,
-                        ResourceRecord.cloud_account_id == account_id,
+                        ResourceRecord.cloud_account_id.in_(account_ids),
                     )
                 )
             )
@@ -678,49 +736,45 @@ class ScanPipeline:
             .all()
         }
 
-        id_map: dict[str, UUID] = {}
-        for resource in state.resources:
-            row = existing.get(resource.provider_resource_id)
-            if row is None:
-                row = ResourceRecord(
-                    organization_id=org_id,
-                    cloud_account_id=account_id,
-                    provider=resource.provider,
-                    provider_resource_id=resource.provider_resource_id,
-                    first_seen_at=now,
-                )
-                session.add(row)
-
-            row.resource_type = resource.resource_type
-            row.name = resource.name
-            row.region = resource.region
-            row.environment = resource.environment
-            row.criticality = resource.criticality
-            row.data_sensitivity = resource.data_sensitivity
-            row.public_exposure = resource.public_exposure
-            row.resource_metadata = resource.metadata
-            # Never moved backwards. A replay carries the capture's own time,
-            # which is older than a detection already recorded against a live
-            # scan -- and "last seen" going backwards would be a lie in the one
-            # direction that matters, making a present resource look stale.
-            row.last_seen_at = max(row.last_seen_at or now, now)
-
-        await session.flush()
-        for resource in state.resources:
-            row = existing.get(resource.provider_resource_id)
-            if row is None:
-                row = (
-                    await session.execute(
-                        select(ResourceRecord).where(
-                            ResourceRecord.cloud_account_id == account_id,
-                            ResourceRecord.provider_resource_id
-                            == resource.provider_resource_id,
-                        )
+        # Held as objects rather than looked up again afterwards. The rows were
+        # already in hand; the read-back loop existed only because this
+        # reference was dropped.
+        touched: dict[str, ResourceRecord] = {}
+        for account, state in account_state:
+            for resource in state.resources:
+                row = existing.get((account.id, resource.provider_resource_id))
+                if row is None:
+                    row = ResourceRecord(
+                        organization_id=org_id,
+                        cloud_account_id=account.id,
+                        provider=resource.provider,
+                        provider_resource_id=resource.provider_resource_id,
+                        first_seen_at=now,
                     )
-                ).scalar_one()
-            id_map[resource.provider_resource_id] = row.id
+                    session.add(row)
 
-        await self._persist_relationships(session, org_id, state, id_map)
+                row.resource_type = resource.resource_type
+                row.name = resource.name
+                row.region = resource.region
+                row.environment = resource.environment
+                row.criticality = resource.criticality
+                row.data_sensitivity = resource.data_sensitivity
+                row.public_exposure = resource.public_exposure
+                row.resource_metadata = resource.metadata
+                # Never moved backwards. A replay carries the capture's own
+                # time, which is older than a detection already recorded
+                # against a live scan -- and "last seen" going backwards would
+                # be a lie in the one direction that matters, making a present
+                # resource look stale.
+                row.last_seen_at = max(row.last_seen_at or now, now)
+                touched[resource.provider_resource_id] = row
+
+        # One flush assigns every pending primary key.
+        await session.flush()
+        id_map = {provider_id: row.id for provider_id, row in touched.items()}
+
+        edges = [edge for _account, state in account_state for edge in state.relationships]
+        await self._persist_relationships(session, org_id, edges, id_map)
         await session.commit()
         return id_map
 
@@ -728,12 +782,19 @@ class ScanPipeline:
         self,
         session: AsyncSession,
         org_id: UUID,
-        state: NormalizedState,
+        edges: list[tuple[str, RelationshipType, str]],
         id_map: dict[str, UUID],
     ) -> None:
+        """Insert the edges that are not already recorded.
+
+        Reads the organization's existing edges once for the whole scan. It
+        used to run per subscription, and the query is not scoped by
+        subscription -- so the same full-table read was repeated once for every
+        subscription in the tenant.
+        """
         wanted = {
             (id_map[s], rel, id_map[t])
-            for s, rel, t in state.relationships
+            for s, rel, t in edges
             if s in id_map and t in id_map
         }
         if not wanted:
@@ -823,24 +884,49 @@ class ScanPipeline:
         id_map: dict[str, UUID],
         observed_at: datetime,
     ) -> int:
+        """Write this scan's failures as findings, and score each one.
+
+        Everything the loop needs is read up front. It used to issue a lookup
+        per failure for the finding, another for its risk link and a third for
+        the risk itself, plus a flush each time round -- four round trips per
+        failing check, which a tenant-wide scan multiplies by every subscription
+        it covers. The reads are two queries whatever the size of the tenant,
+        and the writes flush twice.
+        """
         now = observed_at
         open_count = 0
+
+        # Identity is (organization, rule, resource), so that is the key.
+        existing_findings = {
+            (f.rule_id, f.resource_id): f
+            for f in (
+                await session.execute(
+                    select(Finding).where(Finding.organization_id == org_id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+        risk_by_finding = {
+            link.finding_id: link.risk_id
+            for link in (
+                await session.execute(
+                    select(RiskFinding).where(RiskFinding.organization_id == org_id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+
+        # Written after the findings are flushed, because a link needs an id.
+        pending: list[tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str]] = []
 
         for failure in report.failures:
             rule = failure.rule
             resource = failure.resource
             resource_uuid = id_map.get(resource.provider_resource_id) if resource else None
 
-            finding = (
-                await session.execute(
-                    select(Finding).where(
-                        Finding.organization_id == org_id,
-                        Finding.rule_id == rule.rule_id,
-                        Finding.resource_id == resource_uuid,
-                    )
-                )
-            ).scalar_one_or_none()
-
+            finding = existing_findings.get((rule.rule_id, resource_uuid))
             title = self._title(rule.name, resource)
             description = failure.result.message or rule.description
 
@@ -884,17 +970,50 @@ class ScanPipeline:
                 )
             )
             finding.risk_score = scored.score
-            await session.flush()
-
-            await self._upsert_risk(session, org_id, finding, rule, resource, scored, title)
+            pending.append((finding, rule, resource, scored, title))
 
             if finding.status.is_open:
                 open_count += 1
 
+        # One flush for every new finding, rather than one per finding.
+        await session.flush()
+
+        risks = {
+            risk.id: risk
+            for risk in (
+                await session.execute(
+                    select(Risk).where(
+                        Risk.id.in_(
+                            [
+                                risk_by_finding[f.id]
+                                for f, *_ in pending
+                                if f.id in risk_by_finding
+                            ]
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        } if risk_by_finding else {}
+
+        for finding, rule, resource, scored, title in pending:
+            linked = risk_by_finding.get(finding.id)
+            self._upsert_risk(
+                session,
+                org_id,
+                finding,
+                rule,
+                resource,
+                scored,
+                title,
+                risks.get(linked) if linked else None,
+            )
+
         await session.commit()
         return open_count
 
-    async def _upsert_risk(
+    def _upsert_risk(
         self,
         session: AsyncSession,
         org_id: UUID,
@@ -903,19 +1022,18 @@ class ScanPipeline:
         resource: CloudResource | None,
         scored: ScoredRisk,
         title: str,
+        risk: Risk | None,
     ) -> None:
         """One risk per finding for the MVP, joined through ``risk_findings``.
 
         Grouping several findings into a single risk later is a change in this
         method, not a migration -- which is exactly why the junction table is
         there from the start (RISK_ENGINE.md section 2).
-        """
-        link = (
-            await session.execute(
-                select(RiskFinding).where(RiskFinding.finding_id == finding.id)
-            )
-        ).scalar_one_or_none()
 
+        ``risk`` is passed in rather than looked up: the caller reads every
+        existing risk for the organization once, so this stays a pure decision
+        about what the row should contain.
+        """
         values = {
             "title": title,
             "description": rule.rationale or rule.description,
@@ -930,17 +1048,13 @@ class ScanPipeline:
             "score_breakdown": scored.breakdown,
         }
 
-        risk = await session.get(Risk, link.risk_id) if link else None
         if risk is None:
             # Fully populated before the flush: several of these columns are
             # NOT NULL, so an empty insert would never reach the database.
             risk = Risk(organization_id=org_id, **values)
             session.add(risk)
-            await session.flush()
             session.add(
-                RiskFinding(
-                    risk_id=risk.id, finding_id=finding.id, organization_id=org_id
-                )
+                RiskFinding(risk=risk, finding=finding, organization_id=org_id)
             )
         else:
             for key, value in values.items():
