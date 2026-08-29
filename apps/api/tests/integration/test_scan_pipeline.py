@@ -59,7 +59,9 @@ class ReplayConnector(CloudConnector):
     async def validate_connection(self):  # pragma: no cover -- not used here
         raise NotImplementedError
 
-    async def collect(self) -> RawSnapshot:
+    async def collect(self, on_progress=None) -> RawSnapshot:
+        if on_progress:
+            await on_progress(1, 1)
         return RawSnapshot(
             provider=Provider.AZURE,
             tenant_id=self.payload["tenant_id"],

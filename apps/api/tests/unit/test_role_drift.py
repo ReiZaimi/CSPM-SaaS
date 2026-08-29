@@ -16,6 +16,7 @@ the drift silent again in a different way.
 import pytest
 
 from app.connectors.azure import rbac
+from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.azure.rbac import (
     ARM_READ_ACTIONS,
     COLLECTION_ACTIONS,
@@ -28,6 +29,16 @@ from app.connectors.azure.rbac import (
 from app.core.enums import CloudAccountStatus, ConnectionScope, ConsentStatus, Provider
 from app.models.cloud_connection import CloudConnection
 from app.services.cloud_connections import degraded_categories, role_upgrade_available
+
+
+def build_test_plan():
+    """The plan, built without touching Azure. ``build()`` only assembles
+    closures -- nothing is called until the executor runs them."""
+    import httpx
+
+    return AzurePlanBuilder(
+        tokens=object(), subscription_id="sub-1", http_client=httpx.AsyncClient()
+    ).build()
 
 
 def make_connection(role_version: str, provider: Provider = Provider.AZURE):
@@ -93,20 +104,38 @@ def test_collection_actions_are_real_granted_actions() -> None:
             )
 
 
-def test_collection_categories_match_the_collector() -> None:
-    """The category names are strings in two files, and a rename in one would
-    silently orphan the explanation in the other."""
-    import re
-    from pathlib import Path
+def test_collection_categories_match_the_plan() -> None:
+    """The category names live in two files and a rename in one would silently
+    orphan the drift explanation in the other."""
+    planned = {task.category for task in build_test_plan()}
 
-    source = Path(rbac.__file__).parent.joinpath("collector.py").read_text()
-    collected = set(re.findall(r'_collect_category\(\s*snapshot,\s*"(\w+)"', source))
-
-    assert collected, "could not find any collection categories in collector.py"
-    orphaned = set(COLLECTION_ACTIONS) - collected
+    assert planned, "could not build a collection plan"
+    orphaned = set(COLLECTION_ACTIONS) - planned
     assert not orphaned, (
-        f"COLLECTION_ACTIONS names categories the collector does not gather: {orphaned}"
+        f"COLLECTION_ACTIONS names categories the plan does not gather: {orphaned}"
     )
+
+
+def test_every_planned_arm_action_is_granted_by_the_role() -> None:
+    """A task declaring an action the role never asks for is a 403 waiting to
+    happen inside one collection category, months after the code was written."""
+    granted = set(ARM_READ_ACTIONS)
+    for task in build_test_plan():
+        for action in task.actions:
+            assert action in granted, (
+                f"task {task.key!r} needs {action}, which the scanner role does not grant"
+            )
+
+
+def test_every_collection_action_is_claimed_by_a_task() -> None:
+    """The other direction. An action nothing asks for is a permission on a
+    customer's consent screen that nothing has ever used."""
+    claimed = {action for task in build_test_plan() for action in task.actions}
+    for category, actions in COLLECTION_ACTIONS.items():
+        for action in actions:
+            assert action in claimed, (
+                f"{category} declares {action}, which no collection task uses"
+            )
 
 
 # ------------------------------------------------------------ current role

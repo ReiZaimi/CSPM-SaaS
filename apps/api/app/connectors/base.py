@@ -11,6 +11,7 @@ The pipeline is fixed and each stage is separately testable:
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,6 +49,12 @@ class RawSnapshot:
     # category -> error message. A storage timeout must not fail the whole scan;
     # it degrades that category's rules to UNKNOWN (AZURE_INTEGRATION.md section 5).
     errors: dict[str, str] = field(default_factory=dict)
+    # Per-task outcome from the collection run: what was read completely, what
+    # came back partial, what failed, what was skipped. ``errors`` above is
+    # derived from this and drives rule degradation; this is the detail behind
+    # it, kept so a scan can explain *which* listing was short rather than only
+    # that the category is unreliable.
+    coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -57,6 +64,7 @@ class RawSnapshot:
             "version": self.version,
             "data": self.data,
             "errors": self.errors,
+            "coverage": self.coverage,
         }
 
     @classmethod
@@ -77,6 +85,11 @@ class RawSnapshot:
             version=payload.get("version", "1.0"),
             data=dict(payload.get("data") or {}),
             errors=dict(payload.get("errors") or {}),
+            # Absent on snapshots taken before coverage was recorded. Empty is
+            # the honest reading: those runs cannot say what they saw in full,
+            # and inventing a COMPLETE for them would be the exact overclaim
+            # the field was added to prevent.
+            coverage=dict(payload.get("coverage") or {}),
         )
 
 
@@ -97,8 +110,15 @@ class CloudConnector(ABC):
         """Prove read access works, by actually calling the provider."""
 
     @abstractmethod
-    async def collect(self) -> RawSnapshot:
-        """Gather raw provider state. Never evaluates anything."""
+    async def collect(
+        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+    ) -> RawSnapshot:
+        """Gather raw provider state. Never evaluates anything.
+
+        ``on_progress`` is called as units of collection finish, with (done,
+        total). The total is known before collection starts, which is what lets
+        the slowest phase of a scan report something better than a phase name.
+        """
 
     @abstractmethod
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:

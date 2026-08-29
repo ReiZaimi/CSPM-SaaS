@@ -12,13 +12,13 @@ Both are the same mistake in different places: treating one call's success, or
 one call's failure, as a verdict on more than it covers.
 """
 
+from typing import ClassVar
+
 import httpx
 import pytest
 
-from app.connectors.azure.collector import AzureCollector
 from app.connectors.azure.connector import GRAPH_PROBES, AzureConnector
-from app.connectors.base import RawSnapshot
-from app.core.enums import Provider
+from app.connectors.collection import TaskOutcome
 
 
 class FakeTokens:
@@ -36,8 +36,10 @@ class FakeTokens:
 class FakeGraph:
     """A Graph client where each call either answers or refuses."""
 
-    def __init__(self, denied: set[str] | None = None) -> None:
-        self.denied = denied or set()
+    def __init__(self, tokens: object = None, http: object = None) -> None:
+        self.truncated: set[str] = set()
+
+    denied: ClassVar[set[str]] = set()
 
     def _check(self, name: str) -> None:
         if name in self.denied:
@@ -60,70 +62,92 @@ class FakeGraph:
         return []
 
 
-@pytest.fixture(autouse=True)
-def _no_real_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neither the collector nor the connector may reach for a real token."""
-    monkeypatch.setattr("app.connectors.azure.collector.TokenProvider", FakeTokens)
-    monkeypatch.setattr("app.connectors.azure.connector.TokenProvider", FakeTokens)
+async def run_identity(monkeypatch: pytest.MonkeyPatch, denied: set[str]):
+    """Execute just the identity tasks, with Graph faked out."""
+    import httpx
+
+    from app.connectors.azure import plan as plan_module
+    from app.connectors.azure.plan import AzurePlanBuilder
+    from app.connectors.collection import CollectionRun
+
+    monkeypatch.setattr(FakeGraph, "denied", denied)
+    monkeypatch.setattr(plan_module, "GraphClient", FakeGraph)
+
+    builder = AzurePlanBuilder(
+        tokens=object(), subscription_id="s", http_client=httpx.AsyncClient()
+    )
+    tasks = [t for t in builder.build() if t.category == "identity"]
+    data: dict = {}
+    report = await CollectionRun(tasks).execute(data)
+    return data, report
 
 
-def collector() -> AzureCollector:
-    return AzureCollector(tenant_id="t", subscription_id="s")
+async def test_everything_readable_records_no_gap(monkeypatch) -> None:
+    data, report = await run_identity(monkeypatch, set())
 
-
-def snapshot() -> RawSnapshot:
-    return RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s")
-
-
-async def test_everything_readable_records_no_gap() -> None:
-    snap = snapshot()
-    data = await collector()._collect_identity(FakeGraph(), snap)
-
-    assert snap.errors == {}
+    assert report.is_complete
+    assert report.category_problems() == {}
     assert data["users"] and data["directory_roles"]
 
 
-async def test_losing_roles_keeps_the_users_already_read() -> None:
-    """The reported failure. One permission the role rules needed took the
-    asset inventory with it."""
-    snap = snapshot()
-    data = await collector()._collect_identity(
-        FakeGraph(denied={"list_directory_roles"}), snap
-    )
+async def test_losing_roles_keeps_the_users_already_read(monkeypatch) -> None:
+    """The failure that started this: one permission the role rules needed used
+    to take the whole identity inventory with it."""
+    data, report = await run_identity(monkeypatch, {"list_directory_roles"})
 
     assert data["users"], "a readable user list must survive a roles failure"
-    assert data["directory_roles"] == []
-    assert "directory roles could not be read" in snap.errors["identity"]
+    assert report.results["users"].outcome == TaskOutcome.COMPLETE
+    assert report.results["directory_roles"].outcome == TaskOutcome.FAILED
 
 
-async def test_losing_users_keeps_the_roles_already_read() -> None:
-    snap = snapshot()
-    data = await collector()._collect_identity(FakeGraph(denied={"list_users"}), snap)
+async def test_losing_users_keeps_the_roles_already_read(monkeypatch) -> None:
+    data, report = await run_identity(monkeypatch, {"list_users"})
 
     assert data["directory_roles"]
-    assert data["users"] == []
-    assert "directory users could not be read" in snap.errors["identity"]
+    assert report.results["directory_roles"].outcome == TaskOutcome.COMPLETE
+    assert report.results["users"].outcome == TaskOutcome.FAILED
 
 
-async def test_a_partial_directory_still_marks_the_category_failed() -> None:
-    """Half a directory is not grounds for saying anyone's MFA is fine. The gap
-    is recorded so every identity rule degrades to UNKNOWN, even though usable
-    data came back."""
-    snap = snapshot()
-    await collector()._collect_identity(FakeGraph(denied={"list_users"}), snap)
-    assert "identity" in snap.errors
+async def test_a_task_whose_input_never_arrived_is_skipped_not_failed(
+    monkeypatch,
+) -> None:
+    """``user_role_map`` needs the role list. Nothing is wrong with the task
+    itself, and reporting it as failed would send someone looking for a second
+    problem one hop away from the real one."""
+    _, report = await run_identity(monkeypatch, {"list_directory_roles"})
+
+    skipped = report.results["user_role_map"]
+    assert skipped.outcome == TaskOutcome.SKIPPED
+    assert "directory_roles" in skipped.detail
 
 
-async def test_both_failures_are_reported_together() -> None:
-    snap = snapshot()
-    await collector()._collect_identity(
-        FakeGraph(denied={"list_users", "list_directory_roles"}), snap
+async def test_a_partial_directory_still_marks_the_category_failed(
+    monkeypatch,
+) -> None:
+    """Half a directory is not grounds for saying anyone's MFA is fine."""
+    _, report = await run_identity(monkeypatch, {"list_users"})
+    assert "identity" in report.category_problems()
+
+
+async def test_every_failure_in_a_category_is_reported_together(monkeypatch) -> None:
+    _, report = await run_identity(
+        monkeypatch, {"list_users", "list_directory_roles"}
     )
-    assert "users" in snap.errors["identity"]
-    assert "roles" in snap.errors["identity"]
+    problem = report.category_problems()["identity"]
+
+    assert "users" in problem
+    assert "directory_roles" in problem
 
 
 # ------------------------------------------------------- validating a connection
+@pytest.fixture(autouse=True)
+def _no_real_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The connector must not reach for a real token."""
+    monkeypatch.setattr("app.connectors.azure.connector.TokenProvider", FakeTokens)
+    monkeypatch.setattr(
+        "app.connectors.azure.connector.missing_permissions", lambda token: ()
+    )
+
 GRAPH_PATHS = {
     "/organization": "get_organization",
     "/users": "list_users",
@@ -223,20 +247,3 @@ async def test_each_missing_permission_is_reported_separately() -> None:
 
     assert len(check.problems) == 2, "two missing permissions, two instructions"
     assert check.permissions_verified  # the tenant read still succeeded
-
-
-async def test_a_later_failure_does_not_erase_the_per_call_diagnosis() -> None:
-    """``_collect_category`` used to assign ``errors[category]``, so a second
-    failure inside the same category replaced the specific instruction with
-    whatever it happened to say. The two are joined instead."""
-    collector_ = collector()
-    snap = snapshot()
-
-    async def explode() -> dict:
-        await collector_._collect_identity(FakeGraph(denied={"list_users"}), snap)
-        raise RuntimeError("the gather blew up")
-
-    await collector_._collect_category(snap, "identity", explode)
-
-    assert "directory users could not be read" in snap.errors["identity"]
-    assert "the gather blew up" in snap.errors["identity"]

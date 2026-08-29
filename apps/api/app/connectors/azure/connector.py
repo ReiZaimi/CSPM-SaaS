@@ -154,7 +154,9 @@ class AzureConnector(CloudConnector):
         )
         return check
 
-    async def collect(self) -> RawSnapshot:
+    async def collect(
+        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+    ) -> RawSnapshot:
         if not self.subscription_id:
             raise ValueError("A subscription id is required to collect Azure state")
         collector = AzureCollector(
@@ -162,7 +164,7 @@ class AzureConnector(CloudConnector):
             subscription_id=self.subscription_id,
             http_client=self._http,
         )
-        return await collector.collect()
+        return await collector.collect(on_progress)
 
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
         return self._normalizer.normalize(snapshot)

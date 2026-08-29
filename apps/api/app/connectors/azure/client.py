@@ -7,6 +7,9 @@ again, and the SDKs are synchronous. MSAL — Microsoft's own auth library — s
 handles every token.
 """
 
+import asyncio
+import random
+from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar, Self
 
 import httpx
@@ -21,6 +24,21 @@ ARM_BASE = "https://management.azure.com"
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+
+# Azure throttles ARM reads per subscription as ordinary behaviour, not as an
+# incident, and answers with 429 plus a Retry-After. Without this a throttled
+# call raised, and because a category gathers several calls at once, one 429
+# cost every rule that depended on that whole category -- reported as UNKNOWN,
+# which is honest but avoidable.
+MAX_ATTEMPTS = 4
+# A single Retry-After longer than this is not worth waiting on inside a scan.
+MAX_RETRY_WAIT_SECONDS = 20.0
+# ...and neither is a series of shorter ones. Without a total budget, four
+# attempts against a Retry-After of 30 would hold one call -- and the worker
+# slot behind it -- for a minute and a half, while the rest of the plan waits.
+# Past this the category is recorded as unreadable, which is a truthful answer
+# available now rather than a possibly-better one much later.
+RETRY_BUDGET_SECONDS = 30.0
 
 
 class AzureApiError(CloudConnectionError):
@@ -48,6 +66,12 @@ class _BaseClient:
         self.tokens = tokens
         self._client = client
         self._owns_client = client is None
+        # Paged listings that hit the page cap and returned less than the
+        # provider holds. Recorded rather than logged, because a warning in
+        # Railway's log stream cannot reach the rule engine, and the rule
+        # engine is the only thing that can turn "we saw part of it" into
+        # UNKNOWN instead of PASS.
+        self.truncated: set[str] = set()
 
     async def __aenter__(self) -> Self:
         if self._client is None:
@@ -67,7 +91,25 @@ class _BaseClient:
             raise RuntimeError("Client used outside an async context manager")
 
         full_url = url if url.startswith("http") else f"{self.base_url}{url}"
-        response = await self._client.get(full_url, headers=self._auth_header(), params=params)
+
+        spent = 0.0
+        for attempt in range(MAX_ATTEMPTS):
+            response = await self._client.get(
+                full_url, headers=self._auth_header(), params=params
+            )
+            if not self._should_retry(response) or attempt == MAX_ATTEMPTS - 1:
+                break
+            wait = self._retry_wait(response, attempt)
+            if wait is None or spent + wait > RETRY_BUDGET_SECONDS:
+                break
+            spent += wait
+            log.info(
+                "azure.retrying",
+                status=response.status_code,
+                attempt=attempt + 1,
+                wait_seconds=round(wait, 2),
+            )
+            await asyncio.sleep(wait)
 
         if response.status_code == 403:
             raise AzureApiError(
@@ -87,6 +129,48 @@ class _BaseClient:
             )
 
         return response.json()
+
+    @staticmethod
+    def _should_retry(response: httpx.Response) -> bool:
+        """Throttling and server faults are worth another go; 4xx is not.
+
+        A 403 will still be a 403 in two seconds, and retrying it would turn a
+        clear permission error into a slow one.
+        """
+        return response.status_code == 429 or 500 <= response.status_code < 600
+
+    @classmethod
+    def _retry_wait(cls, response: httpx.Response, attempt: int) -> float | None:
+        """Seconds to wait, or None when waiting is not worth it.
+
+        Azure's own Retry-After is preferred over any backoff curve invented
+        here -- it is the only party that knows when the throttle lifts. Jitter
+        is added to the fallback because a scan fires several calls at once and
+        un-jittered backoff would retry them in the same instant that got them
+        throttled.
+        """
+        hinted = cls._retry_after_seconds(response)
+        if hinted is not None:
+            return None if hinted > MAX_RETRY_WAIT_SECONDS else hinted
+        return min(2.0**attempt + random.uniform(0, 0.5), MAX_RETRY_WAIT_SECONDS)
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float | None:
+        """Retry-After, which is either a count of seconds or an HTTP date."""
+        raw = response.headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        from datetime import UTC, datetime
+
+        return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
     @staticmethod
     def _detail(response: httpx.Response) -> str:
@@ -126,7 +210,18 @@ class _BaseClient:
             pages += 1
 
         if next_url:
-            log.warning("azure.pagination_truncated", url=url, pages=pages)
+            # The dangerous case, and the reason this is not just a log line.
+            # A list cut off at the page cap is still a list: the rules would
+            # evaluate 5,000 storage accounts out of 8,000, find nothing public
+            # among them, and return PASS -- reporting "no public storage
+            # found" over three thousand resources nobody looked at. That is
+            # exactly the confusion of "could not look" with "looked and it was
+            # fine" that the four rule states exist to prevent, one layer below
+            # where the doctrine is enforced.
+            self.truncated.add(url)
+            log.warning(
+                "azure.pagination_truncated", url=url, pages=pages, items=len(items)
+            )
         return items
 
 

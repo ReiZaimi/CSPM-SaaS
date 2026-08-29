@@ -95,7 +95,18 @@ class ScanPipeline:
                     tenant_id=account.tenant_id,
                     subscription_id=account.subscription_id,
                 )
-                snapshot = await connector.collect()
+                async def report_progress(done: int, total: int) -> None:
+                    """Collection is the slow phase and used to show nothing.
+
+                    The plan's size is known before it runs, so this is a real
+                    fraction rather than a phase name -- which is what the
+                    scans page needed a "stuck in queue" heuristic to guess at.
+                    """
+                    scan.progress_done = done
+                    scan.progress_total = total
+                    await session.commit()
+
+                snapshot = await connector.collect(report_progress)
                 await self._explain_role_drift(session, account, snapshot)
 
                 # Persisted before interpretation, always.
