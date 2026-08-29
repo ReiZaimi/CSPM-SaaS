@@ -36,7 +36,9 @@ class FakeTokens:
 class FakeGraph:
     """A Graph client where each call either answers or refuses."""
 
-    def __init__(self, tokens: object = None, http: object = None) -> None:
+    def __init__(
+        self, tokens: object = None, http: object = None, limiter: object = None
+    ) -> None:
         self.truncated: set[str] = set()
 
     denied: ClassVar[set[str]] = set()

@@ -99,8 +99,8 @@ include/exclude toggles.
 
 ### ARM — Custom Role (30 actions, v1)
 
-> **Superseded 2026-08-28.** The role is now the 13 actions the collector
-> actually calls. One of the 17 declared ahead of use
+> **Superseded 2026-08-28.** The role is now only the actions the collector
+> actually calls -- 13 then, 14 since inventory moved to Resource Graph. One of the 17 declared ahead of use
 > (`Microsoft.Security/autoProvisioningSettings/read`) is not a real provider
 > operation, and ARM validates role definitions atomically, so it failed every
 > deployment. See `AZURE_INTEGRATION.md` §"The role is exactly what the scanner

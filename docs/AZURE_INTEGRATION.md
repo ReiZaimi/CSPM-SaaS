@@ -214,7 +214,7 @@ checked.
 
 ### The role is exactly what the scanner reads
 
-The custom role declares 13 read actions, and every one is exercised by a real
+The custom role declares 14 read actions, and every one is exercised by a real
 call in `app/connectors/azure/client.py`. Nothing is granted speculatively.
 
 It was briefly wider — 30 actions, with 17 declared ahead of the rules that
@@ -243,16 +243,21 @@ az provider operation show --namespace Microsoft.KeyVault \
   --query "resourceTypes[].operations[].name"
 ```
 
-`ROLE_VERSION` stays at `v1`. It exists to flag a deployed role that is
-*insufficient* for a newer rule; narrowing is backward compatible, and bumping
-it would create a second role definition in every customer's tenant for no gain.
+`ROLE_VERSION` is `v2`. It exists to flag a deployed role that is
+*insufficient* for a newer rule; narrowing is backward compatible and does not
+warrant a bump. `v2` adds `Microsoft.ResourceGraph/resources/read`, which
+inventory needs since it moved off the ARM resource listing (`DECISIONS.md`
+§14). A connection still on `v1` keeps every other category and loses
+inventory until the customer redeploys, which `degraded_categories` tells them
+in those terms rather than as a 403.
 
 ### Permission modes
 
 `Reader` (`*/read`) is the default: one line, never needs revisiting. The
 **CloudGuard custom role** is the alternative — exactly the read operations the
 collector performs and no `*/action` entries at all, enumerated in
-`app/connectors/azure/rbac.py`. A test asserts every `ArmClient` method has a
+`app/connectors/azure/rbac.py`. A test asserts every method on the
+ARM-permissioned clients — `ArmClient` and `ResourceGraphClient` — has a
 matching action and vice versa, so the role cannot silently drift from the code.
 The trade is maintenance: a rule reading a new resource type needs a new action
 and a customer redeploy, which is what `role_version` tracks.
@@ -268,6 +273,18 @@ Azure APIs → Collection → Raw snapshot → Normalization → Internal cloud 
 ```
 
 Every scan produces a `cloud_snapshots` row (see `DATABASE.md`), enabling historical comparison and future drift detection.
+
+**Two read surfaces, one snapshot.** Everything a rule judges is read from ARM,
+whose JSON is stored verbatim. Inventory alone is read from Azure Resource
+Graph through `ResourceGraphClient`, because it asks for every provider's
+resources at once and because Resource Graph states `totalRecords` for the
+query — so an incomplete inventory is detected by comparison rather than
+inferred from a page cap (`DECISIONS.md` §14).
+
+**One request ceiling per scan.** Task fan-out and wave concurrency multiply,
+so `RequestLimiter` caps concurrent requests across every client a scan builds
+— the unit Azure meters. A permit covers one HTTP attempt and is released
+before any `Retry-After` sleep (`DECISIONS.md` §15).
 
 ---
 

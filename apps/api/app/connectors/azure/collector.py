@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 
 from app.connectors.azure.auth import TokenProvider
-from app.connectors.azure.client import DEFAULT_TIMEOUT
+from app.connectors.azure.client import DEFAULT_TIMEOUT, RequestLimiter
 from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.base import RawSnapshot
 from app.connectors.collection import CollectionRun
@@ -86,11 +86,17 @@ class AzureCollector:
         )
 
         # One connection pool for the whole run; each task wraps it in its own
-        # client so truncation stays attributable.
+        # client so truncation stays attributable. One request limiter too, and
+        # for the opposite reason: what must not be per task is how many
+        # requests are outstanding, because Azure meters the subscription, not
+        # the task that happened to ask.
         owns_http = self._http is None
         http = self._http or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+        limiter = RequestLimiter()
         try:
-            plan = AzurePlanBuilder(self.tokens, self.subscription_id, http).build()
+            plan = AzurePlanBuilder(
+                self.tokens, self.subscription_id, http, limiter=limiter
+            ).build()
             run = CollectionRun(plan, on_progress=on_progress)
             report = await run.execute(snapshot.data)
         finally:
@@ -111,5 +117,10 @@ class AzureCollector:
             tasks=run.size,
             complete=report.is_complete,
             degraded=sorted(snapshot.errors),
+            # What the run cost in requests, and how long it spent queued
+            # behind its own ceiling. A scan that never waits and one that
+            # waits a minute are indistinguishable without this, and only the
+            # second is evidence the limit wants changing.
+            **limiter.stats(),
         )
         return snapshot

@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from app.core.enums import ConnectionScope
 
 # Bump when the action list changes.
-ROLE_VERSION = "v1"
+ROLE_VERSION = "v2"
 
 ROLE_NAME = "CloudGuard Security Scanner"
 
@@ -45,6 +45,11 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     # Subscriptions & resources
     "Microsoft.Resources/subscriptions/read",
     "Microsoft.Resources/subscriptions/resources/read",
+    # Inventory, read through Resource Graph rather than per provider. Granted
+    # in addition to the resource read above, not instead of it: Resource Graph
+    # returns what the caller can already read, so both are needed for a query
+    # to answer with anything.
+    "Microsoft.ResourceGraph/resources/read",
     # Networking
     "Microsoft.Network/networkSecurityGroups/read",
     "Microsoft.Network/networkInterfaces/read",
@@ -74,6 +79,10 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
 CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_subscriptions": ("Microsoft.Resources/subscriptions/read",),
     "list_resources": ("Microsoft.Resources/subscriptions/resources/read",),
+    "list_inventory": (
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+    ),
     "list_network_security_groups": ("Microsoft.Network/networkSecurityGroups/read",),
     "list_network_interfaces": ("Microsoft.Network/networkInterfaces/read",),
     "list_public_ips": ("Microsoft.Network/publicIPAddresses/read",),
@@ -100,6 +109,7 @@ COLLECTION_ACTIONS: dict[str, tuple[str, ...]] = {
     "resources": (
         "Microsoft.Resources/subscriptions/read",
         "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
     ),
     "network": (
         "Microsoft.Network/networkSecurityGroups/read",
@@ -133,6 +143,28 @@ ROLE_HISTORY: dict[str, tuple[str, ...]] = {
     "v1": (
         "Microsoft.Resources/subscriptions/read",
         "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    ),
+    # v2 adds Resource Graph, which inventory now reads instead of ARM's
+    # per-subscription resource listing. A v1 role keeps every other category
+    # working and loses only inventory, which is why the drift prompt is worth
+    # more than a fallback would be: falling back to the ARM listing would hide
+    # the gap and leave the customer on a role that will not serve the next
+    # thing built on Resource Graph either.
+    "v2": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
         "Microsoft.Network/networkSecurityGroups/read",
         "Microsoft.Network/networkInterfaces/read",
         "Microsoft.Network/publicIPAddresses/read",

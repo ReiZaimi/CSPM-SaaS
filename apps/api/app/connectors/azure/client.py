@@ -10,6 +10,7 @@ handles every token.
 import asyncio
 import random
 from email.utils import parsedate_to_datetime
+from types import TracebackType
 from typing import Any, ClassVar, Self
 
 import httpx
@@ -22,6 +23,9 @@ log = get_logger(__name__)
 
 ARM_BASE = "https://management.azure.com"
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+RESOURCE_GRAPH_QUERY_URL = (
+    "/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01"
+)
 
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
@@ -39,6 +43,76 @@ MAX_RETRY_WAIT_SECONDS = 20.0
 # Past this the category is recorded as unreadable, which is a truthful answer
 # available now rather than a possibly-better one much later.
 RETRY_BUDGET_SECONDS = 30.0
+
+# How many Azure requests one scan may have in flight at once, across every
+# client it builds. See RequestLimiter for why the number lives at this level
+# rather than inside a task.
+DEFAULT_MAX_CONCURRENT_REQUESTS = 16
+
+
+class RequestLimiter:
+    """A ceiling on concurrent Azure requests, shared by one scan.
+
+    Concurrency in the collector is nested and nobody owns the product. The
+    executor runs a wave of tasks at once; several of those tasks then fan out
+    per resource under their own semaphore. Two limits that each look modest --
+    a wave of nine tasks, eight detail calls apiece -- multiply to seventy-odd
+    requests against one subscription, and the number moves every time a task
+    is added to the plan. Azure answers that with 429s, which the retry path
+    then turns into wall-clock time, and past the retry budget into recorded
+    gaps: a scan that collects less because it asked for more at once.
+
+    So the cap is expressed once, over the thing Azure actually meters --
+    requests -- rather than over tasks, which are only a proxy for requests and
+    a worse one after every plan change. The per-task limits stay: they are
+    fairness between tasks inside one wave, not protection for the
+    subscription. This is the protection.
+
+    A permit is held for one HTTP attempt and released before any retry sleep,
+    so a throttled call waits without holding a slot the rest of the plan
+    could use. Nothing acquires a permit while holding another, and no task
+    waits on another task's request, so there is no cycle here to deadlock on.
+    """
+
+    def __init__(self, max_concurrent: int = DEFAULT_MAX_CONCURRENT_REQUESTS) -> None:
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be at least 1")
+        self.max_concurrent = max_concurrent
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._in_flight = 0
+        # Kept because collection has no other account of what it cost. A scan
+        # that spent a minute queued behind its own ceiling and one that never
+        # touched it look identical in the logs otherwise, and the first is the
+        # one that wants a different number.
+        self.requests = 0
+        self.peak_in_flight = 0
+        self.waited_seconds = 0.0
+
+    async def __aenter__(self) -> "RequestLimiter":
+        started = asyncio.get_running_loop().time()
+        await self._semaphore.acquire()
+        self.waited_seconds += asyncio.get_running_loop().time() - started
+        self.requests += 1
+        self._in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._in_flight -= 1
+        self._semaphore.release()
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "requests": self.requests,
+            "peak_in_flight": self.peak_in_flight,
+            "limit": self.max_concurrent,
+            "waited_seconds": round(self.waited_seconds, 2),
+        }
 
 
 class AzureApiError(CloudConnectionError):
@@ -62,10 +136,20 @@ class _BaseClient:
     # configured, because for their failure it is.
     access_denied_hint: ClassVar[str] = ""
 
-    def __init__(self, tokens: TokenProvider, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        tokens: TokenProvider,
+        client: httpx.AsyncClient | None = None,
+        limiter: RequestLimiter | None = None,
+    ) -> None:
         self.tokens = tokens
         self._client = client
         self._owns_client = client is None
+        # Shared across every client a scan builds, so the ceiling is on the
+        # scan rather than on any one task. None means ungated, which is what
+        # the one-off probes outside collection -- connection validation, the
+        # consent read-back -- actually want.
+        self._limiter = limiter
         # Paged listings that hit the page cap and returned less than the
         # provider holds. Recorded rather than logged, because a warning in
         # Railway's log stream cannot reach the rule engine, and the rule
@@ -87,6 +171,24 @@ class _BaseClient:
         raise NotImplementedError
 
     async def get(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._request("GET", url, params=params)
+
+    async def post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
+        """A read expressed as a POST, which Resource Graph queries are.
+
+        Same retry, throttling and error handling as ``get``: what makes a call
+        worth retrying is the answer Azure gave, not the verb it was asked
+        with.
+        """
+        return await self._request("POST", url, json=body)
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self._client is None:  # pragma: no cover -- misuse guard
             raise RuntimeError("Client used outside an async context manager")
 
@@ -94,9 +196,7 @@ class _BaseClient:
 
         spent = 0.0
         for attempt in range(MAX_ATTEMPTS):
-            response = await self._client.get(
-                full_url, headers=self._auth_header(), params=params
-            )
+            response = await self._send(method, full_url, params=params, json=json)
             if not self._should_retry(response) or attempt == MAX_ATTEMPTS - 1:
                 break
             wait = self._retry_wait(response, attempt)
@@ -129,6 +229,30 @@ class _BaseClient:
             )
 
         return response.json()
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None,
+        json: dict[str, Any] | None,
+    ) -> httpx.Response:
+        """One attempt, holding a scan-wide permit for exactly its duration.
+
+        Acquired here rather than around the retry loop on purpose: a call
+        waiting out a Retry-After is not using the network, and holding a slot
+        through that sleep would idle part of the scan's budget precisely when
+        Azure has told it to slow down.
+        """
+        assert self._client is not None  # narrowed by _request
+        if self._limiter is None:
+            return await self._client.request(
+                method, url, headers=self._auth_header(), params=params, json=json
+            )
+        async with self._limiter:
+            return await self._client.request(
+                method, url, headers=self._auth_header(), params=params, json=json
+            )
 
     @staticmethod
     def _should_retry(response: httpx.Response) -> bool:
@@ -323,6 +447,121 @@ class ArmClient(_BaseClient):
             f"/subscriptions/{subscription_id}/providers/Microsoft.Authorization"
             "/roleDefinitions?api-version=2022-04-01"
         )
+
+
+class ResourceGraphClient(_BaseClient):
+    """Azure Resource Graph — inventory, read across subscriptions at once.
+
+    Deliberately a separate client rather than more methods on ``ArmClient``.
+    The two speak to the same host and share the retry and throttling
+    behaviour, and nothing else about them is the same: ARM is a per-provider
+    listing API paged by ``nextLink`` and metered per subscription, Resource
+    Graph is a KQL query surface paged by ``$skipToken`` and metered against a
+    separate per-principal quota. Mixing them would put two paging models and
+    two throttling stories behind one class, and a reader could no longer tell
+    which one a call is subject to.
+
+    Inventory is the whole remit for now. Resource Graph returns a projection
+    of ARM's own state that is minutes stale in the worst case -- fine for
+    "what exists here", wrong for the configuration a rule passes or fails on.
+    Those reads stay on ARM, where the snapshot keeps the provider's own JSON
+    verbatim (DECISIONS.md).
+    """
+
+    base_url = ARM_BASE
+    access_denied_hint: ClassVar[str] = (
+        "CloudGuard's scanner role does not grant Resource Graph queries on "
+        "this scope. Redeploy the role from the connection page -- a role "
+        "deployed before Resource Graph inventory shipped will not have it. "
+        "This is not affected by admin consent."
+    )
+
+    # Page size. Resource Graph's own maximum is 1000 rows per page.
+    PAGE_SIZE: ClassVar[int] = 1000
+
+    def _auth_header(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.tokens.arm_token()}"}
+
+    async def list_inventory(
+        self, subscription_id: str, max_pages: int = 50
+    ) -> list[dict[str, Any]]:
+        """Every resource in one subscription, as inventory rather than config.
+
+        The projection is deliberate and excludes ``properties``. Inventory
+        answers what exists, where, and under whose resource group; the
+        per-resource configuration a rule reasons about comes from the ARM
+        listing for that type, which is the copy stored verbatim. Projecting
+        ``properties`` here would double the size of every snapshot to hold a
+        second, staler copy of data no rule reads.
+
+        ``order by id asc`` is not cosmetic: Resource Graph's paging is only
+        stable over an ordered query, and an unordered one can repeat or drop
+        rows between pages -- which would be a miscount presented as an
+        inventory.
+        """
+        query = (
+            "Resources | project id, name, type, kind, location, resourceGroup, "
+            "subscriptionId, managedBy, sku, plan, tags, identity, zones "
+            "| order by id asc"
+        )
+        return await self._query(query, [subscription_id], max_pages=max_pages)
+
+    async def _query(
+        self, query: str, subscriptions: list[str], max_pages: int = 50
+    ) -> list[dict[str, Any]]:
+        """Run a KQL query, following ``$skipToken`` to the end of the results.
+
+        Where ARM paging can only report that a cap was hit, Resource Graph
+        states ``totalRecords`` for the whole query, so completeness is checked
+        against a number the service supplied rather than inferred from having
+        stopped early. That is the difference between "we read everything" and
+        "we did not notice reading only some of it", and it is why truncation
+        here is a comparison rather than a guess.
+        """
+        rows: list[dict[str, Any]] = []
+        skip_token: str | None = None
+        total: int | None = None
+        service_truncated = False
+        pages = 0
+
+        while pages < max_pages:
+            options: dict[str, Any] = {
+                "resultFormat": "objectArray",
+                "$top": self.PAGE_SIZE,
+            }
+            if skip_token:
+                options["$skipToken"] = skip_token
+
+            payload = await self.post(
+                RESOURCE_GRAPH_QUERY_URL,
+                {"subscriptions": subscriptions, "query": query, "options": options},
+            )
+            rows.extend(payload.get("data") or [])
+            if total is None and isinstance(payload.get("totalRecords"), int):
+                total = payload["totalRecords"]
+            # Resource Graph's own word for "I did not return all of this",
+            # sent as a string rather than a boolean.
+            if str(payload.get("resultTruncated", "")).lower() == "true":
+                service_truncated = True
+            skip_token = payload.get("$skipToken")
+            pages += 1
+            if not skip_token:
+                break
+
+        short = total is not None and len(rows) < total
+        if skip_token or service_truncated or short:
+            # Recorded, not logged, for the same reason ARM truncation is: the
+            # rule engine is the only thing that can turn a partial inventory
+            # into UNKNOWN instead of a PASS nobody earned.
+            self.truncated.add(RESOURCE_GRAPH_QUERY_URL)
+            log.warning(
+                "azure.resource_graph_truncated",
+                pages=pages,
+                rows=len(rows),
+                total_records=total,
+                result_truncated=service_truncated,
+            )
+        return rows
 
 
 class GraphClient(_BaseClient):

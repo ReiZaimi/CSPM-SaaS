@@ -42,6 +42,19 @@ def azure(
             if fragment in path:
                 return httpx.Response(403, json={"error": {"message": "denied"}})
 
+        # Resource Graph answers a query, not a listing: its own shape, its own
+        # completeness signal, and a POST rather than a GET.
+        if "Microsoft.ResourceGraph" in path:
+            total = 2 if any("ResourceGraph" in f for f in truncate) else 1
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "/x/inventory", "name": "a"}],
+                    "totalRecords": total,
+                    "count": 1,
+                },
+            )
+
         body: dict = {"value": [{"id": f"/x/{path.rsplit('/', 1)[-1]}", "name": "a"}]}
         # A listing that never stops offering another page is what hitting the
         # page cap looks like from the client's side.
@@ -161,3 +174,84 @@ async def test_progress_counts_every_task_in_the_plan() -> None:
     assert seen, "collection reports progress"
     assert seen[-1][0] == seen[-1][1], "finishes at 100%"
     assert seen[-1][1] > 5, "the plan is more than a handful of tasks"
+
+
+# ------------------------------------------------------------- the inventory
+async def test_inventory_is_read_through_resource_graph() -> None:
+    """The one task that does not go to ARM. It asks for every provider's
+    resources at once, which is a query rather than a listing."""
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(f"{request.method} {request.url.path}")
+        if "Microsoft.ResourceGraph" in request.url.path:
+            return httpx.Response(
+                200, json={"data": [{"id": "/x"}], "totalRecords": 1, "count": 1}
+            )
+        return httpx.Response(200, json={"value": []})
+
+    collector = AzureCollector(
+        tenant_id="t",
+        subscription_id="sub-1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    snapshot = await collector.collect()
+
+    assert snapshot.data["resources"], "inventory collected"
+    assert snapshot.coverage["resources"]["outcome"] == "COMPLETE"
+    assert "POST /providers/Microsoft.ResourceGraph/resources" in paths
+    assert not any(
+        path.endswith("/subscriptions/sub-1/resources") for path in paths
+    ), "and not through the ARM listing it replaced"
+
+
+async def test_an_inventory_short_of_its_stated_total_is_partial() -> None:
+    """Resource Graph states how many rows the query matched, so a short read
+    is a comparison rather than the inference ARM paging had to make."""
+    snapshot = await collect(truncate={"ResourceGraph"})
+
+    assert snapshot.coverage["resources"]["outcome"] == "PARTIAL"
+    assert "resources" in snapshot.errors
+    assert "incomplete" in snapshot.errors["resources"]
+
+
+# --------------------------------------------------------------- the ceiling
+async def test_the_whole_plan_shares_one_request_ceiling() -> None:
+    """Every task builds its own client, and several fan out per resource
+    underneath. What must not be per task is how many requests are open at
+    once, because Azure meters the subscription rather than the task."""
+    import asyncio
+
+    from app.connectors.azure.client import RequestLimiter
+    from app.connectors.azure.plan import AzurePlanBuilder
+    from app.connectors.collection import CollectionRun
+
+    state = {"in_flight": 0, "peak": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        state["in_flight"] += 1
+        state["peak"] = max(state["peak"], state["in_flight"])
+        try:
+            await asyncio.sleep(0.005)
+        finally:
+            state["in_flight"] -= 1
+        if "Microsoft.ResourceGraph" in request.url.path:
+            return httpx.Response(
+                200, json={"data": [{"id": "/x"}], "totalRecords": 1}
+            )
+        return httpx.Response(
+            200, json={"value": [{"id": f"/x/{n}", "name": "a"} for n in range(5)]}
+        )
+
+    limiter = RequestLimiter(3)
+    plan = AzurePlanBuilder(
+        tokens=FakeTokens(),
+        subscription_id="sub-1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        limiter=limiter,
+    ).build()
+
+    await CollectionRun(plan).execute({})
+
+    assert limiter.stats()["requests"] > 10, "the plan really did fan out"
+    assert state["peak"] <= 3

@@ -25,7 +25,12 @@ from typing import Any
 import httpx
 
 from app.connectors.azure.auth import TokenProvider
-from app.connectors.azure.client import ArmClient, GraphClient
+from app.connectors.azure.client import (
+    ArmClient,
+    GraphClient,
+    RequestLimiter,
+    ResourceGraphClient,
+)
 from app.connectors.collection import CollectionTask, TaskData
 from app.core.logging import get_logger
 
@@ -46,10 +51,16 @@ class AzurePlanBuilder:
         tokens: TokenProvider,
         subscription_id: str,
         http_client: httpx.AsyncClient,
+        limiter: RequestLimiter | None = None,
     ) -> None:
         self.tokens = tokens
         self.subscription_id = subscription_id
         self._http = http_client
+        # Handed to every client the plan builds, so the ceiling covers the
+        # whole run rather than each task separately. DETAIL_CONCURRENCY below
+        # still bounds one task's fan-out; that is fairness inside a wave, and
+        # this is what keeps the product of the two off the subscription.
+        self._limiter = limiter
 
     # ------------------------------------------------------------- plumbing
     def _arm_task(
@@ -69,7 +80,7 @@ class AzurePlanBuilder:
         """
 
         async def run(collected: dict[str, Any]) -> TaskData:
-            arm = ArmClient(self.tokens, self._http)
+            arm = ArmClient(self.tokens, self._http, limiter=self._limiter)
             data = await call(arm)
             if arm.truncated:
                 return TaskData(
@@ -136,8 +147,6 @@ class AzurePlanBuilder:
                 [with_rules(s) for s in servers]
             )}
 
-        async def inventory(arm: ArmClient) -> dict[str, Any]:
-            return {"resources": await arm.list_resources(sub)}
 
         tasks = [
             self._arm_task(
@@ -185,19 +194,55 @@ class AzurePlanBuilder:
                 ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
                 postgres,
             ),
-            self._arm_task(
-                "resources",
-                "resources",
-                (
-                    "Microsoft.Resources/subscriptions/read",
-                    "Microsoft.Resources/subscriptions/resources/read",
-                ),
-                inventory,
-            ),
+            self._inventory_task(),
             self._diagnostics_task(),
             *self._identity_tasks(),
         ]
         return tasks
+
+    def _inventory_task(self) -> CollectionTask:
+        """Everything in the subscription, read through Resource Graph.
+
+        The only task that does not go to ARM, and the reason is what it asks
+        for: not one provider's resources but all of them. ARM answers that
+        with a paged listing whose completeness can only be inferred from
+        whether the page cap was reached, while Resource Graph answers it in
+        one query and states how many rows the query matched -- so a short
+        read is detected by comparing counts rather than by noticing that
+        paging stopped.
+
+        It is also the task that scales worst on ARM as a tenant grows, and the
+        one whose data no rule reads, which together make it the right first
+        thing to move and the cheapest one to get wrong.
+        """
+
+        async def run(collected: dict[str, Any]) -> TaskData:
+            client = ResourceGraphClient(
+                self.tokens, self._http, limiter=self._limiter
+            )
+            rows = await client.list_inventory(self.subscription_id)
+            data = {"resources": rows}
+            if client.truncated:
+                return TaskData(
+                    data,
+                    partial_reason=(
+                        "the inventory query returned fewer resources than the "
+                        "subscription holds, so these results are incomplete "
+                        "and cannot support a pass"
+                    ),
+                )
+            return TaskData(data)
+
+        return CollectionTask(
+            key="resources",
+            category="resources",
+            run=run,
+            actions=(
+                "Microsoft.Resources/subscriptions/read",
+                "Microsoft.Resources/subscriptions/resources/read",
+                "Microsoft.ResourceGraph/resources/read",
+            ),
+        )
 
     def _diagnostics_task(self) -> CollectionTask:
         """Diagnostic settings for the resources AZ-LOG-001 covers.
@@ -210,7 +255,7 @@ class AzurePlanBuilder:
         sources = ("storage_accounts", "sql_servers", "network_security_groups")
 
         async def run(collected: dict[str, Any]) -> TaskData:
-            arm = ArmClient(self.tokens, self._http)
+            arm = ArmClient(self.tokens, self._http, limiter=self._limiter)
             targets = [
                 item["id"]
                 for key in sources
@@ -256,7 +301,7 @@ class AzurePlanBuilder:
         """Directory state. Graph, so no ARM action grants any of it."""
 
         async def users(collected: dict[str, Any]) -> TaskData:
-            graph = GraphClient(self.tokens, self._http)
+            graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
             found = await graph.list_users()
             if graph.truncated:
                 return TaskData(
@@ -266,7 +311,7 @@ class AzurePlanBuilder:
             return TaskData({"users": found})
 
         async def roles(collected: dict[str, Any]) -> TaskData:
-            graph = GraphClient(self.tokens, self._http)
+            graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
             found = await graph.list_directory_roles()
             return TaskData({"directory_roles": found})
 
@@ -289,7 +334,7 @@ class AzurePlanBuilder:
         """
         from app.connectors.azure.collector import PRIVILEGED_ROLE_NAMES
 
-        graph = GraphClient(self.tokens, self._http)
+        graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
         role_map: dict[str, list[str]] = {}
         privileged: set[str] = set()
         failures = 0
