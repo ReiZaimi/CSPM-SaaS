@@ -46,7 +46,7 @@ Azure-coupled half of the application; scanning is not.
 **There is no region dimension.** See §4 — it is the largest structural
 difference, and it is not a naming problem.
 
-**`SecurityRule.matches()` ignores `self.provider`.** See §6.
+**Rules could judge another cloud's resources.** Fixed ahead of the rest, since it was cheap while still theoretical. See §6.
 
 ---
 
