@@ -19,18 +19,6 @@ log = get_logger(__name__)
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
-# A scan already in flight for the same account. Shared by the create and
-# replay routes so the two cannot drift into disagreeing about what
-# "already running" means.
-ACTIVE_SCAN_STATUSES = [
-    ScanStatus.QUEUED,
-    ScanStatus.DISCOVERING,
-    ScanStatus.NORMALIZING,
-    ScanStatus.EVALUATING,
-    ScanStatus.CALCULATING_RISK,
-]
-
-
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -> dict:
     tenant.require_write()
@@ -44,20 +32,19 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
             "Reader role, then validate the connection."
         )
 
-    running = (
-        await session.execute(
-            select(Scan).where(
-                Scan.cloud_account_id == account.id,
-                Scan.status.in_(ACTIVE_SCAN_STATUSES),
-            )
-        )
-    ).scalar_one_or_none()
-    if running is not None:
+    if await scans_service.scan_in_flight(
+        session, tenant.organization_id, account.connection_id, account.id
+    ):
         raise ConflictError("A scan is already running for this connection")
 
     scan = Scan(
         organization_id=tenant.organization_id,
-        cloud_account_id=account.id,
+        # Scoped to the whole connection when there is one: its subscriptions
+        # are resolved in the worker, so one discovered between queueing and
+        # running is still picked up. Falls back to the single subscription for
+        # an account that predates connections.
+        connection_id=account.connection_id,
+        cloud_account_id=None if account.connection_id else account.id,
         status=ScanStatus.QUEUED,
         # Recorded from the authenticated user, never from the request body.
         triggered_by_user_id=tenant.user.id,
@@ -122,19 +109,14 @@ async def replay_scan_endpoint(scan_id: UUID, session: DbSession, tenant: Tenant
             "replaying its snapshot."
         )
 
-    running = (
-        await session.execute(
-            select(Scan).where(
-                Scan.cloud_account_id == source.cloud_account_id,
-                Scan.status.in_(ACTIVE_SCAN_STATUSES),
-            )
-        )
-    ).scalar_one_or_none()
-    if running is not None:
+    if await scans_service.scan_in_flight(
+        session, tenant.organization_id, source.connection_id, source.cloud_account_id
+    ):
         raise ConflictError("A scan is already running for this connection")
 
     scan = Scan(
         organization_id=tenant.organization_id,
+        connection_id=source.connection_id,
         cloud_account_id=source.cloud_account_id,
         status=ScanStatus.QUEUED,
         triggered_by_user_id=tenant.user.id,

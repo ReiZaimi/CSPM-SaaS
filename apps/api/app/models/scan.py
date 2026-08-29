@@ -32,8 +32,24 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
         ),
     )
 
-    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE"), nullable=False
+    # One of these two says what the scan covers.
+    #
+    # ``connection_id`` is the tenant-wide form: every in-scope subscription
+    # beneath that connection, collected into one scan. ``cloud_account_id`` is
+    # the single-subscription form, which predates it and is still how a rescan
+    # of one finding works.
+    #
+    # Nullable on both sides rather than a discriminator column, because the
+    # honest statement is "a scan is scoped to one of these" and a third column
+    # asserting which would be a second source of truth for a fact the first two
+    # already carry.
+    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE")
+    )
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cloud_connections.id", ondelete="CASCADE"),
+        index=True,
     )
     status: Mapped[ScanStatus] = mapped_column(
         StrEnumType(ScanStatus, 24), nullable=False, default=ScanStatus.QUEUED, index=True
@@ -70,6 +86,11 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     progress_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     @property
+    def covers_whole_connection(self) -> bool:
+        """Whether this scan spans every in-scope subscription."""
+        return self.connection_id is not None
+
+    @property
     def duration_seconds(self) -> int | None:
         """Elapsed time, live while running and fixed once finished."""
         if self.started_at is None:
@@ -103,10 +124,34 @@ class CloudSnapshot(UUIDPrimaryKey, TenantOwned, Base):
     """
 
     __tablename__ = "cloud_snapshots"
-    __table_args__ = (UniqueConstraint("scan_id", name="uq_cloud_snapshots_scan_id"),)
+    # One per subscription per scan, not one per scan. A tenant-wide scan reads
+    # several subscriptions and each provider payload is kept as its own
+    # verbatim record -- merging them before storage would destroy the property
+    # the snapshot exists for, which is that it is what Azure actually said.
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_id", "cloud_account_id", name="uq_cloud_snapshots_scan_account"
+        ),
+    )
 
-    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE"), nullable=False
+    # One of these two says what the scan covers.
+    #
+    # ``connection_id`` is the tenant-wide form: every in-scope subscription
+    # beneath that connection, collected into one scan. ``cloud_account_id`` is
+    # the single-subscription form, which predates it and is still how a rescan
+    # of one finding works.
+    #
+    # Nullable on both sides rather than a discriminator column, because the
+    # honest statement is "a scan is scoped to one of these" and a third column
+    # asserting which would be a second source of truth for a fact the first two
+    # already carry.
+    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE")
+    )
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cloud_connections.id", ondelete="CASCADE"),
+        index=True,
     )
     scan_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False

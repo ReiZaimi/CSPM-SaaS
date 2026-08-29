@@ -25,13 +25,14 @@ owner connection and scopes every write by the ``organization_id`` taken from
 the scan record it was handed — never from client input.
 """
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
+from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.registry import get_connector
 from app.core.db import service_session
 from app.core.enums import (
@@ -64,16 +65,29 @@ class ScanPipeline:
         self.engine = RuleEngine()
 
     async def run(self) -> None:
-        """Collect the customer's current state, then evaluate it."""
+        """Collect the customer's current state, then evaluate it.
+
+        A scan covers whatever its scope resolves to: every in-scope
+        subscription under a connection, or the single subscription a targeted
+        rescan names. Each subscription is collected and stored separately --
+        the snapshot has to stay what Azure said -- and all of them are
+        evaluated together, so a rule sees the tenant rather than one slice of
+        it.
+        """
         async with service_session() as session:
             scan = await session.get(Scan, self.scan_id)
             if scan is None:
                 log.error("scan.missing", scan_id=str(self.scan_id))
                 return
 
-            account = await session.get(CloudAccount, scan.cloud_account_id)
-            if account is None:
-                await self._fail(session, scan, "Cloud account no longer exists")
+            accounts = await self._resolve_scope(session, scan)
+            if not accounts:
+                await self._fail(
+                    session,
+                    scan,
+                    "This scan has nothing in scope. Its subscriptions may have "
+                    "been removed, excluded from scanning, or never discovered.",
+                )
                 return
 
             # Cancelled between being queued and being picked up. The worker
@@ -90,49 +104,68 @@ class ScanPipeline:
             try:
                 # --- collect ------------------------------------------------
                 await self._set_status(session, scan, ScanStatus.DISCOVERING)
-                connector = get_connector(
-                    account.provider,
-                    tenant_id=account.tenant_id,
-                    subscription_id=account.subscription_id,
-                )
-                async def report_progress(done: int, total: int) -> None:
-                    """Collection is the slow phase and used to show nothing.
+                observed_at = datetime.now(UTC)
+                merged = NormalizedState()
+                account_state: list[tuple[CloudAccount, NormalizedState]] = []
+                errors: dict[str, str] = {}
 
-                    The plan's size is known before it runs, so this is a real
-                    fraction rather than a phase name -- which is what the
-                    scans page needed a "stuck in queue" heuristic to guess at.
-                    """
-                    scan.progress_done = done
-                    scan.progress_total = total
-                    await session.commit()
-
-                snapshot = await connector.collect(report_progress)
-                await self._explain_role_drift(session, account, snapshot)
-
-                # Persisted before interpretation, always.
-                session.add(
-                    CloudSnapshot(
-                        organization_id=org_id,
-                        cloud_account_id=account.id,
-                        scan_id=scan.id,
-                        snapshot_version=snapshot.version,
-                        data=snapshot.to_json(),
+                for index, account in enumerate(accounts):
+                    connector = get_connector(
+                        account.provider,
+                        tenant_id=account.tenant_id,
+                        subscription_id=account.subscription_id,
                     )
-                )
-                scan.collection_errors = dict(snapshot.errors)
+                    progress = self._progress_reporter(
+                        session, scan, index, len(accounts)
+                    )
+                    snapshot = await connector.collect(progress)
+                    await self._explain_role_drift(session, account, snapshot)
+
+                    # Persisted before interpretation, always. One row per
+                    # subscription, so a tenant-wide scan can still be replayed
+                    # subscription by subscription.
+                    session.add(
+                        CloudSnapshot(
+                            organization_id=org_id,
+                            cloud_account_id=account.id,
+                            scan_id=scan.id,
+                            snapshot_version=snapshot.version,
+                            data=snapshot.to_json(),
+                        )
+                    )
+                    # Namespaced by subscription: two subscriptions can both
+                    # fail to read storage, and "storage: timeout" twice over
+                    # tells a customer nothing about which one to look at.
+                    for category, reason in snapshot.errors.items():
+                        errors[self._scoped_key(account, category, len(accounts))] = reason
+
+                    state = connector.normalize(snapshot)
+                    account_state.append((account, state))
+                    merged.resources.extend(state.resources)
+                    merged.relationships.extend(state.relationships)
+
+                scan.collection_errors = errors
+                # The rule engine keys degradation on the bare category, so it
+                # gets the unqualified names; the scan row keeps the detail.
+                merged.collection_errors = {
+                    category: reason
+                    for _account, state in account_state
+                    for category, reason in state.collection_errors.items()
+                }
                 await session.commit()
 
                 await self._evaluate(
                     session,
                     scan,
-                    account,
-                    connector,
-                    snapshot,
-                    observed_at=datetime.now(UTC),
+                    account_state,
+                    merged,
+                    observed_at=observed_at,
                     mutate_findings=True,
+                    degraded=bool(errors),
                 )
 
-                account.last_scan_at = scan.completed_at
+                for account in accounts:
+                    account.last_scan_at = scan.completed_at
                 await session.commit()
 
             except Exception as exc:
@@ -140,31 +173,90 @@ class ScanPipeline:
                 await session.rollback()
                 await self._fail(session, scan, str(exc))
 
+    # ------------------------------------------------------------------ scope
+    async def _resolve_scope(
+        self, session: AsyncSession, scan: Scan
+    ) -> list[CloudAccount]:
+        """Which subscriptions this scan covers.
+
+        A connection-scoped scan resolves at execution time rather than at
+        creation: a subscription discovered or excluded between queueing and
+        running should be picked up or left out accordingly, and a queue that
+        can sit for minutes makes that a real difference rather than a
+        theoretical one.
+        """
+        if scan.connection_id is not None:
+            rows = (
+                (
+                    await session.execute(
+                        select(CloudAccount)
+                        .where(
+                            CloudAccount.organization_id == scan.organization_id,
+                            CloudAccount.connection_id == scan.connection_id,
+                        )
+                        .order_by(CloudAccount.display_name)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [a for a in rows if a.is_scannable]
+
+        if scan.cloud_account_id is None:
+            return []
+        account = await session.get(CloudAccount, scan.cloud_account_id)
+        return [account] if account is not None else []
+
+    def _scoped_key(
+        self, account: CloudAccount, category: str, account_count: int
+    ) -> str:
+        """Category name, qualified by subscription when there is more than one."""
+        if account_count == 1:
+            return category
+        return f"{account.display_name or account.subscription_id}: {category}"
+
+    def _progress_reporter(
+        self, session: AsyncSession, scan: Scan, index: int, total_accounts: int
+    ) -> Callable[[int, int], Awaitable[None]]:
+        """Progress across every subscription, not just the current one.
+
+        Each subscription runs the same plan, so once the first callback
+        reports a plan size the overall total is exact rather than an estimate.
+        """
+
+        async def report(done: int, plan_size: int) -> None:
+            scan.progress_done = index * plan_size + done
+            scan.progress_total = total_accounts * plan_size
+            await session.commit()
+
+        return report
+
     async def replay(self) -> None:
-        """Re-evaluate an earlier scan's stored snapshot against today's rules.
+        """Re-evaluate an earlier scan's stored snapshots against today's rules.
 
         No collection, no Azure call, no consent required: everything after the
         snapshot is a pure function of it, which is what the raw capture was
-        kept for.
+        kept for. A tenant-wide scan stored one snapshot per subscription, and
+        a replay re-reads all of them.
 
         The dangerous case is why ``evaluation_only`` exists. Replaying a
         month-old snapshot that now produces PASS where a finding was FAIL would
         otherwise reach the auto-resolve path and stamp that finding "verified
         fixed" -- on the strength of data collected before anyone was even told
         about it. Nothing was observed, so nothing may be resolved. Only a
-        replay of the newest snapshot for the account, which is CloudGuard's
-        current picture of that environment, may touch findings at all; every
-        older one writes coverage and reports counts, and stops there.
+        replay of the newest snapshots, which are CloudGuard's current picture
+        of that environment, may touch findings at all; every older one writes
+        coverage and reports counts, and stops there.
+
+        For a multi-subscription scan that is all-or-nothing on purpose: if any
+        subscription has been re-read since, the set as a whole no longer
+        describes the present, and findings across it cannot be resolved from a
+        picture that is partly stale.
         """
         async with service_session() as session:
             scan = await session.get(Scan, self.scan_id)
             if scan is None:
                 log.error("scan.missing", scan_id=str(self.scan_id))
-                return
-
-            account = await session.get(CloudAccount, scan.cloud_account_id)
-            if account is None:
-                await self._fail(session, scan, "Cloud account no longer exists")
                 return
 
             if scan.status == ScanStatus.CANCELLED:
@@ -175,8 +267,8 @@ class ScanPipeline:
             org_id = scan.organization_id
 
             try:
-                stored = await self._stored_snapshot(session, org_id, scan)
-                if stored is None:
+                stored = await self._stored_snapshots(session, org_id, scan)
+                if not stored:
                     await self._fail(
                         session,
                         scan,
@@ -186,30 +278,65 @@ class ScanPipeline:
                     )
                     return
 
-                snapshot = RawSnapshot.from_json(stored.data)
-                newest = await self._newest_snapshot_id(session, org_id, account.id)
-                is_current = stored.id == newest
+                merged = NormalizedState()
+                account_state: list[tuple[CloudAccount, NormalizedState]] = []
+                errors: dict[str, str] = {}
+                is_current = True
+                observed_at = min(row.created_at for row in stored)
+
+                for row in stored:
+                    account = await session.get(CloudAccount, row.cloud_account_id)
+                    if account is None:
+                        # The subscription is gone. Its capture is still real
+                        # history, but there is nothing left to attribute the
+                        # resources to, so it cannot be re-evaluated.
+                        is_current = False
+                        continue
+
+                    newest = await self._newest_snapshot_id(session, org_id, account.id)
+                    if row.id != newest:
+                        is_current = False
+
+                    snapshot = RawSnapshot.from_json(row.data)
+                    connector = get_connector(
+                        account.provider,
+                        tenant_id=account.tenant_id,
+                        subscription_id=account.subscription_id,
+                    )
+                    state = connector.normalize(snapshot)
+                    account_state.append((account, state))
+                    merged.resources.extend(state.resources)
+                    merged.relationships.extend(state.relationships)
+                    for category, reason in snapshot.errors.items():
+                        errors[
+                            self._scoped_key(account, category, len(stored))
+                        ] = reason
+                    merged.collection_errors.update(state.collection_errors)
+
+                if not account_state:
+                    await self._fail(
+                        session,
+                        scan,
+                        "None of the subscriptions this scan covered still exist, "
+                        "so its snapshots cannot be re-evaluated.",
+                    )
+                    return
 
                 scan.evaluation_only = not is_current
-                scan.collection_errors = dict(snapshot.errors)
+                scan.collection_errors = errors
                 await session.commit()
 
-                connector = get_connector(
-                    account.provider,
-                    tenant_id=account.tenant_id,
-                    subscription_id=account.subscription_id,
-                )
                 await self._evaluate(
                     session,
                     scan,
-                    account,
-                    connector,
-                    snapshot,
-                    # The observation happened when the snapshot was taken.
+                    account_state,
+                    merged,
+                    # The observation happened when the snapshots were taken.
                     # Stamping findings with the replay time would date
                     # month-old evidence to today.
-                    observed_at=stored.created_at,
+                    observed_at=observed_at,
                     mutate_findings=is_current,
+                    degraded=bool(errors),
                 )
 
                 # ``last_scan_at`` is deliberately left alone: it records when
@@ -226,51 +353,60 @@ class ScanPipeline:
         self,
         session: AsyncSession,
         scan: Scan,
-        account: CloudAccount,
-        connector: CloudConnector,
-        snapshot: RawSnapshot,
+        account_state: list[tuple[CloudAccount, NormalizedState]],
+        merged: NormalizedState,
         *,
         observed_at: datetime,
         mutate_findings: bool,
+        degraded: bool,
     ) -> None:
-        """Everything downstream of a snapshot: normalize, evaluate, persist.
+        """Everything downstream of the snapshots: persist, evaluate, finalize.
 
         Shared verbatim by a fresh scan and a replay, and the sharing is the
         point. If the two paths diverged, a replay would stop being evidence
         about the pipeline a real scan runs.
+
+        Assets are persisted per subscription, because a resource belongs to
+        one; rules are evaluated once over all of them, because a tenant is
+        what the customer actually has.
         """
         org_id = scan.organization_id
 
         # --- normalize ------------------------------------------------------
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
-        state = connector.normalize(snapshot)
-        if mutate_findings:
-            id_map = await self._persist_resources(
-                session, org_id, account.id, state, observed_at
-            )
-        else:
-            # A superseded capture describes an environment that has since moved
-            # on. Upserting from it would overwrite live criticality, exposure
-            # and metadata with historical values -- the columns the risk scorer
-            # reads -- and re-create resources deleted since. ``evaluation_only``
-            # means the run changes nothing, and the asset inventory is part of
-            # "nothing".
-            id_map = await self._existing_resource_ids(session, org_id, account.id)
-        scan.resource_count = len(state.resources)
+        id_map: dict[str, UUID] = {}
+        for account, state in account_state:
+            if mutate_findings:
+                id_map.update(
+                    await self._persist_resources(
+                        session, org_id, account.id, state, observed_at
+                    )
+                )
+            else:
+                # A superseded capture describes an environment that has since
+                # moved on. Upserting from it would overwrite live criticality,
+                # exposure and metadata with historical values -- the columns
+                # the risk scorer reads -- and re-create resources deleted
+                # since. ``evaluation_only`` means the run changes nothing, and
+                # the asset inventory is part of "nothing".
+                id_map.update(
+                    await self._existing_resource_ids(session, org_id, account.id)
+                )
+        scan.resource_count = len(merged.resources)
 
         # Now the size of the job is known, so progress can be a count
         # rather than a phase name. Committed here so a long evaluation
         # shows a denominator immediately rather than at the end.
-        scan.progress_total = len(state.resources)
-        scan.progress_done = len(state.resources)
+        scan.progress_total = len(merged.resources)
+        scan.progress_done = len(merged.resources)
         await session.commit()
 
         # --- evaluate -------------------------------------------------------
         await self._set_status(session, scan, ScanStatus.EVALUATING)
         context = RuleContext(
-            resources=state.resources,
-            relationships=self._group_edges(state),
-            collection_errors=state.collection_errors,
+            resources=merged.resources,
+            relationships=self._group_edges(merged),
+            collection_errors=merged.collection_errors,
         )
         report = self.engine.evaluate(context)
         scan.rule_count = report.rules_run
@@ -295,13 +431,14 @@ class ScanPipeline:
 
         scan.finding_count = finding_count
         scan.completed_at = datetime.now(UTC)
-        scan.status = ScanStatus.PARTIAL if snapshot.errors else ScanStatus.COMPLETED
+        scan.status = ScanStatus.PARTIAL if degraded else ScanStatus.COMPLETED
         await session.commit()
 
         log.info(
             "scan.completed",
             scan_id=str(scan.id),
             status=scan.status.value,
+            subscriptions=len(account_state),
             resources=scan.resource_count,
             findings=finding_count,
             coverage=round(report.coverage_ratio, 3),
@@ -350,7 +487,10 @@ class ScanPipeline:
         counted, because a real scan reopens both on re-detection.
         """
         keys = {
-            (f.rule.rule_id, id_map.get(f.resource.provider_resource_id) if f.resource else None)
+            (
+                f.rule.rule_id,
+                id_map.get(f.resource.provider_resource_id) if f.resource else None,
+            )
             for f in report.failures
         }
         if not keys:
@@ -372,25 +512,31 @@ class ScanPipeline:
         return len(keys - accepted)
 
     # --------------------------------------------------------------- snapshots
-    async def _stored_snapshot(
+    async def _stored_snapshots(
         self, session: AsyncSession, org_id: UUID, scan: Scan
-    ) -> CloudSnapshot | None:
-        """The snapshot this replay was asked to re-evaluate.
+    ) -> list[CloudSnapshot]:
+        """Every snapshot the replayed scan stored, one per subscription.
 
         Scoped by organization as well as scan id: the id arrives on the scan
         row rather than from a request, but a tenant boundary that is only
         enforced where input is untrusted is one nobody can reason about.
         """
         if scan.replay_of_scan_id is None:
-            return None
-        return (
-            await session.execute(
-                select(CloudSnapshot).where(
-                    CloudSnapshot.scan_id == scan.replay_of_scan_id,
-                    CloudSnapshot.organization_id == org_id,
+            return []
+        return list(
+            (
+                await session.execute(
+                    select(CloudSnapshot)
+                    .where(
+                        CloudSnapshot.scan_id == scan.replay_of_scan_id,
+                        CloudSnapshot.organization_id == org_id,
+                    )
+                    .order_by(CloudSnapshot.created_at)
                 )
             )
-        ).scalar_one_or_none()
+            .scalars()
+            .all()
+        )
 
     async def _newest_snapshot_id(
         self, session: AsyncSession, org_id: UUID, account_id: UUID

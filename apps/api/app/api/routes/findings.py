@@ -12,6 +12,7 @@ from app.models.scan import Scan
 from app.schemas.finding import AcceptRiskRequest, FindingOut, ResourceSummary, RiskOut
 from app.services import cloud_accounts as accounts_service
 from app.services import findings as service
+from app.services import scans as scans_service
 from app.workers.scan_tasks import run_scan
 
 router = APIRouter(prefix="/findings", tags=["findings"])
@@ -155,25 +156,15 @@ async def rescan_finding(finding_id: UUID, session: DbSession, tenant: Tenant) -
     if not account.is_scannable:
         raise ValidationFailed("This connection is not ready to scan")
 
-    running = (
-        await session.execute(
-            select(Scan).where(
-                Scan.cloud_account_id == account.id,
-                Scan.status.in_(
-                    [
-                        ScanStatus.QUEUED,
-                        ScanStatus.DISCOVERING,
-                        ScanStatus.NORMALIZING,
-                        ScanStatus.EVALUATING,
-                        ScanStatus.CALCULATING_RISK,
-                    ]
-                ),
-            )
-        )
-    ).scalar_one_or_none()
-    if running is not None:
+    if await scans_service.scan_in_flight(
+        session, tenant.organization_id, account.connection_id, account.id
+    ):
         raise ConflictError("A scan is already running for this connection")
 
+    # Deliberately narrowed to the one subscription this finding lives in, even
+    # when the connection spans several. Re-reading a whole tenant to verify one
+    # fix is a cost the customer did not ask for, and the auto-resolve path only
+    # needs the subscription that holds the resource.
     scan = Scan(
         organization_id=tenant.organization_id,
         cloud_account_id=account.id,

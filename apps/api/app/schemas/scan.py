@@ -14,7 +14,10 @@ class ScanOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    cloud_account_id: UUID
+    # One of these says what the scan covered. ``connection_id`` is the
+    # tenant-wide form; ``cloud_account_id`` is a single subscription.
+    cloud_account_id: UUID | None = None
+    connection_id: UUID | None = None
     status: ScanStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None

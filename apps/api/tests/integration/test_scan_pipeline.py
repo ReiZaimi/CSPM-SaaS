@@ -108,6 +108,65 @@ async def connected_account(cleanup_orgs):
         return org_id, account.id
 
 
+@pytest.fixture
+async def connected_tenant(cleanup_orgs):
+    """A connection with two in-scope subscriptions beneath it."""
+    from app.core.enums import ConnectionScope
+    from app.models.cloud_connection import CloudConnection
+
+    org_id = await create_org_as(USER, "Tenant Scan Org")
+    cleanup_orgs.append(org_id)
+
+    async with service_session() as session:
+        connection = CloudConnection(
+            organization_id=org_id,
+            provider=Provider.AZURE,
+            name="tenant",
+            scope_type=ConnectionScope.TENANT_ROOT,
+            role_version="v1",
+            tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            consent_status=ConsentStatus.GRANTED,
+            rbac_verified_at=datetime.now(UTC),
+            status=CloudAccountStatus.ACTIVE,
+        )
+        session.add(connection)
+        await session.flush()
+
+        for n in (1, 2):
+            session.add(
+                CloudAccount(
+                    organization_id=org_id,
+                    connection_id=connection.id,
+                    provider=Provider.AZURE,
+                    account_name=f"Subscription {n}",
+                    display_name=f"Subscription {n}",
+                    tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    subscription_id=f"00000000-0000-0000-0000-00000000000{n}",
+                    consent_status=ConsentStatus.GRANTED,
+                    rbac_verified_at=datetime.now(UTC),
+                    status=CloudAccountStatus.ACTIVE,
+                    in_scope=True,
+                )
+            )
+        await session.commit()
+        return org_id, connection.id
+
+
+async def run_connection_scan(org_id: uuid.UUID, connection_id: uuid.UUID) -> uuid.UUID:
+    async with service_session() as session:
+        scan = Scan(
+            organization_id=org_id,
+            connection_id=connection_id,
+            status=ScanStatus.QUEUED,
+        )
+        session.add(scan)
+        await session.commit()
+        scan_id = scan.id
+
+    await ScanPipeline(scan_id).run()
+    return scan_id
+
+
 async def run_scan(org_id: uuid.UUID, account_id: uuid.UUID) -> uuid.UUID:
     async with service_session() as session:
         scan = Scan(
@@ -725,3 +784,128 @@ class TestSnapshotReplay:
 
         assert replayed.status == ScanStatus.FAILED
         assert "no stored snapshot" in replayed.error_message
+
+
+class TestTenantWideScan:
+    """One scan across every in-scope subscription under a connection.
+
+    Fifty subscriptions used to mean fifty scans, fifty snapshots and fifty
+    security scores, with no rule able to see across them.
+    """
+
+    async def test_one_scan_covers_every_in_scope_subscription(
+        self, replay, connected_tenant
+    ) -> None:
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.status == ScanStatus.COMPLETED
+        assert scan.connection_id == connection_id
+        assert scan.cloud_account_id is None, "scoped to the connection, not one sub"
+
+    async def test_each_subscription_keeps_its_own_verbatim_snapshot(
+        self, replay, connected_tenant
+    ) -> None:
+        """Merging them before storage would destroy the only property a
+        snapshot has, which is that it is what Azure actually said."""
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        rows = await fetch(
+            "SELECT cloud_account_id FROM cloud_snapshots WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert len(rows) == 2
+        assert len({r[0] for r in rows}) == 2, "one per subscription"
+
+    async def test_resources_from_both_subscriptions_land_in_one_scan(
+        self, replay, connected_tenant
+    ) -> None:
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.resource_count > 0
+        # Both subscriptions replay the same fixture, so every resource is
+        # discovered twice -- once per subscription, under its own account.
+        rows = await fetch(
+            "SELECT DISTINCT cloud_account_id FROM cloud_resources "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert len(rows) == 2, "assets attributed to the subscription they came from"
+
+    async def test_a_scan_with_nothing_in_scope_says_so(
+        self, replay, connected_tenant
+    ) -> None:
+        """Excluding every subscription leaves a connection that cannot be
+        scanned, and a scan that reported COMPLETED over zero subscriptions
+        would be a clean bill of health for an environment nobody read."""
+        org_id, connection_id = connected_tenant
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE cloud_accounts SET in_scope = false "
+                    "WHERE connection_id = :c"
+                ),
+                {"c": connection_id},
+            )
+            await session.commit()
+
+        scan_id = await run_connection_scan(org_id, connection_id)
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.status == ScanStatus.FAILED
+        assert "nothing in scope" in scan.error_message
+
+    async def test_a_tenant_wide_scan_replays_every_subscription(
+        self, replay, connected_tenant
+    ) -> None:
+        org_id, connection_id = connected_tenant
+        original_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                connection_id=connection_id,
+                status=ScanStatus.QUEUED,
+                replay_of_scan_id=original_id,
+            )
+            session.add(scan)
+            await session.commit()
+            replay_id = scan.id
+
+        await ScanPipeline(replay_id).replay()
+
+        async with service_session() as session:
+            original = await session.get(Scan, original_id)
+            replayed = await session.get(Scan, replay_id)
+
+        assert replayed.status == original.status
+        assert replayed.resource_count == original.resource_count
+        assert replayed.evaluation_only is False, "these are still the newest"
+
+    async def test_collection_failures_name_the_subscription_they_came_from(
+        self, replay, connected_tenant
+    ) -> None:
+        """"storage: timeout" twice over says nothing about which subscription
+        to go and look at."""
+        broken = load_raw()
+        broken["errors"] = {"storage": "read tcp: i/o timeout"}
+        replay["payload"] = broken
+
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.status == ScanStatus.PARTIAL
+        assert len(scan.collection_errors) == 2, "one per subscription"
+        assert all("Subscription" in key for key in scan.collection_errors)

@@ -86,11 +86,6 @@ class FakeSession:
         self.commits += 1
 
 
-class FakeConnector:
-    def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
-        return NormalizedState()
-
-
 class FakeEngine:
     def __init__(self, failures: int) -> None:
         rule = RULE_REGISTRY[0]
@@ -169,11 +164,11 @@ async def test_a_current_snapshot_writes_findings_and_verifies_fixes(
     await pipeline._evaluate(
         FakeSession(),
         scan,
-        make_account(),
-        FakeConnector(),
-        RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s"),
+        [(make_account(), NormalizedState())],
+        NormalizedState(),
         observed_at=datetime.now(UTC),
         mutate_findings=True,
+        degraded=False,
     )
 
     assert "findings" in pipeline.calls
@@ -192,11 +187,11 @@ async def test_a_stale_snapshot_writes_no_findings_and_resolves_nothing(
     await pipeline._evaluate(
         FakeSession(),
         scan,
-        make_account(),
-        FakeConnector(),
-        RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s"),
+        [(make_account(), NormalizedState())],
+        NormalizedState(),
         observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         mutate_findings=False,
+        degraded=False,
     )
 
     assert "findings" not in pipeline.calls
@@ -214,16 +209,13 @@ async def test_a_replay_of_a_partial_snapshot_stays_partial(
     await pipeline._evaluate(
         FakeSession(),
         scan,
-        make_account(),
-        FakeConnector(),
-        RawSnapshot(
-            provider=Provider.AZURE,
-            tenant_id="t",
-            subscription_id="s",
-            errors={"storage": "timeout"},
-        ),
+        [(make_account(), NormalizedState())],
+        NormalizedState(),
         observed_at=datetime.now(UTC),
         mutate_findings=True,
+        # A category failed somewhere in the run, whichever subscription it
+        # belonged to.
+        degraded=True,
     )
     assert scan.status == ScanStatus.PARTIAL
 
@@ -243,11 +235,11 @@ async def test_a_stale_snapshot_does_not_touch_the_asset_inventory(
     await pipeline._evaluate(
         FakeSession(),
         make_scan(),
-        make_account(),
-        FakeConnector(),
-        RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s"),
+        [(make_account(), NormalizedState())],
+        NormalizedState(),
         observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         mutate_findings=False,
+        degraded=False,
     )
 
     assert "resources" not in pipeline.calls, "a stale capture must not upsert assets"
@@ -264,14 +256,86 @@ async def test_the_reported_count_uses_the_same_rule_as_a_real_scan(
     await pipeline._evaluate(
         FakeSession(),
         scan,
-        make_account(),
-        FakeConnector(),
-        RawSnapshot(provider=Provider.AZURE, tenant_id="t", subscription_id="s"),
+        [(make_account(), NormalizedState())],
+        NormalizedState(),
         observed_at=datetime(2026, 1, 1, tzinfo=UTC),
         mutate_findings=False,
+        degraded=False,
     )
 
     assert "would_be_open" in pipeline.calls
     # Three rules failed; the count is not simply three.
     assert len(pipeline.engine.report.failures) == 3
     assert scan.finding_count == 2
+
+
+# ------------------------------------------------------- multiple subscriptions
+def test_a_single_subscription_scan_keeps_bare_category_names() -> None:
+    """One subscription, so there is nothing to disambiguate and a prefix would
+    only add noise to the message a customer reads."""
+    import uuid
+
+    pipe = ScanPipeline(uuid.uuid4())
+    account = make_account()
+    account.display_name = "Production"
+
+    assert pipe._scoped_key(account, "storage", 1) == "storage"
+
+
+def test_several_subscriptions_qualify_the_category_by_name() -> None:
+    """Two subscriptions can both fail to read storage, and "storage: timeout"
+    twice over says nothing about which one to go and look at."""
+    import uuid
+
+    pipe = ScanPipeline(uuid.uuid4())
+    account = make_account()
+    account.display_name = "Production"
+
+    assert pipe._scoped_key(account, "storage", 3) == "Production: storage"
+
+
+def test_a_subscription_with_no_display_name_falls_back_to_its_id() -> None:
+    import uuid
+
+    pipe = ScanPipeline(uuid.uuid4())
+    account = make_account()
+    account.display_name = None
+
+    assert pipe._scoped_key(account, "storage", 2).endswith(": storage")
+    assert account.subscription_id in pipe._scoped_key(account, "storage", 2)
+
+
+async def test_resources_from_every_subscription_reach_one_evaluation(
+    pipeline: ScanPipeline,
+) -> None:
+    """The point of the change: a rule sees the tenant, not one slice of it."""
+    from app.core.enums import Level, ResourceType
+    from app.domain.resource import CloudResource
+
+    def resource(name: str) -> CloudResource:
+        return CloudResource(
+            provider=Provider.AZURE,
+            provider_resource_id=f"/subscriptions/{name}/x",
+            resource_type=ResourceType.STORAGE_ACCOUNT,
+            name=name,
+            region="westeurope",
+            criticality=Level.UNKNOWN,
+            data_sensitivity=Level.UNKNOWN,
+            public_exposure=Level.UNKNOWN,
+        )
+
+    merged = NormalizedState(resources=[resource("a"), resource("b")])
+    scan = make_scan()
+
+    await pipeline._evaluate(
+        FakeSession(),
+        scan,
+        [(make_account(), NormalizedState()), (make_account(), NormalizedState())],
+        merged,
+        observed_at=datetime.now(UTC),
+        mutate_findings=True,
+        degraded=False,
+    )
+
+    assert scan.resource_count == 2, "both subscriptions counted in one scan"
+    assert pipeline.calls.count("resources") == 2, "assets persisted per subscription"
