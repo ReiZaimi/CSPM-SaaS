@@ -10,7 +10,7 @@ from app.connectors.azure.auth import (
     TokenProvider,
     missing_permissions,
 )
-from app.connectors.azure.client import ArmClient, GraphClient
+from app.connectors.azure.client import ArmClient, GraphClient, ResourceGraphClient
 from app.connectors.azure.collector import AzureCollector
 from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import CloudConnector, ConnectionCheck, NormalizedState, RawSnapshot
@@ -142,9 +142,39 @@ class AzureConnector(CloudConnector):
                     # Reading a resource list proves the role works, not just
                     # that the subscription is listed.
                     await arm.list_resources(chosen)
-                    check.permissions_verified.append("Resource inventory readable")
+                    check.permissions_verified.append("Resource listing readable")
             except Exception as exc:
                 check.problems.append(f"Azure Resource Manager is not readable: {exc}")
+
+        # --- Resource Graph: can inventory be queried? ----------------------
+        # A note rather than a problem, and the asymmetry is the doctrine of
+        # this method rather than leniency: a probe belongs here when its
+        # failure costs the connection, and this one costs a category. Every
+        # rule keeps evaluating without it -- inventory is the one collection
+        # task nothing judges -- so failing the connection over it would send a
+        # customer to fix an outage they do not have.
+        #
+        # Worth probing all the same, because the cause is specific and
+        # actionable: a role deployed before Resource Graph inventory shipped
+        # does not grant the query, and without this the customer meets that as
+        # a degraded category several minutes into their first scan.
+        if check.subscription_id:
+            async with ResourceGraphClient(tokens, self._http) as resource_graph:
+                try:
+                    await resource_graph.probe_inventory(check.subscription_id)
+                except Exception as exc:
+                    check.notes.append(
+                        "Resource inventory cannot be collected: CloudGuard's "
+                        "scanner role on this scope does not allow Azure Resource "
+                        "Graph queries. Redeploy the role from the connection page "
+                        "-- a role deployed before inventory moved to Resource "
+                        "Graph will not have it. Every other check still runs. "
+                        f"({exc})"
+                    )
+                else:
+                    check.permissions_verified.append(
+                        "Azure Resource Graph inventory queryable"
+                    )
 
         check.ok = not check.problems
         check.detail = (

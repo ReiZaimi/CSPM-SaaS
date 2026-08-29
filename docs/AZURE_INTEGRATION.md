@@ -274,6 +274,14 @@ Azure APIs → Collection → Raw snapshot → Normalization → Internal cloud 
 
 Every scan produces a `cloud_snapshots` row (see `DATABASE.md`), enabling historical comparison and future drift detection.
 
+**Validation probes both.** `validate_connection` proves ARM access by
+listing, and Resource Graph access by querying a single row. A Resource Graph
+failure is recorded as a *note* rather than a problem: it costs inventory and
+nothing else, so the connection is still usable and saying otherwise would send
+a customer to fix an outage they do not have. It is probed all the same, because
+the cause is specific -- a role deployed before §14 -- and the alternative is
+meeting it as a degraded category minutes into the first scan.
+
 **Two read surfaces, one snapshot.** Everything a rule judges is read from ARM,
 whose JSON is stored verbatim. Inventory alone is read from Azure Resource
 Graph through `ResourceGraphClient`, because it asks for every provider's

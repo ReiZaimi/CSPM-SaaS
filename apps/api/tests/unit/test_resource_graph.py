@@ -141,3 +141,84 @@ async def test_a_denied_query_names_the_role_not_consent() -> None:
 
     assert "Redeploy the role" in str(raised.value)
     assert "consent" in str(raised.value), "and says what it is not"
+
+
+# ------------------------------------------------------- validating a connection
+def azure_where_resource_graph(
+    *, denied: bool = False, record: list[dict] | None = None
+):
+    """An Azure where everything works except, optionally, Resource Graph."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "Microsoft.ResourceGraph" in request.url.path:
+            if denied:
+                return httpx.Response(403, json={"error": {"message": "denied"}})
+            if record is not None:
+                import json
+
+                record.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"data": [{"id": "/x"}], "totalRecords": 1, "count": 1}
+            )
+        if request.url.host.startswith("graph"):
+            return httpx.Response(200, json={"value": []})
+        if request.url.path == "/subscriptions":
+            return httpx.Response(200, json={"value": [{"subscriptionId": "sub-1"}]})
+        return httpx.Response(200, json={"value": []})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def validate(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    denied: bool = False,
+    record: list[dict] | None = None,
+):
+    from app.connectors.azure.connector import AzureConnector
+
+    class Tokens(FakeTokens):
+        def __init__(self, tenant_id: str) -> None:
+            self.tenant_id = tenant_id
+
+        def graph_token(self) -> str:
+            return "graph"
+
+    monkeypatch.setattr("app.connectors.azure.connector.TokenProvider", Tokens)
+    monkeypatch.setattr(
+        "app.connectors.azure.connector.missing_permissions", lambda token: ()
+    )
+    connector = AzureConnector(
+        tenant_id="t",
+        subscription_id="sub-1",
+        http_client=azure_where_resource_graph(denied=denied, record=record),
+    )
+    return await connector.validate_connection()
+
+
+async def test_a_working_query_is_reported_as_verified(monkeypatch) -> None:
+    check = await validate(monkeypatch)
+
+    assert check.ok
+    assert any("Resource Graph" in p for p in check.permissions_verified)
+
+
+async def test_a_denied_query_is_a_note_not_a_broken_connection(monkeypatch) -> None:
+    """It costs inventory and nothing else. Marking the connection failed would
+    send a customer to fix an outage they do not have -- every rule still
+    evaluates, because no rule reads inventory."""
+    check = await validate(monkeypatch, denied=True)
+
+    assert check.ok, "the connection still works"
+    assert check.problems == []
+    assert len(check.notes) == 1
+    assert "Redeploy the role" in check.notes[0]
+
+
+async def test_the_probe_reads_one_row_not_an_inventory(monkeypatch) -> None:
+    """Validating a connection must not cost what scanning one does."""
+    sent: list[dict] = []
+    await validate(monkeypatch, record=sent)
+
+    assert len(sent) == 1, "one query, one page"
+    assert "limit 1" in sent[0]["query"]

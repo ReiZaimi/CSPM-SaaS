@@ -506,6 +506,25 @@ class ResourceGraphClient(_BaseClient):
         )
         return await self._query(query, [subscription_id], max_pages=max_pages)
 
+    async def probe_inventory(self, subscription_id: str) -> int:
+        """Cheapest proof that inventory can be queried on this scope.
+
+        One row, one page. Connection validation needs to know whether the
+        query surface answers at all -- a role deployed before Resource Graph
+        inventory shipped does not grant it -- and reading a whole tenant's
+        inventory to learn that would make validating a connection as
+        expensive as scanning one.
+
+        Truncation is meaningless here and ignored: the query asks for a single
+        row on purpose, so falling short of the total is the expected outcome.
+        """
+        rows = await self._query(
+            "Resources | project id | order by id asc | limit 1",
+            [subscription_id],
+            max_pages=1,
+        )
+        return len(rows)
+
     async def _query(
         self, query: str, subscriptions: list[str], max_pages: int = 50
     ) -> list[dict[str, Any]]:

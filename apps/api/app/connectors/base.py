@@ -29,6 +29,12 @@ class ConnectionCheck:
     detail: str = ""
     permissions_verified: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    # Things that will cost the customer a collection category but not the
+    # connection. Separate from ``problems`` because ``ok`` is derived from
+    # that list, and a connection that can still scan eleven of its twelve
+    # tasks is not a broken connection -- calling it one would send someone to
+    # fix an outage they do not have.
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass

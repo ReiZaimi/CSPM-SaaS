@@ -83,6 +83,10 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
         "Microsoft.Resources/subscriptions/resources/read",
         "Microsoft.ResourceGraph/resources/read",
     ),
+    "probe_inventory": (
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+    ),
     "list_network_security_groups": ("Microsoft.Network/networkSecurityGroups/read",),
     "list_network_interfaces": ("Microsoft.Network/networkInterfaces/read",),
     "list_public_ips": ("Microsoft.Network/publicIPAddresses/read",),
