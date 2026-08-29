@@ -222,7 +222,16 @@ The split is deliberate and narrow:
   reads in every snapshot.
 
 **Cost:** the custom role gains `Microsoft.ResourceGraph/resources/read` and
-`ROLE_VERSION` moves to `v2`. Connections deployed on `v1` lose inventory —
+`ROLE_VERSION` moves to `v2`. The action string was verified against the
+published RBAC operations reference on 2026-08-30 — it is real, and described
+as "Submits a query on resources within specified subscriptions, management
+groups or tenant scope", so the template deploys. Whether Resource Graph
+actually *checks* it is not established: the service documents its requirement
+as read access to the resources being queried, and its only documented 403 is a
+subscription list the caller cannot read. Granting it is the cheaper side of
+that uncertainty, and the connection probe (§14, validation) will settle it —
+a `v1` connection whose Resource Graph probe succeeds proves the action
+redundant, and the role can then be narrowed. Connections deployed on `v1` lose inventory —
 and only inventory — until the customer redeploys, which the role-drift
 machinery already tells them to do. Falling back to the ARM listing when the
 query is denied would hide that, and leave the customer on a role that will not

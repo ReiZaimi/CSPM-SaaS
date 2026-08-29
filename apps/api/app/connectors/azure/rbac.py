@@ -47,8 +47,24 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     "Microsoft.Resources/subscriptions/resources/read",
     # Inventory, read through Resource Graph rather than per provider. Granted
     # in addition to the resource read above, not instead of it: Resource Graph
-    # returns what the caller can already read, so both are needed for a query
-    # to answer with anything.
+    # returns what the caller can already read, so the resource read is what
+    # makes a query answer with anything.
+    #
+    # Verified 2026-08-30 against the published operations reference, which is
+    # what this file's rule about unverified strings asks for: the action is
+    # real, described as "Submits a query on resources within specified
+    # subscriptions, management groups or tenant scope", so the role definition
+    # deploys rather than failing atomically the way
+    # ``autoProvisioningSettings`` did.
+    #
+    # What is *not* established is whether Resource Graph checks it. The
+    # service documents its requirement as read access to the resources being
+    # queried and nothing more, and its only documented 403 is a subscription
+    # list the caller cannot read. So this may be redundant with the resource
+    # read above. It is granted anyway, in the direction this module already
+    # prefers: an unnecessary read action costs a redeploy prompt, while a
+    # missing one costs every v1 customer a PARTIAL scan whose cause is one
+    # denied query several minutes in.
     "Microsoft.ResourceGraph/resources/read",
     # Networking
     "Microsoft.Network/networkSecurityGroups/read",
