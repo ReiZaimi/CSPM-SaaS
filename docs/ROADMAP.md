@@ -75,6 +75,12 @@ MSP
 
 `CloudResource` / `CloudSnapshot` / `SecurityRule` / `Finding` / `Risk` stay cloud-neutral so AWS and GCP connectors can be added under `connectors/` without reshaping the core (`ARCHITECTURE.md` §6).
 
+Designed in `MULTI_CLOUD.md`: which seams already hold, the region dimension AWS
+introduces and Azure does not, how trust is established per provider, and why
+rules stay provider-specific over neutral resource types. One item there is
+worth doing before any second provider exists — `SecurityRule.matches()` ignores
+the provider it declares.
+
 ---
 
 ## Business Model
