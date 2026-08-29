@@ -304,3 +304,34 @@ export interface WorkerStatus {
   reachable: boolean;
   detail: string;
 }
+
+/**
+ * What a scan managed to read, per subscription and per collection task.
+ *
+ * Separate from rule coverage, which reports what the checks concluded. This
+ * reports whether they were entitled to conclude anything — and in particular
+ * distinguishes a category that failed outright from one that came back
+ * truncated. An outage and a tenant larger than one scan reads used to arrive
+ * as the same sentence.
+ */
+export type CollectionOutcome = "COMPLETE" | "PARTIAL" | "FAILED" | "SKIPPED";
+
+export interface CollectionReading {
+  subscription: string | null;
+  cloud_account_id: string;
+  task: string;
+  category: string;
+  outcome: CollectionOutcome;
+  detail: string | null;
+  item_count: number;
+}
+
+export interface CollectionStatus {
+  tasks: CollectionReading[];
+  total: number;
+  complete: number;
+  partial: number;
+  failed: number;
+  skipped: number;
+  degraded_categories: string[];
+}

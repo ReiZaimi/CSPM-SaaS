@@ -1,7 +1,15 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import type { CloudAccount, Scan, ScanDetail, WorkerStatus } from "@/lib/types";
+import type {
+  CloudAccount,
+  CollectionOutcome,
+  CollectionReading,
+  CollectionStatus,
+  Scan,
+  ScanDetail,
+  WorkerStatus,
+} from "@/lib/types";
 import { useT } from "@/i18n";
 import {
   Button,
@@ -12,7 +20,7 @@ import {
   Spinner,
   StatusPill,
 } from "@/components/ui";
-import { formatDateTime, label } from "@/lib/format";
+import { formatDateTime, label, outcomeStyle } from "@/lib/format";
 import { Badge } from "@/components/ui";
 
 const IN_FLIGHT = ["QUEUED", "DISCOVERING", "NORMALIZING", "EVALUATING", "CALCULATING_RISK"];
@@ -202,16 +210,28 @@ function ScanRow({ scan }: { scan: Scan }) {
         </p>
       )}
 
+      {/* A summary, not the full text of every failure. The reasons are
+          sentences long and there is one per subscription per category, which
+          on a tenant-wide scan turns the card into a wall nobody reads. The
+          structured breakdown lives in Details. */}
       {Object.keys(scan.collection_errors).length > 0 && (
         <div className="mt-3 rounded-lg border border-medium-border bg-medium-bg px-3 py-2">
           <p className="text-xs font-medium text-medium">{t.scans.partial}</p>
           <ul className="mt-1.5 space-y-0.5">
-            {Object.entries(scan.collection_errors).map(([category, reason]) => (
-              <li key={category} className="text-xs text-stone-700">
-                <strong>{category}</strong>: {reason}
-              </li>
-            ))}
+            {Object.entries(scan.collection_errors)
+              .slice(0, 3)
+              .map(([scope, reason]) => (
+                <li key={scope} className="text-xs text-stone-700">
+                  <strong>{scope}</strong>
+                  <span className="text-stone-600"> — {firstSentence(reason)}</span>
+                </li>
+              ))}
           </ul>
+          {Object.keys(scan.collection_errors).length > 3 && (
+            <p className="mt-1 text-xs text-stone-500">
+              and {Object.keys(scan.collection_errors).length - 3} more
+            </p>
+          )}
         </div>
       )}
     </Card>
@@ -321,8 +341,122 @@ function ScanDetailPanel({ scanId }: { scanId: string }) {
           </div>
         </div>
       )}
+
+      <div className="sm:col-span-2">
+        <CollectionPanel scanId={scanId} />
+      </div>
     </div>
   );
+}
+
+function OutcomeBadge({ outcome }: { outcome: CollectionOutcome }) {
+  const t = useT();
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${outcomeStyle(outcome)}`}
+    >
+      {outcomeLabel(t, outcome)}
+    </span>
+  );
+}
+
+/**
+ * What the scan could and could not read.
+ *
+ * Reported apart from rule coverage next door: that says what the checks
+ * concluded, this says whether they were entitled to conclude it. Fetched only
+ * when the panel is open, because it is one request per scan and the list
+ * renders dozens of cards.
+ */
+function CollectionPanel({ scanId }: { scanId: string }) {
+  const t = useT();
+  const status = useQuery({
+    queryKey: ["scan-collection", scanId],
+    queryFn: () =>
+      api
+        .get<CollectionStatus>(`/api/v1/scans/${scanId}/collection`)
+        .then((r) => r.data),
+  });
+
+  if (status.isLoading) return <Spinner />;
+  if (!status.data || status.data.total === 0) return null;
+
+  const { tasks, total, complete, partial, failed, skipped } = status.data;
+  const bySubscription = new Map<string, CollectionReading[]>();
+  for (const task of tasks) {
+    const key = task.subscription ?? task.cloud_account_id;
+    bySubscription.set(key, [...(bySubscription.get(key) ?? []), task]);
+  }
+
+  return (
+    <div>
+      <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+        {t.scans.collectionTitle}
+      </p>
+
+      <p className="mt-1.5 text-xs text-stone-600">
+        <span className="font-medium tabular-nums text-stone-900">
+          {complete}/{total}
+        </span>{" "}
+        {t.scans.collectionSummary}
+        {partial > 0 && <> · {partial} {t.scans.collectionPartial}</>}
+        {failed > 0 && <> · {failed} {t.scans.collectionFailed}</>}
+        {skipped > 0 && <> · {skipped} {t.scans.collectionSkipped}</>}
+      </p>
+
+      {partial > 0 && (
+        <p className="mt-1 text-xs leading-relaxed text-medium">{t.scans.partialHint}</p>
+      )}
+
+      <div className="mt-2 space-y-3">
+        {[...bySubscription.entries()].map(([subscription, readings]) => (
+          <div key={subscription}>
+            {bySubscription.size > 1 && (
+              <p className="text-xs font-medium text-stone-700">{subscription}</p>
+            )}
+            <ul className="mt-1 divide-y divide-stone-200 rounded-lg border border-stone-200 bg-white">
+              {readings.map((reading) => (
+                <li
+                  key={`${reading.cloud_account_id}-${reading.task}`}
+                  className="flex flex-wrap items-start gap-x-3 gap-y-1 px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1 font-mono text-[11px] text-stone-800">
+                    {reading.task}
+                  </span>
+                  {reading.outcome === "COMPLETE" && (
+                    <span className="text-xs tabular-nums text-stone-500">
+                      {reading.item_count}
+                    </span>
+                  )}
+                  <OutcomeBadge outcome={reading.outcome} />
+                  {reading.detail && (
+                    <p className="w-full text-xs leading-relaxed text-stone-600">
+                      {reading.detail}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function outcomeLabel(t: ReturnType<typeof useT>, outcome: CollectionOutcome): string {
+  return {
+    COMPLETE: t.scans.outcomeComplete,
+    PARTIAL: t.scans.outcomePartial,
+    FAILED: t.scans.outcomeFailed,
+    SKIPPED: t.scans.outcomeSkipped,
+  }[outcome];
+}
+
+/** The first sentence of a multi-sentence remedy, for the summary line. */
+function firstSentence(text: string): string {
+  const cut = text.indexOf(". ");
+  return cut === -1 ? text : `${text.slice(0, cut)}.`;
 }
 
 function Row({ label: text, value }: { label: string; value: string | null }) {

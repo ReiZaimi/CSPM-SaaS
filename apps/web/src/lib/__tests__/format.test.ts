@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatEffort, levelStyle, label, scoreColor } from "../format";
+import { formatEffort, levelStyle, label, outcomeStyle, scoreColor } from "../format";
 
 describe("severity presentation", () => {
   it("gives UNKNOWN its own treatment rather than reusing LOW", () => {
@@ -49,5 +49,35 @@ describe("effort formatting", () => {
     expect(formatEffort(15)).toBe("15 min");
     expect(formatEffort(120)).toBe("2 hr");
     expect(formatEffort(960)).toBe("2 days");
+  });
+});
+
+describe("outcomeStyle", () => {
+  it("does not render a complete reading as a gap in knowledge", () => {
+    // The bug this guards. `levelStyle` has no OK, so routing outcomes through
+    // it made COMPLETE fall back to UNKNOWN — a full, trustworthy read wearing
+    // the dashed border that means "we could not look".
+    expect(outcomeStyle("COMPLETE")).not.toBe(levelStyle("UNKNOWN"));
+    expect(outcomeStyle("COMPLETE")).toContain("ok");
+  });
+
+  it("does not render a partial reading as a complete one", () => {
+    // The whole reason PARTIAL exists: data came back, and it still cannot
+    // support a pass.
+    expect(outcomeStyle("PARTIAL")).not.toBe(outcomeStyle("COMPLETE"));
+  });
+
+  it("gives every outcome its own treatment", () => {
+    const styles = (["COMPLETE", "PARTIAL", "FAILED", "SKIPPED"] as const).map(
+      outcomeStyle,
+    );
+    expect(new Set(styles).size).toBe(4);
+  });
+
+  it("treats a skipped reading as unknown rather than failed", () => {
+    // Nothing is known to be wrong with it, and colouring it as a failure
+    // would send someone hunting a second problem one hop from the real one.
+    expect(outcomeStyle("SKIPPED")).toContain("unknown");
+    expect(outcomeStyle("SKIPPED")).not.toContain("critical");
   });
 });
