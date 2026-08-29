@@ -153,6 +153,94 @@ class TestTenantDataIsolation:
         assert count >= 1
 
 
+class TestCollectionStatusIsolation:
+    """A new tenant-owned table is only isolated if someone wrote the policy.
+
+    ``0001`` applied policies by iterating TENANT_TABLES, so every table added
+    after it carries its own. That is a per-migration decision with no guard
+    behind it, which makes this the guard: an unpolicied table reads as an
+    ordinary table right up until one customer can enumerate another's
+    infrastructure gaps.
+    """
+
+    async def _seed(self, session, org_id: uuid.UUID, task: str) -> None:
+        """One scan, one subscription, one reading."""
+        await session.execute(
+            text(
+                "INSERT INTO cloud_accounts (id, organization_id, account_name, tenant_id) "
+                "VALUES (:aid, :org, 'Sub', 'tenant-x')"
+            ),
+            {"aid": (aid := uuid.uuid4()), "org": org_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO scans (id, organization_id, cloud_account_id, status) "
+                "VALUES (:sid, :org, :aid, 'COMPLETED')"
+            ),
+            {"sid": (sid := uuid.uuid4()), "org": org_id, "aid": aid},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO scan_collection_results "
+                "(organization_id, scan_id, cloud_account_id, task_key, category, outcome) "
+                "VALUES (:org, :sid, :aid, :task, 'storage', 'PARTIAL')"
+            ),
+            {"org": org_id, "sid": sid, "aid": aid, "task": task},
+        )
+
+    async def test_collection_results_do_not_leak_across_tenants(
+        self, two_orgs
+    ) -> None:
+        org_a, org_b = two_orgs
+
+        async with rls_session(USER_A) as session:
+            await self._seed(session, org_a, "a_storage")
+        async with rls_session(USER_B) as session:
+            await self._seed(session, org_b, "b_storage")
+
+        async with rls_session(USER_A) as session:
+            keys = (
+                await session.execute(
+                    text("SELECT task_key FROM scan_collection_results")
+                )
+            ).scalars().all()
+
+        assert "a_storage" in keys
+        assert "b_storage" not in keys, "one tenant read another's collection gaps"
+
+    async def test_cannot_write_collection_results_into_another_tenant(
+        self, two_orgs
+    ) -> None:
+        org_a, org_b = two_orgs
+        async with rls_session(USER_A) as session:
+            await self._seed(session, org_a, "mine")
+            scan_id = (
+                await session.execute(
+                    text("SELECT id FROM scans WHERE organization_id = :org"),
+                    {"org": org_a},
+                )
+            ).scalar_one()
+            account_id = (
+                await session.execute(
+                    text("SELECT id FROM cloud_accounts WHERE organization_id = :org"),
+                    {"org": org_a},
+                )
+            ).scalar_one()
+
+        with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+            async with rls_session(USER_A) as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO scan_collection_results "
+                        "(organization_id, scan_id, cloud_account_id, task_key, "
+                        "category, outcome) "
+                        "VALUES (:org, :sid, :aid, 'stolen', 'storage', 'FAILED')"
+                    ),
+                    {"org": org_b, "sid": scan_id, "aid": account_id},
+                )
+        assert "row-level security" in str(exc.value).lower()
+
+
 class TestMembershipEscalation:
     async def test_cannot_add_self_to_another_organization(self, two_orgs) -> None:
         """The obvious attack on a membership-resolved tenancy model."""

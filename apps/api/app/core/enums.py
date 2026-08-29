@@ -56,6 +56,30 @@ class RuleScope(StrEnum):
     AGGREGATE = "aggregate"
 
 
+class TaskOutcome(StrEnum):
+    """What became of one unit of collection.
+
+    ``PARTIAL`` is the one that carries weight. It means data came back and is
+    known to be incomplete -- a truncated listing, a detail call that failed for
+    some resources. Rules must treat it exactly as they treat a failure, because
+    a list missing an unknown number of entries cannot support "none of them are
+    public". It is the UNKNOWN/PASS distinction, one layer below the rules.
+    """
+
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+    # Its input never arrived, so it was never attempted. Distinct from FAILED:
+    # nothing is known to be wrong with this task, and saying otherwise would
+    # send someone looking for a problem that is one hop away.
+    SKIPPED = "SKIPPED"
+
+    @property
+    def is_trustworthy(self) -> bool:
+        """Whether conclusions may be drawn from this task's data."""
+        return self is TaskOutcome.COMPLETE
+
+
 class ScanStatus(StrEnum):
     QUEUED = "QUEUED"
     DISCOVERING = "DISCOVERING"

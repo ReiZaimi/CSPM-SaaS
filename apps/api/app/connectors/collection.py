@@ -27,31 +27,12 @@ import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
+from app.core.enums import TaskOutcome
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
-
-
-class TaskOutcome(StrEnum):
-    """What became of one unit of collection.
-
-    ``PARTIAL`` is the state this whole module exists to make expressible. It
-    means data came back and is known to be incomplete -- a truncated listing,
-    a detail call that failed for some resources. Rules must treat it exactly
-    as they treat a failure, because a list missing an unknown number of
-    entries cannot support "none of them are public".
-    """
-
-    COMPLETE = "COMPLETE"
-    PARTIAL = "PARTIAL"
-    FAILED = "FAILED"
-    # Its input never arrived, so it was never attempted. Distinct from FAILED:
-    # nothing is known to be wrong with this task, and saying otherwise would
-    # send someone looking for a problem that is one hop away.
-    SKIPPED = "SKIPPED"
 
 
 @dataclass(frozen=True)
@@ -86,8 +67,7 @@ class TaskResult:
 
     @property
     def is_trustworthy(self) -> bool:
-        """Whether conclusions may be drawn from this task's data."""
-        return self.outcome == TaskOutcome.COMPLETE
+        return self.outcome.is_trustworthy
 
 
 @dataclass

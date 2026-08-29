@@ -9,7 +9,13 @@ from app.models.remediation import AuditLog, RemediationTask, RiskException
 from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding
 from app.models.rule import Rule
-from app.models.scan import CloudSnapshot, Scan, ScanEvaluationGap, ScanRuleResult
+from app.models.scan import (
+    CloudSnapshot,
+    Scan,
+    ScanCollectionResult,
+    ScanEvaluationGap,
+    ScanRuleResult,
+)
 
 __all__ = [
     "AuditLog",
@@ -28,6 +34,7 @@ __all__ = [
     "RiskFinding",
     "Rule",
     "Scan",
+    "ScanCollectionResult",
     "ScanEvaluationGap",
     "ScanRuleResult",
 ]

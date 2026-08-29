@@ -909,3 +909,91 @@ class TestTenantWideScan:
         assert scan.status == ScanStatus.PARTIAL
         assert len(scan.collection_errors) == 2, "one per subscription"
         assert all("Subscription" in key for key in scan.collection_errors)
+
+
+class TestCollectionStatus:
+    """The record of what a scan managed to read, as facts rather than prose."""
+
+    async def test_every_task_records_its_outcome(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT task_key, outcome FROM scan_collection_results WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert rows, "collection status was recorded"
+        assert {r[1] for r in rows} == {"COMPLETE"}
+        assert "storage_accounts" in {r[0] for r in rows}
+
+    async def test_the_summary_separates_failure_from_truncation(
+        self, replay, connected_account
+    ) -> None:
+        """The distinction the flat error map could not make. One is an outage;
+        the other is a tenant larger than one scan reads, and they call for
+        different actions."""
+        from app.services.scans import collection_status
+
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            status = await collection_status(session, scan)
+
+        assert status["total"] > 0
+        assert status["complete"] == status["total"]
+        assert status["partial"] == 0
+        assert status["failed"] == 0
+        assert status["degraded_categories"] == []
+
+    async def test_each_reading_names_the_subscription_it_came_from(
+        self, replay, connected_tenant
+    ) -> None:
+        from app.services.scans import collection_status
+
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            status = await collection_status(session, scan)
+
+        named = {t["subscription"] for t in status["tasks"]}
+        assert named == {"Subscription 1", "Subscription 2"}
+
+    async def test_readings_are_kept_per_subscription_not_merged(
+        self, replay, connected_tenant
+    ) -> None:
+        """Two subscriptions reading the same listing are two facts, and
+        collapsing them would lose which one to go and look at."""
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        rows = await fetch(
+            "SELECT count(*) FROM scan_collection_results "
+            "WHERE scan_id = :s AND task_key = 'storage_accounts'",
+            {"s": scan_id},
+        )
+        assert rows[0][0] == 2
+
+    async def test_deleting_a_scan_takes_its_readings_with_it(
+        self, replay, connected_account
+    ) -> None:
+        """Unlike findings, these are statements about a run rather than about
+        the environment, so they belong to the run."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            await session.delete(scan)
+            await session.commit()
+
+        rows = await fetch(
+            "SELECT count(*) FROM scan_collection_results WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert rows[0][0] == 0

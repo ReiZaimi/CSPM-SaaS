@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import ScanStatus
+from app.core.enums import ScanStatus, TaskOutcome
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -205,6 +205,60 @@ class ScanEvaluationGap(UUIDPrimaryKey, TenantOwned, Base):
         PGUUID(as_uuid=True), ForeignKey("cloud_resources.id", ondelete="CASCADE")
     )
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ScanCollectionResult(UUIDPrimaryKey, TenantOwned, Base):
+    """One row per (scan, subscription, collection task): what was read.
+
+    The sibling of ``ScanRuleResult``. That table records what the rules
+    concluded; this records whether they were entitled to conclude anything --
+    and until now the answer lived only as a sentence in
+    ``scans.collection_errors``, which could be read by a person and by nothing
+    else.
+
+    Structured because the interesting questions are not answerable from prose:
+    which subscription is failing, whether a category is *failing* or merely
+    *truncated*, whether this has been happening for a week. A string that
+    concatenates all of that is a report; these are the facts behind it.
+    """
+
+    __tablename__ = "scan_collection_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_id",
+            "cloud_account_id",
+            "task_key",
+            name="uq_scan_collection_scan_account_task",
+        ),
+        Index("ix_scan_collection_outcome", "organization_id", "outcome"),
+    )
+
+    scan_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
+    )
+    # Which subscription this reading is about. A tenant-wide scan reads each
+    # one separately and they fail separately, so an outcome that did not name
+    # its subscription would be unactionable in exactly the case the tenant-wide
+    # scan was built for.
+    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cloud_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # The plan task, e.g. "storage_accounts".
+    task_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The gap bucket the rule engine degrades on, e.g. "storage".
+    category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    outcome: Mapped[TaskOutcome] = mapped_column(
+        StrEnumType(TaskOutcome, 16), nullable=False
+    )
+    detail: Mapped[str | None] = mapped_column(Text)
+    # How much came back. Meaningful next to PARTIAL, where the useful question
+    # is "some of what?".
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

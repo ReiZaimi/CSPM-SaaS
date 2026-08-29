@@ -288,6 +288,19 @@ async def delete_scan(
     return envelope(result)
 
 
+@router.get("/{scan_id}/collection")
+async def scan_collection(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """What this scan could and could not read, per subscription and per task.
+
+    Separate from ``/coverage``, which reports what the rules concluded. The
+    two were one flat map of category to a sentence, which could say a category
+    was unreliable but not whether it had failed outright or merely come back
+    truncated -- an outage and a very large tenant, reported identically.
+    """
+    scan = await scans_service.get_scan(session, tenant, scan_id)
+    return envelope(await scans_service.collection_status(session, scan))
+
+
 @router.get("/{scan_id}/coverage")
 async def scan_coverage(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
     """What this scan could and could not determine.

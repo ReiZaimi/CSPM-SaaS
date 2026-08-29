@@ -42,6 +42,7 @@ from app.core.enums import (
     RiskStatus,
     ScanStatus,
     Severity,
+    TaskOutcome,
 )
 from app.core.logging import get_logger
 from app.domain.resource import CloudResource
@@ -50,7 +51,13 @@ from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding
-from app.models.scan import CloudSnapshot, Scan, ScanEvaluationGap, ScanRuleResult
+from app.models.scan import (
+    CloudSnapshot,
+    Scan,
+    ScanCollectionResult,
+    ScanEvaluationGap,
+    ScanRuleResult,
+)
 from app.risk.scorer import RiskInputs, ScoredRisk, default_scorer
 from app.rules.base import RuleContext, SecurityRule
 from app.rules.engine import EvaluationReport, RuleEngine
@@ -139,6 +146,8 @@ class ScanPipeline:
                     for category, reason in snapshot.errors.items():
                         errors[self._scoped_key(account, category, len(accounts))] = reason
 
+                    self._record_collection_status(session, org_id, scan, account, snapshot)
+
                     state = connector.normalize(snapshot)
                     account_state.append((account, state))
                     merged.resources.extend(state.resources)
@@ -172,6 +181,37 @@ class ScanPipeline:
                 log.exception("scan.failed", scan_id=str(scan.id))
                 await session.rollback()
                 await self._fail(session, scan, str(exc))
+
+    def _record_collection_status(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        scan: Scan,
+        account: CloudAccount,
+        snapshot: RawSnapshot,
+    ) -> None:
+        """Turn the run's coverage report into rows that can be queried.
+
+        The same facts already travel inside the snapshot, which is the right
+        home for them -- a replay has to see exactly what the original run saw.
+        But a fact buried in a JSONB payload can answer questions about one
+        scan and no questions at all about a fleet, and "has storage been
+        truncating in this subscription all week?" is the one that matters when
+        deciding whether a customer has an outage or simply a large tenant.
+        """
+        for key, entry in snapshot.coverage.items():
+            session.add(
+                ScanCollectionResult(
+                    organization_id=org_id,
+                    scan_id=scan.id,
+                    cloud_account_id=account.id,
+                    task_key=key,
+                    category=entry.get("category", ""),
+                    outcome=TaskOutcome(entry.get("outcome", TaskOutcome.FAILED.value)),
+                    detail=entry.get("detail") or None,
+                    item_count=int(entry.get("item_count", 0)),
+                )
+            )
 
     # ------------------------------------------------------------------ scope
     async def _resolve_scope(

@@ -5,6 +5,7 @@ page needs *around* a run: where it pointed, who asked for it, what it found,
 and how to get rid of it afterwards.
 """
 
+from collections import Counter
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
@@ -12,12 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
-from app.core.enums import FindingStatus, ScanStatus
+from app.core.enums import FindingStatus, ScanStatus, TaskOutcome
 from app.core.errors import ScanNotFound
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
-from app.models.scan import Scan
+from app.models.scan import Scan, ScanCollectionResult
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
@@ -227,3 +228,59 @@ async def delete_scan(
     await session.delete(scan)
     await commit_unless_externally_managed(session)
     return {"deleted": str(scan_id), "findings_purged": purged}
+
+
+async def collection_status(session: AsyncSession, scan: Scan) -> dict:
+    """What this scan managed to read, per subscription and per task.
+
+    Reported apart from the rule coverage next door, because they answer
+    different questions and conflating them is how "we could not look" became
+    "we looked and it was fine" in the first place. Rule coverage says what the
+    checks concluded; this says whether they were entitled to conclude it.
+    """
+    rows = list(
+        (
+            await session.execute(
+                select(ScanCollectionResult, CloudAccount.display_name)
+                .join(
+                    CloudAccount,
+                    CloudAccount.id == ScanCollectionResult.cloud_account_id,
+                )
+                .where(
+                    ScanCollectionResult.scan_id == scan.id,
+                    ScanCollectionResult.organization_id == scan.organization_id,
+                )
+                .order_by(CloudAccount.display_name, ScanCollectionResult.task_key)
+            )
+        ).all()
+    )
+
+    tasks = [
+        {
+            "subscription": name,
+            "cloud_account_id": str(row.cloud_account_id),
+            "task": row.task_key,
+            "category": row.category,
+            "outcome": row.outcome.value,
+            "detail": row.detail,
+            "item_count": row.item_count,
+        }
+        for row, name in rows
+    ]
+
+    counts = Counter(t["outcome"] for t in tasks)
+    return {
+        "tasks": tasks,
+        "total": len(tasks),
+        "complete": counts.get(TaskOutcome.COMPLETE.value, 0),
+        "partial": counts.get(TaskOutcome.PARTIAL.value, 0),
+        "failed": counts.get(TaskOutcome.FAILED.value, 0),
+        "skipped": counts.get(TaskOutcome.SKIPPED.value, 0),
+        # The distinction the flat error map could not make: a category may be
+        # unreliable because nothing came back, or because not all of it did.
+        # One is an outage; the other is a tenant larger than one scan reads,
+        # and they call for different actions.
+        "degraded_categories": sorted(
+            {t["category"] for t in tasks if t["outcome"] != TaskOutcome.COMPLETE.value}
+        ),
+    }
