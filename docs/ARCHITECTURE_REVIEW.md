@@ -811,10 +811,28 @@ on the reaper.
     everything it did not look at. The planner is the seam that makes that
     buildable; the rule about what a narrowed scan may conclude is not a
     planning decision.
-11. A context engine as its own module, out of the normalizer, with every fact
-    carrying source and confidence. Add customer-declared context: a screen
-    where a customer marks a subscription "production" beats any tag heuristic
-    and is a week of work.
+11. **Done for the backend.** `app/context/` holds inference and resolution:
+    `infer()` is pure and runs in the normalizer's path, `resolve()` applies
+    what the customer declared, in the pipeline, at evaluation time rather than
+    frozen into the capture. Every value carries a `ContextSource`, persisted
+    beside it on `cloud_resources`, with confidence derived from the source so
+    the two cannot disagree. `context_declarations` holds what a customer said
+    about a subscription, written over `PUT /cloud-accounts/{id}/context` and
+    read by the pipeline; `GET /assets/{id}` returns each value's provenance.
+
+    Two decisions worth keeping. A declaration is a **floor**, never an
+    override — it can raise an asset above what the capture supported but not
+    lower it, so the worst a mistaken declaration can do is over-rank
+    something, which is the direction a security product may be wrong in.
+    Environment is exempt, because a name has no maximum and the case the
+    feature exists for is the customer whose production runs in a subscription
+    called `sandbox-eu`.
+
+    Still to do: the screen. The API and the storage are here and the pipeline
+    reads them, so the remaining work is `apps/web`. Per-resource declarations
+    are a later migration rather than a nullable column nothing writes, and a
+    declaration deliberately does not rescore stored findings on the spot — a
+    score is what a scan concluded. See `DECISIONS.md` §17.
 12. A verification engine: expected-state records, targeted plans, backoff for
     eventual consistency, and `INSUFFICIENT_EVIDENCE` as an outcome distinct
     from `STILL_FAILING`.

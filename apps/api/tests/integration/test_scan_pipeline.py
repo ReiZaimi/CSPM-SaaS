@@ -36,6 +36,7 @@ from app.core.enums import (
     TaskOutcome,
 )
 from app.models.cloud_account import CloudAccount
+from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
 from app.models.scan import Scan, ScanStep
 from app.services import orchestrator
@@ -2565,3 +2566,100 @@ class TestRiskHistory:
 
         entries = await self._history(org_id)
         assert len(entries) == 1, "the reading outlives the run that took it"
+
+
+class TestDeclaredContext:
+    """What the customer says about a subscription, reaching the assets in it.
+
+    Inference from tags is a guess and the customer knows the answer, so a
+    declaration is applied over the top of what the capture supported. It is a
+    floor rather than an override, which is the property that makes it safe to
+    expose as a control: the worst a mistaken declaration can do is over-rank
+    an asset, never make one look safer than it is.
+    """
+
+    async def _declare(self, org_id, account_id, **fields) -> None:
+        async with service_session() as session:
+            session.add(
+                ContextDeclarationRecord(
+                    organization_id=org_id, cloud_account_id=account_id, **fields
+                )
+            )
+            await session.commit()
+
+    async def _context_of(self, account_id) -> dict:
+        rows = await fetch(
+            "SELECT provider_resource_id, criticality, criticality_source "
+            "FROM cloud_resources WHERE cloud_account_id = :a",
+            {"a": account_id},
+        )
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    async def test_a_declaration_reaches_every_asset_in_the_subscription(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await self._declare(org_id, account_id, criticality=Level.CRITICAL)
+
+        await run_scan(org_id, account_id)
+
+        contexts = await self._context_of(account_id)
+        assert contexts, "the scan discovered no assets to apply context to"
+        assert all(value == "CRITICAL" for value, _ in contexts.values())
+        # And it says who said so. A CRITICAL from a tag and a CRITICAL from
+        # the customer multiply a finding identically, and only one of them is
+        # worth arguing with.
+        assert all(source == "inherited" for _, source in contexts.values())
+
+    async def test_a_declaration_never_lowers_what_the_capture_showed(
+        self, replay, connected_account
+    ) -> None:
+        """The safety property, checked against real assets rather than in the
+        abstract: declaring the whole subscription LOW must move nothing down.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        before = await self._context_of(account_id)
+
+        await self._declare(org_id, account_id, criticality=Level.LOW)
+        await run_scan(org_id, account_id)
+        after = await self._context_of(account_id)
+
+        for provider_id, (value, _source) in before.items():
+            if value != "UNKNOWN":
+                assert after[provider_id][0] == value, provider_id
+
+    async def test_a_declared_environment_replaces_the_guess(
+        self, replay, connected_account
+    ) -> None:
+        """The case the feature exists for: a subscription whose resource names
+        say sandbox and whose contents are production."""
+        org_id, account_id = connected_account
+        await self._declare(org_id, account_id, environment="production")
+
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT DISTINCT environment, environment_source FROM cloud_resources "
+            "WHERE cloud_account_id = :a",
+            {"a": account_id},
+        )
+        assert rows == [("production", "inherited")]
+
+    async def test_withdrawing_a_declaration_returns_to_inference(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await self._declare(org_id, account_id, criticality=Level.CRITICAL)
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text("DELETE FROM context_declarations WHERE cloud_account_id = :a"),
+                {"a": account_id},
+            )
+            await session.commit()
+        await run_scan(org_id, account_id)
+
+        contexts = await self._context_of(account_id)
+        assert not any(source == "inherited" for _, source in contexts.values())

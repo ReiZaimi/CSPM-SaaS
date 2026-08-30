@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import Level, Provider, RelationshipType, ResourceType
+from app.core.enums import ContextSource, Level, Provider, RelationshipType, ResourceType
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -66,6 +66,24 @@ class ResourceRecord(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     )
     public_exposure: Mapped[Level] = mapped_column(
         StrEnumType(Level, 16), nullable=False, default=Level.UNKNOWN
+    )
+
+    # Where the two declared-or-inferred values above came from. A CRITICAL
+    # somebody typed into a tag and a CRITICAL guessed from a resource name
+    # multiply a finding identically, so without this a customer asking "why is
+    # this ranked here" can be shown the arithmetic and never the input.
+    #
+    # ``public_exposure`` has none, and that is not an omission: it is read off
+    # the configuration in the capture -- a public IP is attached or it is not
+    # -- so there is nothing to attribute.
+    criticality_source: Mapped[ContextSource] = mapped_column(
+        StrEnumType(ContextSource, 24), nullable=False, default=ContextSource.NONE
+    )
+    data_sensitivity_source: Mapped[ContextSource] = mapped_column(
+        StrEnumType(ContextSource, 24), nullable=False, default=ContextSource.NONE
+    )
+    environment_source: Mapped[ContextSource] = mapped_column(
+        StrEnumType(ContextSource, 24), nullable=False, default=ContextSource.NONE
     )
 
     resource_metadata: Mapped[dict] = mapped_column(

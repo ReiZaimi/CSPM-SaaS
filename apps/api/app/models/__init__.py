@@ -3,6 +3,7 @@
 from app.models.base import Base
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
+from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
 from app.models.organization import Organization, OrganizationMember
 from app.models.remediation import AuditLog, RemediationTask, RiskException
@@ -25,6 +26,7 @@ __all__ = [
     "CloudAccount",
     "CloudConnection",
     "CloudSnapshot",
+    "ContextDeclarationRecord",
     "Evidence",
     "EvidenceBlob",
     "Finding",

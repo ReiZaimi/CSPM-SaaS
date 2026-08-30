@@ -42,6 +42,7 @@ from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.evidence import EvidenceCategory
 from app.connectors.planning import CollectionPlan
 from app.connectors.registry import get_connector
+from app.context import ContextDeclaration, resolve_resource
 from app.core.db import scan_session, service_session
 from app.core.enums import (
     FindingStatus,
@@ -60,6 +61,7 @@ from app.domain.resource import CloudResource
 from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
+from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding, RiskHistory
@@ -965,6 +967,13 @@ class ScanPipeline:
             if check_freshness
             else {}
         )
+        # What the customer has said about these subscriptions since the capture
+        # was taken. Read here rather than at collection time on purpose: a
+        # declaration is not part of the environment, so it must not be frozen
+        # into the capture -- marking a subscription production today should
+        # change how its findings rank today, including on a replay of an older
+        # reading.
+        declarations = await self._declarations_for(session, org_id, list(accounts))
 
         for row in stored:
             # The directory capture, read on its own terms. It is a reading of
@@ -1006,6 +1015,15 @@ class ScanPipeline:
                 subscription_id=account.subscription_id,
             )
             account_state = connector.normalize(snapshot)
+            # Normalization is a pure function of the capture, so this is where
+            # the customer's own view of the subscription is applied: as a
+            # floor over what was inferred, never as an override of it.
+            declared = declarations.get(account.id)
+            if declared is not None:
+                account_state.resources = [
+                    resolve_resource(resource, declared)
+                    for resource in account_state.resources
+                ]
             state.account_state.append((account, account_state))
             state.merged.resources.extend(account_state.resources)
             state.merged.relationships.extend(account_state.relationships)
@@ -1019,6 +1037,44 @@ class ScanPipeline:
             state.merged.collection_errors.update(account_state.collection_errors)
 
         return state
+
+    async def _declarations_for(
+        self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
+    ) -> dict[UUID, ContextDeclaration]:
+        """Customer-declared context for the subscriptions this scan covers.
+
+        One statement for the whole scan. A tenant-wide scan covers as many
+        subscriptions as the customer has, and a lookup per subscription is the
+        shape that turned every other batch read in this pipeline into a
+        thousand statements.
+        """
+        if not account_ids:
+            return {}
+        rows = (
+            (
+                await session.execute(
+                    select(ContextDeclarationRecord).where(
+                        ContextDeclarationRecord.organization_id == org_id,
+                        ContextDeclarationRecord.cloud_account_id.in_(account_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            row.cloud_account_id: ContextDeclaration(
+                environment=row.environment,
+                criticality=row.criticality,
+                data_sensitivity=row.data_sensitivity,
+                # Declared about the subscription, so every asset inside it
+                # inherits the claim rather than being the subject of it. The
+                # recorded source has to say which, or "you told us this" would
+                # be shown against an asset nobody has ever looked at.
+                inherited=True,
+            )
+            for row in rows
+        }
 
     async def _directory_gap(
         self, session: AsyncSession, scan: Scan, state: ReconstructedScan
@@ -1655,6 +1711,12 @@ class ScanPipeline:
             row.criticality = resource.criticality
             row.data_sensitivity = resource.data_sensitivity
             row.public_exposure = resource.public_exposure
+            # Written beside the values they explain, never separately. A row
+            # holding CRITICAL with a source of 'none' would be a claim with no
+            # author, which is worse than no source at all.
+            row.criticality_source = resource.criticality_source
+            row.data_sensitivity_source = resource.data_sensitivity_source
+            row.environment_source = resource.environment_source
             row.resource_metadata = resource.metadata
             # Never moved backwards. A replay carries the capture's own
             # time, which is older than a detection already recorded

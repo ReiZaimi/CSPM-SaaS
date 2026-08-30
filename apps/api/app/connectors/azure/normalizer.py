@@ -5,100 +5,35 @@ like. Everything downstream — rules, findings, risk, UI — sees the neutral
 shape. A pure function with no I/O, so it is directly testable against recorded
 Azure responses.
 
-It also assigns the asset context the risk engine needs (criticality, data
-sensitivity, exposure). Those are inferred conservatively from tags and
-configuration, and default to UNKNOWN rather than to LOW — an unlabelled asset
-is an unknown asset, not a safe one.
+Asset context — criticality, data sensitivity, environment — is no longer
+inferred here. It moved to :mod:`app.context`, because none of it was ever
+Azure-specific: tag vocabularies and the rule that a database holds data by
+definition are the same facts under any provider, and a second connector would
+have written its own slightly different copy. What stays here is exposure,
+which is read off the configuration in the capture rather than inferred from
+labels — a public IP is attached or it is not.
 """
 
 from typing import Any
 
 from app.connectors.base import NormalizedState, RawSnapshot
+from app.context import AssetContext, infer
 from app.core.enums import Level, Provider, RelationshipType, ResourceType
 from app.domain.resource import CloudResource
 
-# Tag keys customers actually use, in the order we trust them.
-ENVIRONMENT_TAG_KEYS = ("environment", "env", "tier", "stage")
-CRITICALITY_TAG_KEYS = ("criticality", "critical", "business_criticality", "importance")
-SENSITIVITY_TAG_KEYS = ("data_sensitivity", "sensitivity", "data_classification", "classification")
 
-PRODUCTION_HINTS = {"prod", "production", "prd", "live"}
-DEVELOPMENT_HINTS = {"dev", "development", "test", "testing", "staging", "stage", "qa", "sandbox"}
+def _context(item: dict[str, Any], resource_type: ResourceType) -> AssetContext:
+    """What the capture says this asset is worth, and on whose authority.
 
-LEVEL_WORDS = {
-    "low": Level.LOW,
-    "minimal": Level.LOW,
-    "medium": Level.MEDIUM,
-    "moderate": Level.MEDIUM,
-    "normal": Level.MEDIUM,
-    "standard": Level.MEDIUM,
-    "high": Level.HIGH,
-    "important": Level.HIGH,
-    "critical": Level.CRITICAL,
-    "confidential": Level.CRITICAL,
-    "restricted": Level.CRITICAL,
-    "secret": Level.CRITICAL,
-    "public": Level.LOW,
-    "internal": Level.MEDIUM,
-}
-
-
-def _tags(item: dict[str, Any]) -> dict[str, str]:
-    return {str(k).lower(): str(v) for k, v in (item.get("tags") or {}).items()}
-
-
-def _tag_level(tags: dict[str, str], keys: tuple[str, ...]) -> Level | None:
-    for key in keys:
-        if key in tags:
-            word = tags[key].strip().lower()
-            if word in LEVEL_WORDS:
-                return LEVEL_WORDS[word]
-    return None
-
-
-def _environment(item: dict[str, Any]) -> str | None:
-    tags = _tags(item)
-    for key in ENVIRONMENT_TAG_KEYS:
-        if key in tags:
-            return tags[key]
-    # Fall back to naming convention, which is how most small teams actually
-    # mark environments.
-    name = str(item.get("name", "")).lower()
-    for hint in PRODUCTION_HINTS:
-        if hint in name:
-            return "production"
-    for hint in DEVELOPMENT_HINTS:
-        if hint in name:
-            return "development"
-    return None
-
-
-def _criticality(item: dict[str, Any], environment: str | None) -> Level:
-    explicit = _tag_level(_tags(item), CRITICALITY_TAG_KEYS)
-    if explicit:
-        return explicit
-    if environment and environment.lower() in PRODUCTION_HINTS:
-        return Level.HIGH
-    if environment and environment.lower() in DEVELOPMENT_HINTS:
-        return Level.LOW
-    # No tag, no naming signal. Saying LOW here would quietly discount every
-    # untagged production asset.
-    return Level.UNKNOWN
-
-
-def _sensitivity(item: dict[str, Any], resource_type: ResourceType) -> Level:
-    explicit = _tag_level(_tags(item), SENSITIVITY_TAG_KEYS)
-    if explicit:
-        return explicit
-    # Databases and storage hold data by definition; that is a floor, not a guess.
-    if resource_type in {
-        ResourceType.SQL_SERVER,
-        ResourceType.SQL_DATABASE,
-        ResourceType.POSTGRESQL_SERVER,
-        ResourceType.STORAGE_ACCOUNT,
-    }:
-        return Level.HIGH
-    return Level.UNKNOWN
+    One call per resource rather than three, and the source travels with each
+    value: a CRITICAL read off a tag and a CRITICAL guessed from a resource name
+    multiply a finding identically, and only one of them is worth arguing with.
+    """
+    return infer(
+        tags=item.get("tags"),
+        name=str(item.get("name", "")),
+        resource_type=resource_type,
+    )
 
 
 def _resource_group_of(resource_id: str) -> str | None:
@@ -367,7 +302,7 @@ class AzureNormalizer:
                 self._normalize_security_rule(r)
                 for r in (props.get("securityRules") or [])
             ]
-            environment = _environment(nsg)
+            context = _context(nsg, ResourceType.NETWORK_SECURITY_GROUP)
             resources.append(
                 CloudResource(
                     provider_resource_id=nsg["id"],
@@ -375,9 +310,7 @@ class AzureNormalizer:
                     name=nsg.get("name", "unnamed"),
                     provider=Provider.AZURE,
                     region=nsg.get("location"),
-                    environment=environment,
-                    criticality=_criticality(nsg, environment),
-                    data_sensitivity=_sensitivity(nsg, ResourceType.NETWORK_SECURITY_GROUP),
+                    **context.fields(),
                     public_exposure=self._nsg_exposure(rules),
                     metadata={
                         "security_rules": rules,
@@ -459,7 +392,7 @@ class AzureNormalizer:
         for account in data.get("storage_accounts", []):
             props = account.get("properties", {}) or {}
             network_acls = props.get("networkAcls", {}) or {}
-            environment = _environment(account)
+            context = _context(account, ResourceType.STORAGE_ACCOUNT)
 
             allow_public = props.get("allowBlobPublicAccess")
             default_action = network_acls.get("defaultAction")
@@ -471,9 +404,7 @@ class AzureNormalizer:
                     name=account.get("name", "unnamed"),
                     provider=Provider.AZURE,
                     region=account.get("location"),
-                    environment=environment,
-                    criticality=_criticality(account, environment),
-                    data_sensitivity=_sensitivity(account, ResourceType.STORAGE_ACCOUNT),
+                    **context.fields(),
                     public_exposure=(
                         Level.CRITICAL
                         if allow_public is True
@@ -511,7 +442,7 @@ class AzureNormalizer:
 
         for server in data.get("sql_servers", []):
             props = server.get("properties", {}) or {}
-            environment = _environment(server)
+            context = _context(server, ResourceType.SQL_SERVER)
             firewall_rules = self._firewall_rules(server)
 
             resources.append(
@@ -521,9 +452,7 @@ class AzureNormalizer:
                     name=server.get("name", "unnamed"),
                     provider=Provider.AZURE,
                     region=server.get("location"),
-                    environment=environment,
-                    criticality=_criticality(server, environment),
-                    data_sensitivity=_sensitivity(server, ResourceType.SQL_SERVER),
+                    **context.fields(),
                     public_exposure=self._database_exposure(props, firewall_rules),
                     metadata={
                         "public_network_access": props.get("publicNetworkAccess"),
@@ -543,7 +472,7 @@ class AzureNormalizer:
 
         for server in data.get("postgresql_servers", []):
             props = server.get("properties", {}) or {}
-            environment = _environment(server)
+            context = _context(server, ResourceType.POSTGRESQL_SERVER)
             network = props.get("network", {}) or {}
             public_access = network.get("publicNetworkAccess") or props.get(
                 "publicNetworkAccess"
@@ -556,9 +485,7 @@ class AzureNormalizer:
                     name=server.get("name", "unnamed"),
                     provider=Provider.AZURE,
                     region=server.get("location"),
-                    environment=environment,
-                    criticality=_criticality(server, environment),
-                    data_sensitivity=_sensitivity(server, ResourceType.POSTGRESQL_SERVER),
+                    **context.fields(),
                     public_exposure=(
                         Level.HIGH
                         if str(public_access).lower() == "enabled"
@@ -628,7 +555,7 @@ class AzureNormalizer:
 
         for vm in data.get("virtual_machines", []):
             props = vm.get("properties", {}) or {}
-            environment = _environment(vm)
+            context = _context(vm, ResourceType.VIRTUAL_MACHINE)
 
             attached_nic_ids = [
                 nic.get("id")
@@ -684,9 +611,7 @@ class AzureNormalizer:
                     name=vm.get("name", "unnamed"),
                     provider=Provider.AZURE,
                     region=vm.get("location"),
-                    environment=environment,
-                    criticality=_criticality(vm, environment),
-                    data_sensitivity=_sensitivity(vm, ResourceType.VIRTUAL_MACHINE),
+                    **context.fields(),
                     public_exposure=(
                         Level.UNKNOWN
                         if has_public_ip is None

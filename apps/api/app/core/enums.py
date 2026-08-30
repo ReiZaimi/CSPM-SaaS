@@ -44,6 +44,66 @@ class Level(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class ContextSource(StrEnum):
+    """Where a piece of asset context came from.
+
+    Context -- how critical an asset is, how sensitive its data, which
+    environment it belongs to -- is the multiplier the risk engine turns a
+    finding into a risk with. Until now it arrived with no provenance: a
+    CRITICAL that somebody typed into a tag and a CRITICAL inferred from a
+    resource name looked identical by the time they reached a score, so a
+    customer asking "why is this ranked above that" could be told the arithmetic
+    and never the input.
+
+    The members are ordered weakest to strongest, and that order is the whole
+    point: :attr:`confidence` puts a number on it, and the context engine uses
+    that number to say which of two claims about the same asset it kept.
+    """
+
+    # Nothing said anything. Pairs with UNKNOWN, never with a value.
+    NONE = "none"
+    # CloudGuard worked it out: a resource called "prod-db-01" is probably
+    # production, and something in production is probably important. How most
+    # small teams actually mark an environment, and wrong often enough to be
+    # worth labelling as a deduction rather than a reading. A value derived
+    # from another value lands here whatever that other value's source was --
+    # the deduction is the weak link, not where its input came from.
+    INFERRED = "inferred"
+    # True by what the thing is: a database holds data whatever anyone tagged
+    # it. A floor rather than a reading, and never wrong in the unsafe
+    # direction.
+    TYPE_FLOOR = "type_floor"
+    # A tag on the asset itself. Somebody meant it once; whether it is still
+    # true is between the customer and their automation.
+    PROVIDER_TAG = "provider_tag"
+    # Declared by the customer on the subscription this asset lives in.
+    INHERITED = "inherited"
+    # Declared by the customer, about this asset. The only source that is
+    # somebody taking responsibility for the answer.
+    CUSTOMER = "customer"
+
+    @property
+    def confidence(self) -> float:
+        """How much weight the claim deserves, on 0..1.
+
+        Derived from the source rather than stored beside it, because a
+        confidence that could be set independently would eventually disagree
+        with the source it is supposed to describe -- and there is no reading of
+        "a naming guess, confidence 0.95" that is worth being able to express.
+        """
+        return _CONTEXT_CONFIDENCE[self]
+
+
+_CONTEXT_CONFIDENCE: dict[ContextSource, float] = {
+    ContextSource.NONE: 0.0,
+    ContextSource.INFERRED: 0.4,
+    ContextSource.TYPE_FLOOR: 0.7,
+    ContextSource.PROVIDER_TAG: 0.8,
+    ContextSource.INHERITED: 0.9,
+    ContextSource.CUSTOMER: 1.0,
+}
+
+
 class RuleState(StrEnum):
     PASS = "PASS"
     FAIL = "FAIL"

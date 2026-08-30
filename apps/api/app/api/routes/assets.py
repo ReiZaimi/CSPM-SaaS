@@ -4,12 +4,27 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from app.core.deps import DbSession, Tenant
-from app.core.enums import FindingStatus, Level
+from app.core.enums import ContextSource, FindingStatus, Level
 from app.core.errors import NotFound, envelope
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+def _fact(value: object, source: ContextSource) -> dict:
+    """One context value with where it came from and how much to trust it.
+
+    Shown rather than kept internal because the value alone cannot be argued
+    with. "CRITICAL" invites the question "says who?", and until now the honest
+    answer -- a tag, a guess at the name, or a person here saying so -- existed
+    nowhere the customer could reach.
+    """
+    return {
+        "value": value,
+        "source": source.value,
+        "confidence": source.confidence,
+    }
 
 
 @router.get("")
@@ -126,6 +141,22 @@ async def get_asset(asset_id: UUID, session: DbSession, tenant: Tenant) -> dict:
             "criticality": asset.criticality,
             "data_sensitivity": asset.data_sensitivity,
             "public_exposure": asset.public_exposure,
+            # The same three values again, with their provenance. Kept beside
+            # the flat fields rather than replacing them: the flat ones are what
+            # every list view and filter reads, and changing their shape to
+            # serve one detail page would be the tail wagging the dog.
+            #
+            # Exposure is absent here on purpose. It is read off the
+            # configuration in the capture -- a public IP is attached or it is
+            # not -- so there is no source to name and nothing for a customer
+            # to declare.
+            "context": {
+                "criticality": _fact(asset.criticality, asset.criticality_source),
+                "data_sensitivity": _fact(
+                    asset.data_sensitivity, asset.data_sensitivity_source
+                ),
+                "environment": _fact(asset.environment, asset.environment_source),
+            },
             "metadata": asset.resource_metadata,
             "first_seen_at": asset.first_seen_at.isoformat(),
             "last_seen_at": asset.last_seen_at.isoformat(),

@@ -308,6 +308,63 @@ return UNKNOWN. Its evidence row keeps the *original* `collected_at`, so the
 next scan's freshness question is asked about the read rather than about the
 last scan that reused it — otherwise one reading renews itself for ever.
 
+## 17. Asset context is its own module, and a customer declaration is a floor
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §12 item 11 — "a context engine as its own
+module, out of the normalizer, with every fact carrying source and confidence.
+Add customer-declared context."
+
+Context — how critical an asset is, how sensitive its data, which environment it
+belongs to — is the multiplier that turns a finding into a risk. It lived in
+three helper functions inside the Azure normalizer, which was wrong in two ways.
+None of it is Azure-specific, so a second connector would have written its own
+slightly different copy of the tag vocabulary and the production/development
+word lists. And there was nowhere for the customer to disagree: normalization is
+a pure function of a capture, and a declaration is not in the capture.
+
+`app/context/` now holds inference and resolution separately. `infer()` stays
+pure and runs in the normalizer's path; `resolve()` applies declarations in the
+pipeline, where the database is — read at *evaluation* time rather than frozen
+into the capture, so marking a subscription production changes how its findings
+rank today, including on a replay of an older reading.
+
+**Every value carries its source.** `ContextSource` runs NONE → INFERRED →
+TYPE_FLOOR → PROVIDER_TAG → INHERITED → CUSTOMER, and confidence is a property
+*of* the source rather than a column beside it, so the two cannot drift apart —
+there is no reading of "a naming guess, confidence 0.95" worth being able to
+express. `GET /assets/{id}` returns the pair, because the value alone cannot be
+argued with: "CRITICAL" invites the question "says who", and the answer used to
+exist nowhere.
+
+**A declaration is a floor, not an override.** "This subscription is production"
+is a statement about everything in it, so nothing inside it scores below what
+was declared — but an asset carrying its own `criticality=critical` tag is the
+more specific of the two facts, and lowering it to the subscription's level
+would discard the better one. So the higher value wins and the declaration wins
+ties. The consequence is the property that makes this safe to hand a customer:
+nothing declared can make an asset look *safer* than the capture already showed,
+so the worst a mistaken declaration does is over-rank something.
+
+Environment is the exception to the floor, because a name has no maximum: a
+person naming it beats a substring match on a resource name every time. That is
+the case the feature exists for — the customer whose production runs in a
+subscription called `sandbox-eu`.
+
+**Declarations are a table, not columns on `cloud_accounts`.** A discovered
+subscription records what Azure said and discovery runs again; a declaration
+records what a person said, and mixing the two into one row would make them
+untellable apart. The table also carries who declared it and why, because "who
+says this is production" is a question people ask of the label rather than of
+the audit log. The worker's RLS arm grants SELECT only: a background job that
+could write a declaration would be CloudGuard putting words in the customer's
+mouth.
+
+**Not done, deliberately.** Per-resource declarations are the obvious next ask
+and are a later migration rather than a nullable column nothing writes. And a
+declaration does not rescore stored findings on the spot — a risk score is what
+a scan concluded, and rewriting one from an API call would leave findings
+carrying numbers no observation ever produced.
+
 ---
 
 ## Open items carried forward
