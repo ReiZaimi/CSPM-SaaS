@@ -106,6 +106,38 @@ def test_the_scan_session_declares_its_organization_transaction_locally() -> Non
     assert ":org, true" in source
 
 
+def test_the_scan_session_redeclares_the_claim_on_every_transaction() -> None:
+    """Transaction-scoped and the pipeline commits repeatedly, so declaring it
+    once is declaring it for the first transaction only.
+
+    The regression: every statement after the pipeline's first commit ran with
+    no organization at all, which under the worker role's policies means an
+    empty database -- no error, just a scan that read nothing and wrote
+    nothing. A listener re-issues it rather than a caller remembering to,
+    because a caller who has to remember eventually will not.
+    """
+    import inspect
+
+    from app.core import db
+
+    source = inspect.getsource(db.scan_session)
+    assert "after_begin" in source
+
+
+def test_the_scan_session_does_not_own_the_transaction() -> None:
+    """The pipeline commits as it goes -- collection is durable before
+    evaluation starts, which is what replay depends on -- so a session that
+    wrapped it in one long transaction would both undo that and break at the
+    first commit."""
+    import inspect
+
+    from app.core import db
+
+    source = inspect.getsource(db.scan_session)
+    assert "session.begin()" not in source
+    assert db.EXTERNAL_TRANSACTION not in source
+
+
 def test_housekeeping_keeps_the_unconstrained_session() -> None:
     """The reaper looks for abandoned work across every organization, which is
     exactly what a per-organization session cannot see.

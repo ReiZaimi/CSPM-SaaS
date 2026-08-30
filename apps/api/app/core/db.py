@@ -22,7 +22,8 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -180,8 +181,23 @@ async def scan_session(organization_id: UUID) -> AsyncIterator[AsyncSession]:
     and ``cloudguard_worker``'s policy arm trusts that declaration -- an arm
     granted to that role alone, so the request path gains no bypass from it.
 
-    ``SET LOCAL`` is transaction-scoped, so the claim is torn down on commit or
-    rollback and cannot leak to the next checkout of a pooled connection.
+    **The claim is re-declared on every transaction, and that is the whole
+    subtlety.** ``SET LOCAL`` is transaction-scoped, which is exactly what stops
+    it leaking to the next checkout of a pooled connection -- and it also means
+    it dies at the pipeline's first ``commit``. The pipeline commits many times:
+    per phase, per subscription, per stage. Declaring the claim once at the top
+    left every statement after the first commit running with no organization at
+    all, which under this role's policies means seeing an empty database.
+
+    So it is re-issued by an ``after_begin`` listener rather than by the caller
+    remembering. A caller who had to remember would eventually not, and the
+    failure is silent: no error, just a scan that reads nothing and writes
+    nothing.
+
+    Unlike :func:`rls_session`, the transaction is **not** owned here. The
+    pipeline commits as it goes -- collection is durable before evaluation
+    starts, which is the property replay depends on -- so wrapping it in one
+    long transaction would both undo that and break at the first commit.
 
     Falls back to the owner connection where no worker role is configured, in
     which case this is exactly the old unconstrained session and the pipeline's
@@ -189,14 +205,19 @@ async def scan_session(organization_id: UUID) -> AsyncIterator[AsyncSession]:
     deliberately so the role can be adopted without a flag day.
     """
     session = _worker_session_factory()()
-    session.info[EXTERNAL_TRANSACTION] = True
+    claim = str(organization_id)
+
+    @event.listens_for(session.sync_session, "after_begin")
+    def _declare_organization(
+        _session: object, _transaction: object, connection: Connection
+    ) -> None:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :org, true)"),
+            {"org": claim},
+        )
+
     try:
-        async with session.begin():
-            await session.execute(
-                text("SELECT set_config('app.organization_id', :org, true)"),
-                {"org": str(organization_id)},
-            )
-            yield session
+        yield session
     finally:
         await session.close()
 

@@ -474,6 +474,65 @@ class TestWorkerTenancy:
             ).scalar_one()
         assert rows == 0
 
+    async def test_the_claim_survives_the_pipeline_committing(
+        self, two_orgs
+    ) -> None:
+        """The regression that took thirty-two tests with it.
+
+        ``SET LOCAL`` is transaction-scoped, which is what stops the claim
+        leaking to the next checkout of a pooled connection -- and it also means
+        it dies at the first ``commit``. The pipeline commits many times, so a
+        claim declared once left every later statement running with no
+        organization: no error, just a session that reads an empty database and
+        cannot write.
+        """
+        org_a, _org_b = two_orgs
+        mine = await self._seed(org_a)
+
+        async with scan_session(org_a) as session:
+            before = (
+                await session.execute(text("SELECT count(*) FROM scans"))
+            ).scalar_one()
+            # Exactly what the pipeline does between phases.
+            await session.commit()
+            after = (
+                await session.execute(text("SELECT count(*) FROM scans"))
+            ).scalar_one()
+
+        assert before >= 1, "the seeded scan should be visible"
+        assert after == before, "the organization claim did not survive the commit"
+
+        async with scan_session(org_a) as session:
+            visible = set(
+                (await session.execute(text("SELECT id FROM scans"))).scalars().all()
+            )
+        assert mine in visible
+
+    async def test_a_write_after_a_commit_is_still_constrained(
+        self, two_orgs
+    ) -> None:
+        """Re-declaring the claim must not become a way around the check.
+
+        A listener that re-issued the wrong organization -- or issued nothing
+        and left the session unconstrained -- would look identical from the
+        read side and be a cross-tenant write on this one.
+        """
+        org_a, org_b = two_orgs
+        if not settings.worker_is_constrained:
+            pytest.skip("worker role not configured; nothing below the code checks")
+
+        with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+            async with scan_session(org_a) as session:
+                await session.commit()
+                await session.execute(
+                    text(
+                        "INSERT INTO scans (id, organization_id, status) "
+                        "VALUES (:sid, :org, 'QUEUED')"
+                    ),
+                    {"sid": uuid.uuid4(), "org": org_b},
+                )
+        assert "row-level security" in str(exc.value).lower()
+
     async def test_the_worker_role_does_not_inherit_the_membership_arm(
         self, two_orgs
     ) -> None:
