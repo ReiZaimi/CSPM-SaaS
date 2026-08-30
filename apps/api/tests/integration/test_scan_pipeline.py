@@ -2148,3 +2148,101 @@ class TestScheduling:
                 session, org_id, connection_id, None
             )
         assert in_flight, "the scheduler's own guard should see this one"
+
+
+class TestAssetGraph:
+    """The graph, rebuilt from what a real scan persisted.
+
+    The unit tests prove the traversal and prove the normalizer produces the
+    right shape. What is left is whether the edges survive the round trip
+    through PostgreSQL — an edge is stored by database id and the graph works
+    in provider ids, and a mapping that dropped one would leave a path
+    silently short.
+    """
+
+    async def test_a_scan_persists_the_capability_edges(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT relationship_type, count(*) FROM resource_relationships "
+            "WHERE organization_id = :o GROUP BY relationship_type",
+            {"o": org_id},
+        )
+        kinds = dict(rows)
+
+        assert kinds.get("has_identity", 0) == 1, "the VM runs as its identity"
+        assert kinds.get("grants_role", 0) == 1, "that identity holds a role"
+        assert kinds.get("contains", 0) > 0, "and everything sits somewhere"
+
+    async def test_the_path_survives_the_round_trip(
+        self, replay, connected_account
+    ) -> None:
+        """Built from the database rather than from the scan's own memory."""
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            graph = await graph_service.load_graph(session, org_id)
+
+        paths = graph.attack_paths()
+        assert paths, "an internet-facing VM reaching sensitive data"
+        assert all(p.entry.name == "vm-jumpbox" for p in paths)
+        assert all(p.cheapest_break() is not None for p in paths)
+
+    async def test_the_blast_radius_of_the_jump_box_identity(
+        self, replay, connected_account
+    ) -> None:
+        """What would go if that host were taken."""
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            graph = await graph_service.load_graph(session, org_id)
+
+        principal = next(
+            node_id
+            for node_id, node in graph.nodes.items()
+            if node.resource_type.value == "service_principal"
+        )
+        reached = graph.blast_radius(principal)
+
+        assert reached, "Contributor over the subscription reaches its contents"
+        # Scopes are where the reach lands; the assets beneath are what it is
+        # of. Listing both would count the same authority twice.
+        assert all(
+            r.resource_type.value not in ("subscription", "resource_group")
+            for r in reached
+        )
+
+    async def test_an_edge_outliving_its_resource_is_not_followed(
+        self, replay, connected_account
+    ) -> None:
+        """A route through something that has been deleted is not a shorter
+        route, it is a description of an environment that no longer exists."""
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            # Delete the principal out from under its edges. ON DELETE CASCADE
+            # takes the edges too, which is the behaviour being confirmed —
+            # the loader's own guard is the belt to that braces.
+            await session.execute(
+                text(
+                    "DELETE FROM cloud_resources "
+                    "WHERE organization_id = :o AND resource_type = 'service_principal'"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            graph = await graph_service.load_graph(session, org_id)
+
+        assert graph.attack_paths() == []

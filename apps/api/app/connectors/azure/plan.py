@@ -153,6 +153,26 @@ class AzurePlanBuilder:
         async def postgres(arm: ArmClient) -> dict[str, Any]:
             return {"postgresql_servers": await arm.list_postgresql_servers(sub)}
 
+        async def role_assignments(arm: ArmClient) -> dict[str, Any]:
+            """Who holds which role over what, inside this subscription.
+
+            The half of "who can do what" that ARM answers. The directory says
+            which principals exist; this says what they are allowed to do, and
+            a tenant can have a perfectly readable directory alongside no
+            visibility into this at all -- the two are different grants.
+            """
+            return {"role_assignments": await arm.list_role_assignments(sub)}
+
+        async def role_definitions(arm: ArmClient) -> dict[str, Any]:
+            """What each role actually permits.
+
+            Collected beside the assignments because an assignment on its own
+            names a GUID. "Contributor over this subscription" and "Reader over
+            one storage account" are the same shape of row, and only the
+            definition tells them apart.
+            """
+            return {"role_definitions": await arm.list_role_definitions(sub)}
+
         async def sql(arm: ArmClient) -> dict[str, Any]:
             servers = await arm.list_sql_servers(sub)
 
@@ -212,6 +232,16 @@ class AzurePlanBuilder:
                 AzureEvidence.POSTGRESQL_SERVERS,
                 ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
                 postgres,
+            ),
+            self._arm_task(
+                AzureEvidence.ROLE_ASSIGNMENTS,
+                ("Microsoft.Authorization/roleAssignments/read",),
+                role_assignments,
+            ),
+            self._arm_task(
+                AzureEvidence.ROLE_DEFINITIONS,
+                ("Microsoft.Authorization/roleDefinitions/read",),
+                role_definitions,
             ),
             self._inventory_task(),
             self._diagnostics_task(),

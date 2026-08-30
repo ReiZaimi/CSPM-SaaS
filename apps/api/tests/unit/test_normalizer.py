@@ -216,3 +216,105 @@ def _edges(state) -> dict:
     for source, rel_type, target in state.relationships:
         grouped.setdefault((source, rel_type.value), []).append(target)
     return grouped
+
+
+class TestGraphFromRecordedAzure:
+    """The path, derived from Azure's own JSON rather than a hand-built graph.
+
+    The graph tests build nodes and edges directly, which proves the traversal
+    and proves nothing about whether Azure's payloads actually produce that
+    shape. This is the other half: a recorded snapshot in, an attack path out.
+    """
+
+    def test_containment_comes_from_the_resource_ids(self, state) -> None:
+        """Parsed rather than collected. An ARM id spells out its own
+        subscription and resource group, so asking Azure would be a round trip
+        to confirm a substring."""
+        by_type = {r.resource_type: r for r in state.resources}
+
+        assert ResourceType.SUBSCRIPTION in by_type
+        assert ResourceType.RESOURCE_GROUP in by_type
+        assert by_type[ResourceType.RESOURCE_GROUP].name == "rg-prod"
+
+    def test_a_managed_identity_becomes_a_principal(self, state) -> None:
+        principals = [
+            r for r in state.resources
+            if r.resource_type == ResourceType.SERVICE_PRINCIPAL
+        ]
+        assert len(principals) == 1
+        assert principals[0].get("principal_type") in ("ServicePrincipal", "ManagedIdentity")
+
+    def test_the_vm_runs_as_that_identity(self, state) -> None:
+        edges = {
+            (s, r, t) for s, r, t in state.relationships
+            if r == RelationshipType.HAS_IDENTITY
+        }
+        assert len(edges) == 1
+        source, _rel, target = next(iter(edges))
+        assert source.endswith("/virtualMachines/vm-jumpbox")
+        assert target.startswith("/principals/")
+
+    def test_that_identity_holds_a_role_over_the_subscription(self, state) -> None:
+        edges = [
+            (s, t) for s, r, t in state.relationships
+            if r == RelationshipType.GRANTS_ROLE
+        ]
+        assert len(edges) == 1
+        _source, target = edges[0]
+        assert target.startswith("/subscriptions/")
+        assert "/resourceGroups/" not in target
+
+    def test_the_recorded_environment_yields_the_path(self, state) -> None:
+        """The sentence no rule could produce, from a real snapshot.
+
+        An internet-facing jump box runs as an identity holding Contributor
+        over the subscription that contains the customer's storage. Five
+        findings say five things; this says the one thing that matters.
+        """
+        from app.graph import AssetGraph
+
+        graph = AssetGraph.build(state.resources, state.relationships)
+        paths = graph.attack_paths()
+
+        assert paths, "the recorded environment contains a reachable path"
+        assert {p.entry.name for p in paths} == {"vm-jumpbox"}
+
+        # Every sensitive thing under that subscription, not just the first.
+        # The jump box's identity holds Contributor over the whole
+        # subscription, so the blast radius is the point rather than any one
+        # target -- and a test asserting which target sorted first would be
+        # pinning the sort, not the finding.
+        reached = {p.target.resource_type for p in paths}
+        assert ResourceType.STORAGE_ACCOUNT in reached
+        assert ResourceType.SQL_SERVER in reached
+
+        # And it names where to cut it, which is the half a finding cannot give.
+        step = paths[0].cheapest_break()
+        assert step is not None
+        assert step.relationship in (
+            RelationshipType.HAS_IDENTITY,
+            RelationshipType.GRANTS_ROLE,
+        )
+
+    def test_an_assignment_above_the_subscription_is_not_invented(self) -> None:
+        """A role held at a management group is real and is not a reach
+        CloudGuard can describe. Emitting an edge to a node it never collected
+        would be describing it anyway."""
+        from app.connectors.azure.normalizer import AzureNormalizer
+
+        snapshot = load_snapshot("snapshot_mixed")
+        snapshot.data["role_assignments"] = [
+            {
+                "id": "/providers/Microsoft.Management/managementGroups/mg/x",
+                "properties": {
+                    "principalId": "99999999-9999-9999-9999-999999999999",
+                    "principalType": "ServicePrincipal",
+                    "scope": "/providers/Microsoft.Management/managementGroups/mg",
+                    "roleDefinitionId": "unknown",
+                },
+            }
+        ]
+        state = AzureNormalizer().normalize(snapshot)
+
+        targets = {t for _s, r, t in state.relationships if r == RelationshipType.GRANTS_ROLE}
+        assert not any("managementGroups" in t for t in targets)

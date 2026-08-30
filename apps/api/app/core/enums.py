@@ -277,13 +277,46 @@ class ResourceType(StrEnum):
     SQL_DATABASE = "sql_database"
     POSTGRESQL_SERVER = "postgresql_server"
     USER = "user"
+    # An identity that is not a person: a service principal, or the managed
+    # identity attached to a resource. Distinct from USER because the
+    # remediation differs entirely -- a person gets MFA, a workload identity
+    # gets a narrower role.
+    SERVICE_PRINCIPAL = "service_principal"
     ROLE_ASSIGNMENT = "role_assignment"
     DIAGNOSTIC_SETTING = "diagnostic_setting"
     UNKNOWN = "unknown"
 
 
 class RelationshipType(StrEnum):
+    """How two assets are related, and what that lets someone do.
+
+    The first four are structural: they describe how an environment is put
+    together. The last two are *capability* edges -- they describe what an
+    identity is able to reach -- and the difference matters because only the
+    second kind composes into a path. Knowing an NSG protects a VM tells you
+    about configuration; knowing that VM's identity grants Contributor over the
+    subscription tells you what happens if the VM is taken.
+    """
+
     ATTACHED_TO = "attached_to"
     CONTAINS = "contains"
     PROTECTS = "protects"
     ASSIGNED_TO = "assigned_to"
+
+    # A resource runs as this identity. The first hop from a compromised
+    # workload to everything that workload is allowed to do.
+    HAS_IDENTITY = "has_identity"
+    # This identity holds a role over that scope. The hop that turns a foothold
+    # into a blast radius.
+    GRANTS_ROLE = "grants_role"
+
+    @property
+    def is_capability(self) -> bool:
+        """Whether traversing this edge means gaining reach.
+
+        Structural edges are not walked when working out what an attacker
+        reaches: an NSG protecting a VM is a fact about the VM, not a way to get
+        anywhere from the NSG.
+        """
+        return self in {RelationshipType.HAS_IDENTITY, RelationshipType.GRANTS_ROLE,
+                        RelationshipType.CONTAINS}

@@ -790,10 +790,34 @@ on the reaper.
 
 ### Phase 3 — analysis depth
 
-13. The asset graph properly: typed capability edges, identity edges from the
-    role assignments already collected, reachability edges from the context
-    engine.
-14. The attack path engine. (§8)
+13. **Done** — the asset graph. (§2.8, §8) `app/graph/` holds it: typed
+    capability edges, bounded breadth-first traversal, and the two questions
+    worth asking — where an exposed asset can reach, and what one identity can
+    act on.
+
+    Two corrections to what §8 assumed. Role assignments were *not* already
+    collected — the ARM permission was in the role from v1 but nothing read it,
+    so `AzureEvidence.ROLE_ASSIGNMENTS` and `ROLE_DEFINITIONS` are new tasks
+    under a new `AUTHORIZATION` category. And there are **no synthetic nodes**:
+    §8 drew an `INTERNET` vertex and a `SENSITIVE_DATA` vertex, and both would
+    have been CloudGuard inventing endpoints. Exposure and sensitivity are
+    already per-asset attributes, so an entry point is a predicate over nodes
+    rather than an edge from a fiction — and UNKNOWN is excluded from both,
+    because manufacturing an attack path out of failed collection is the same
+    overclaim as a PASS nobody earned.
+
+    Network reachability beyond `public_exposure` is deliberately absent. Real
+    host-to-host reachability needs subnet, route and peering data nothing
+    collects, and edges guessed from what is on hand would be the one kind of
+    wrong that reads as authoritative.
+
+14. **Done for reachability** — `AssetGraph.attack_paths()` and
+    `blast_radius()`, exposed at `GET /attack-paths` and
+    `/attack-paths/blast-radius/{id}`. Computed from stored assets and edges
+    rather than persisted: a path is a pure function of those, and a stored one
+    could describe a route the customer has already closed. What that costs is
+    history — "did a new path appear this week" needs an `attack_paths` table,
+    worth building once paths are being acted on rather than looked at.
 15. Correlation, starting with three hand-written scenario templates:
     internet-to-data, privilege escalation chain, unmonitored critical asset.
 16. Scenario risk and risk history. (§9)

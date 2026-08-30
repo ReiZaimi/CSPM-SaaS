@@ -38,6 +38,12 @@ class AzureEvidence(EvidenceKey):
 
     DIAGNOSTIC_SETTINGS = "diagnostic_settings"
 
+    # Who may act on what, within this subscription. Read from ARM under the
+    # scanner role, unlike the directory keys below, which come from Graph
+    # under admin consent -- two grants that fail independently.
+    ROLE_ASSIGNMENTS = "role_assignments"
+    ROLE_DEFINITIONS = "role_definitions"
+
     # Directory. Read once per scan against the tenant, never per subscription.
     USERS = "users"
     DIRECTORY_ROLES = "directory_roles"
@@ -58,6 +64,8 @@ _CATEGORIES: dict[AzureEvidence, EvidenceCategory] = {
     AzureEvidence.SQL_SERVERS: EvidenceCategory.DATABASE,
     AzureEvidence.POSTGRESQL_SERVERS: EvidenceCategory.DATABASE,
     AzureEvidence.DIAGNOSTIC_SETTINGS: EvidenceCategory.LOGGING,
+    AzureEvidence.ROLE_ASSIGNMENTS: EvidenceCategory.AUTHORIZATION,
+    AzureEvidence.ROLE_DEFINITIONS: EvidenceCategory.AUTHORIZATION,
     AzureEvidence.USERS: EvidenceCategory.IDENTITY,
     AzureEvidence.DIRECTORY_ROLES: EvidenceCategory.IDENTITY,
     AzureEvidence.USER_ROLE_MAP: EvidenceCategory.IDENTITY,

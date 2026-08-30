@@ -119,9 +119,13 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
 }
 
 # Which collection category each ARM action serves, for the categories the
-# collector actually gathers. Identity is Graph-only and has no ARM action;
-# the two Authorization reads serve connection verification rather than a
-# collection category, so neither appears here.
+# collector actually gathers. Identity is Graph-only and has no ARM action.
+#
+# The Authorization reads were listed above as verification-only until the
+# graph started using them: knowing which principals hold which roles is what
+# turns a list of misconfigurations into "this internet-facing VM runs as an
+# identity that can act across the whole subscription". Both actions were
+# already in v1 of the role, so no customer has to redeploy anything for it.
 #
 # This exists so a 403 can be explained rather than merely reported. When a
 # customer's deployed role predates a check, the resulting failure is not
@@ -145,6 +149,10 @@ COLLECTION_ACTIONS: dict[EvidenceCategory, tuple[str, ...]] = {
         "Microsoft.DBforPostgreSQL/flexibleServers/read",
     ),
     EvidenceCategory.LOGGING: ("Microsoft.Insights/diagnosticSettings/read",),
+    EvidenceCategory.AUTHORIZATION: (
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    ),
 }
 
 # What each published role version granted. Frozen once shipped: a customer's

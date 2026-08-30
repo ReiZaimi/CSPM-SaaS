@@ -101,6 +101,52 @@ def _sensitivity(item: dict[str, Any], resource_type: ResourceType) -> Level:
     return Level.UNKNOWN
 
 
+def _resource_group_of(resource_id: str) -> str | None:
+    """The resource group an ARM id names, if it names one.
+
+    Parsed rather than collected: an ARM id spells out its own subscription and
+    resource group, and asking Azure for something the id already states would
+    be a round trip to confirm a substring.
+
+    Case-insensitive on the segment name because ARM is: ``/resourcegroups/``
+    and ``/resourceGroups/`` are the same path, and a customer whose ids arrive
+    in the other casing would otherwise get a graph with no containment in it
+    at all.
+    """
+    parts = resource_id.split("/")
+    for index, part in enumerate(parts):
+        if part.lower() == "resourcegroups" and index + 1 < len(parts):
+            return parts[index + 1]
+    return None
+
+
+def _principal_node(principal_id: str, known: set[str]) -> str:
+    """The node id for a principal, preferring one the directory already named.
+
+    An administrator who also holds a subscription role is one person. Minting
+    a second node for the same GUID would split their reach across two nodes
+    and hide exactly the case worth seeing: a privileged directory account that
+    is *also* privileged over the infrastructure.
+    """
+    directory_node = f"/users/{principal_id}"
+    if directory_node in known:
+        return directory_node
+    return f"/principals/{principal_id}"
+
+
+def _role_summary(definition: dict[str, Any] | None) -> str:
+    """A role's name, or the honest absence of one.
+
+    An assignment names a definition by GUID. Without the definition, "this
+    principal holds 8e3af657-a8ff-443c-a75c-2fe8c4bcb635 over your subscription"
+    is true and useless, so an unresolved role says so rather than showing the
+    GUID as though it were a name.
+    """
+    if not definition:
+        return "Unknown role"
+    return str(_first(definition, "properties", "roleName", default="Unknown role"))
+
+
 def _first(value: Any, *path: str, default: Any = None) -> Any:
     node = value
     for key in path:
@@ -132,7 +178,183 @@ class AzureNormalizer:
         state.relationships.extend(vm_edges)
 
         state.resources.extend(self._normalize_users(data))
+
+        # --- the graph ------------------------------------------------------
+        # Everything above describes assets one at a time. What follows says how
+        # they relate, which is a different kind of fact and the only kind that
+        # composes into a path: a rule can tell you a VM is internet-facing and
+        # that an identity is over-privileged, and no rule can tell you they are
+        # the same VM.
+        scopes, scope_edges = self._normalize_scopes(snapshot, state.resources)
+        state.resources.extend(scopes)
+        state.relationships.extend(scope_edges)
+
+        principals, identity_edges = self._normalize_authorization(
+            data, state.resources
+        )
+        state.resources.extend(principals)
+        state.relationships.extend(identity_edges)
         return state
+
+    # ------------------------------------------------------------ containment
+    def _normalize_scopes(
+        self, snapshot: RawSnapshot, resources: list[CloudResource]
+    ) -> tuple[list[CloudResource], list[tuple[str, RelationshipType, str]]]:
+        """The subscription and resource groups every asset sits inside.
+
+        Derived from the resource ids rather than collected, because the id is
+        authoritative about this and nothing else needs asking: an ARM id spells
+        out its own subscription and resource group.
+
+        These exist so a role assignment has somewhere to point. "Contributor
+        over the subscription" is only a fact about blast radius if the
+        subscription is a node with things underneath it -- otherwise it is a
+        string in a payload.
+        """
+        subscription_id = snapshot.subscription_id
+        if not subscription_id:
+            return [], []
+
+        subscription_node = f"/subscriptions/{subscription_id}"
+        nodes = [
+            CloudResource(
+                provider_resource_id=subscription_node,
+                resource_type=ResourceType.SUBSCRIPTION,
+                name=subscription_id,
+                provider=Provider.AZURE,
+                # A subscription is exactly as exposed and as sensitive as
+                # whatever it contains, and the graph is what works that out.
+                # Claiming a level here would double-count it.
+                metadata={"subscription_id": subscription_id},
+            )
+        ]
+        edges: list[tuple[str, RelationshipType, str]] = []
+        groups: dict[str, str] = {}
+
+        for resource in resources:
+            group = _resource_group_of(resource.provider_resource_id)
+            if group is None:
+                # No resource group in the id. Either a directory asset -- a
+                # user does not live in a resource group -- or something scoped
+                # directly to the subscription, which is contained by it.
+                if resource.provider_resource_id.startswith(f"{subscription_node}/"):
+                    edges.append(
+                        (
+                            subscription_node,
+                            RelationshipType.CONTAINS,
+                            resource.provider_resource_id,
+                        )
+                    )
+                continue
+
+            group_node = f"{subscription_node}/resourceGroups/{group}"
+            if group_node not in groups:
+                groups[group_node] = group
+                nodes.append(
+                    CloudResource(
+                        provider_resource_id=group_node,
+                        resource_type=ResourceType.RESOURCE_GROUP,
+                        name=group,
+                        provider=Provider.AZURE,
+                    )
+                )
+                edges.append(
+                    (subscription_node, RelationshipType.CONTAINS, group_node)
+                )
+            edges.append(
+                (group_node, RelationshipType.CONTAINS, resource.provider_resource_id)
+            )
+
+        return nodes, edges
+
+    # ----------------------------------------------------------- authorization
+    def _normalize_authorization(
+        self, data: dict[str, Any], resources: list[CloudResource]
+    ) -> tuple[list[CloudResource], list[tuple[str, RelationshipType, str]]]:
+        """Which identities hold which roles, and which resources run as them.
+
+        Two edges, and between them the hop that turns a foothold into a blast
+        radius. ``HAS_IDENTITY`` says a workload runs as a principal;
+        ``GRANTS_ROLE`` says that principal may act over a scope. Neither is
+        interesting alone, and together they answer the question no rule can:
+        if this internet-facing thing were taken, what else would go with it.
+
+        Principals already in the directory keep their existing node -- an
+        administrator with a subscription role is one person, not a user and a
+        principal that happen to share a GUID.
+        """
+        assignments = data.get("role_assignments", []) or []
+        definitions = {
+            definition["id"]: definition
+            for definition in (data.get("role_definitions", []) or [])
+            if definition.get("id")
+        }
+        known = {r.provider_resource_id for r in resources}
+
+        nodes: dict[str, CloudResource] = {}
+        edges: list[tuple[str, RelationshipType, str]] = []
+
+        for assignment in assignments:
+            props = assignment.get("properties", {}) or {}
+            principal_id = props.get("principalId")
+            scope = props.get("scope")
+            if not principal_id or not scope:
+                continue
+
+            role = _role_summary(definitions.get(props.get("roleDefinitionId", "")))
+            principal_node = _principal_node(principal_id, known)
+
+            if principal_node not in known and principal_node not in nodes:
+                nodes[principal_node] = CloudResource(
+                    provider_resource_id=principal_node,
+                    resource_type=ResourceType.SERVICE_PRINCIPAL,
+                    name=props.get("principalType") or "Principal",
+                    provider=Provider.AZURE,
+                    metadata={
+                        "principal_id": principal_id,
+                        "principal_type": props.get("principalType"),
+                    },
+                )
+
+            # Only where the scope is something we hold. An assignment above the
+            # subscription -- at a management group CloudGuard cannot see -- is
+            # real and is not a reach we can describe, and inventing an edge to
+            # a node that does not exist would be describing it anyway.
+            if scope in known or scope in nodes:
+                edges.append((principal_node, RelationshipType.GRANTS_ROLE, scope))
+
+            # Recorded on the node where there is one to record it on. A
+            # principal that is also a directory user already has a node built
+            # by the directory pass, and that one is immutable -- its roles are
+            # carried by the edges instead, which is where a traversal reads
+            # them anyway.
+            existing = nodes.get(principal_node)
+            if existing is not None:
+                roles = list(existing.metadata.get("roles", []))
+                roles.append({"role": role, "scope": scope})
+                existing.metadata["roles"] = roles
+
+        # Resources that run as an identity. The first hop of the path.
+        for vm in data.get("virtual_machines", []):
+            identity = vm.get("identity") or {}
+            principal_id = identity.get("principalId")
+            if not principal_id or not vm.get("id"):
+                continue
+            principal_node = _principal_node(principal_id, known)
+            if principal_node not in known and principal_node not in nodes:
+                nodes[principal_node] = CloudResource(
+                    provider_resource_id=principal_node,
+                    resource_type=ResourceType.SERVICE_PRINCIPAL,
+                    name="Managed identity",
+                    provider=Provider.AZURE,
+                    metadata={
+                        "principal_id": principal_id,
+                        "principal_type": "ManagedIdentity",
+                    },
+                )
+            edges.append((vm["id"], RelationshipType.HAS_IDENTITY, principal_node))
+
+        return list(nodes.values()), edges
 
     # -------------------------------------------------------------------- NSG
     def _normalize_nsgs(

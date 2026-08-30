@@ -39,6 +39,12 @@ class EvidenceCategory(StrEnum):
     """
 
     RESOURCES = "resources"
+    # Who may act on what. Separate from IDENTITY, which is the *directory* --
+    # who exists, read from Graph under admin consent. This is the subscription
+    # side of the same question, read from ARM under the scanner role, and the
+    # two fail independently: a tenant can have a perfectly readable directory
+    # and no visibility into what its principals are allowed to do.
+    AUTHORIZATION = "authorization"
     NETWORK = "network"
     COMPUTE = "compute"
     STORAGE = "storage"
