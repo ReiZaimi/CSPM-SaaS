@@ -32,6 +32,12 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
             "Reader role, then validate the connection."
         )
 
+    # Taken before the check, released when this request's transaction ends.
+    # Without it two clicks a millisecond apart both read "nothing running" and
+    # both queue a scan over the same subscriptions.
+    await scans_service.lock_scan_target(
+        session, tenant.organization_id, account.connection_id, account.id
+    )
     if await scans_service.scan_in_flight(
         session, tenant.organization_id, account.connection_id, account.id
     ):
@@ -109,6 +115,9 @@ async def replay_scan_endpoint(scan_id: UUID, session: DbSession, tenant: Tenant
             "replaying its snapshot."
         )
 
+    await scans_service.lock_scan_target(
+        session, tenant.organization_id, source.connection_id, source.cloud_account_id
+    )
     if await scans_service.scan_in_flight(
         session, tenant.organization_id, source.connection_id, source.cloud_account_id
     ):

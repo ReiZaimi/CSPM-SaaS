@@ -12,7 +12,7 @@ application, and CI should not make live Azure calls on every commit
 import copy
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -36,6 +36,7 @@ from app.models.cloud_account import CloudAccount
 from app.models.finding import Finding
 from app.models.scan import Scan
 from app.services import scanner as scanner_module
+from app.services import scans as scans_service
 from app.services.scanner import ScanPipeline
 from tests.integration.conftest import create_org_as
 
@@ -1166,3 +1167,174 @@ class TestCollectionStatus:
             {"s": scan_id},
         )
         assert rows[0][0] == 0
+
+
+class TestAbandonedScans:
+    """A scan whose worker died must not lock its connection out for ever.
+
+    The bug: every non-terminal status counts as a scan in flight, so a row left
+    in DISCOVERING by a redeployed worker made that connection answer 409 to
+    every future scan, with no timeout and no way out short of editing the
+    database.
+    """
+
+    async def _make_scan(
+        self,
+        org_id: uuid.UUID,
+        account_id: uuid.UUID,
+        *,
+        status: ScanStatus,
+        lease_until,
+        created_at=None,
+    ) -> uuid.UUID:
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=status,
+                lease_until=lease_until,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+
+            if created_at is not None:
+                # Set separately: created_at has a server default, so it cannot
+                # be backdated on the insert.
+                await session.execute(
+                    text("UPDATE scans SET created_at = :t WHERE id = :s"),
+                    {"t": created_at, "s": scan_id},
+                )
+                await session.commit()
+        return scan_id
+
+    async def test_a_scan_whose_lease_expired_is_closed(
+        self, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await self._make_scan(
+            org_id,
+            account_id,
+            status=ScanStatus.DISCOVERING,
+            lease_until=datetime.now(UTC) - timedelta(minutes=5),
+        )
+
+        async with service_session() as session:
+            closed = await scans_service.reap_abandoned_scans(session)
+
+        assert scan_id in {sid for sid, _ in closed}
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.status == ScanStatus.FAILED
+        assert "stopped reporting" in scan.error_message
+        assert scan.completed_at is not None
+
+    async def test_a_running_scan_with_a_live_lease_is_left_alone(
+        self, connected_account
+    ) -> None:
+        """The lease is the whole safeguard against reaping working scans."""
+        org_id, account_id = connected_account
+        scan_id = await self._make_scan(
+            org_id,
+            account_id,
+            status=ScanStatus.EVALUATING,
+            lease_until=datetime.now(UTC) + timedelta(minutes=10),
+        )
+
+        async with service_session() as session:
+            closed = await scans_service.reap_abandoned_scans(session)
+
+        assert scan_id not in {sid for sid, _ in closed}
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.status == ScanStatus.EVALUATING
+
+    async def test_a_scan_queued_past_the_grace_period_is_closed(
+        self, connected_account
+    ) -> None:
+        """No lease, because nothing ever claimed it. Judged on how long it has
+        waited instead, and told plainly that no worker collected it."""
+        org_id, account_id = connected_account
+        scan_id = await self._make_scan(
+            org_id,
+            account_id,
+            status=ScanStatus.QUEUED,
+            lease_until=None,
+            created_at=datetime.now(UTC)
+            - timedelta(seconds=Scan.QUEUE_GRACE_SECONDS + 60),
+        )
+
+        async with service_session() as session:
+            await scans_service.reap_abandoned_scans(session)
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.status == ScanStatus.FAILED
+        assert "never picked up" in scan.error_message
+
+    async def test_a_freshly_queued_scan_survives(self, connected_account) -> None:
+        """A deep queue is normal. Reaping a scan that was about to start would
+        be a worse bug than the one this fixes."""
+        org_id, account_id = connected_account
+        scan_id = await self._make_scan(
+            org_id, account_id, status=ScanStatus.QUEUED, lease_until=None
+        )
+
+        async with service_session() as session:
+            await scans_service.reap_abandoned_scans(session)
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.status == ScanStatus.QUEUED
+
+    async def test_reaping_releases_the_connection(self, connected_account) -> None:
+        """The point of the whole exercise, stated as the customer would feel it:
+        the scan button works again."""
+        org_id, account_id = connected_account
+        await self._make_scan(
+            org_id,
+            account_id,
+            status=ScanStatus.DISCOVERING,
+            lease_until=datetime.now(UTC) - timedelta(minutes=5),
+        )
+
+        async with service_session() as session:
+            account = await session.get(CloudAccount, account_id)
+            blocked = await scans_service.scan_in_flight(
+                session, org_id, account.connection_id, account_id
+            )
+            assert blocked, "the stuck scan should block before it is reaped"
+
+            await scans_service.reap_abandoned_scans(session)
+            still_blocked = await scans_service.scan_in_flight(
+                session, org_id, account.connection_id, account_id
+            )
+
+        assert not still_blocked
+
+    async def test_a_finished_scan_is_never_reaped(
+        self, replay, connected_account
+    ) -> None:
+        """However stale its lease column looks."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text("UPDATE scans SET lease_until = :t WHERE id = :s"),
+                {"t": datetime.now(UTC) - timedelta(days=1), "s": scan_id},
+            )
+            await session.commit()
+            closed = await scans_service.reap_abandoned_scans(session)
+
+        assert scan_id not in {sid for sid, _ in closed}
+
+    async def test_a_running_scan_holds_a_lease(self, replay, connected_account) -> None:
+        """And releases it when it finishes, so the reaper's index carries only
+        work that is actually outstanding."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        assert scan.status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL)
+        assert scan.lease_until is None

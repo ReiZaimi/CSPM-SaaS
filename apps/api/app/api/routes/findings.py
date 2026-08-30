@@ -172,6 +172,9 @@ async def rescan_finding(finding_id: UUID, session: DbSession, tenant: Tenant) -
     if not account.is_scannable:
         raise ValidationFailed("This connection is not ready to scan")
 
+    await scans_service.lock_scan_target(
+        session, tenant.organization_id, account.connection_id, account.id
+    )
     if await scans_service.scan_in_flight(
         session, tenant.organization_id, account.connection_id, account.id
     ):

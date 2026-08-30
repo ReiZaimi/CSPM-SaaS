@@ -6,9 +6,10 @@ and how to get rid of it afterwards.
 """
 
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
@@ -36,6 +37,36 @@ ACTIVE_SCAN_STATUSES = [
     ScanStatus.EVALUATING,
     ScanStatus.CALCULATING_RISK,
 ]
+
+
+async def lock_scan_target(
+    session: AsyncSession,
+    organization_id: UUID,
+    connection_id: UUID | None,
+    account_id: UUID | None,
+) -> None:
+    """Serialize everything that decides whether to start a scan on this target.
+
+    ``scan_in_flight`` reads, and the caller then inserts. Between those two
+    statements a second request can read the same "nothing running" and insert
+    as well, and both scans then write findings for the same resources: the
+    later commit decides which one was right, and the unique index on
+    (organization, rule, resource) turns the overlap into an IntegrityError
+    reported to the customer as a scan that failed for no stated reason.
+
+    A transaction-scoped advisory lock closes it. It is held until the request's
+    transaction ends, which is exactly the window the check-then-insert spans,
+    and it costs nothing when uncontended. Keyed on the target rather than the
+    organization, so two different connections in one tenant still start
+    concurrently.
+
+    ``hashtextextended`` rather than Python's ``hash``: the value has to be the
+    same in every process, and PYTHONHASHSEED makes Python's is not.
+    """
+    key = f"scan:{organization_id}:{connection_id or ''}:{account_id or ''}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key}
+    )
 
 
 async def scan_in_flight(
@@ -73,6 +104,77 @@ async def scan_in_flight(
     return running is not None
 
 
+
+
+ABANDONED_MESSAGE = (
+    "This scan stopped reporting and was closed automatically. The worker "
+    "running it went away mid-scan -- usually a redeploy or a restart. Nothing "
+    "was written from the part that did not finish. Run the scan again."
+)
+
+NEVER_CLAIMED_MESSAGE = (
+    "This scan was never picked up by a worker and was closed automatically. "
+    "The task broker accepted it but nothing collected it, which normally means "
+    "the Celery worker service is not running. Check the worker, then run the "
+    "scan again."
+)
+
+
+async def reap_abandoned_scans(session: AsyncSession) -> list[tuple[UUID, str]]:
+    """Close scans that nothing is working on any more.
+
+    The reason this matters is not tidiness. ``scan_in_flight`` treats every
+    non-terminal scan as one in progress, so a scan whose worker died left its
+    connection unscannable for ever, answering 409 to every attempt with no
+    timeout and no way out short of editing the database.
+
+    Two populations, judged differently because they mean different things. A
+    running scan holds a lease it extends as it makes progress, so an expired
+    lease means the worker stopped; a queued scan holds no lease because
+    nothing has claimed it, so it is judged on how long it has waited, with a
+    much longer grace period -- a deep queue is normal and reaping a scan that
+    was about to start would be its own bug.
+
+    Returns what it closed, so the caller can log it. Runs with the owner
+    session from a periodic task, so it scopes nothing by organization on
+    purpose: every tenant's abandoned work is abandoned.
+    """
+    now = datetime.now(UTC)
+    queued_cutoff = now - timedelta(seconds=Scan.QUEUE_GRACE_SECONDS)
+
+    stale = (
+        (
+            await session.execute(
+                select(Scan).where(
+                    Scan.status.in_(ACTIVE_SCAN_STATUSES),
+                    or_(
+                        Scan.lease_until < now,
+                        and_(
+                            Scan.lease_until.is_(None),
+                            Scan.created_at < queued_cutoff,
+                        ),
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    closed: list[tuple[UUID, str]] = []
+    for scan in stale:
+        message = (
+            NEVER_CLAIMED_MESSAGE if scan.lease_until is None else ABANDONED_MESSAGE
+        )
+        scan.status = ScanStatus.FAILED
+        scan.error_message = message
+        scan.completed_at = now
+        scan.lease_until = None
+        closed.append((scan.id, message))
+
+    if closed:
+        await session.commit()
+    return closed
 
 
 async def get_scan(session: AsyncSession, tenant: TenantContext, scan_id: UUID) -> Scan:

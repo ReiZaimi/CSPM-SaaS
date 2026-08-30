@@ -16,6 +16,17 @@ celery_app = Celery(
     include=["app.workers.scan_tasks"],
 )
 
+celery_app.conf.beat_schedule = {
+    # Frequent because what it clears is a lockout, not a mess. A scan whose
+    # worker died leaves its connection unscannable until something closes the
+    # row, and the customer's experience in the meantime is a button that
+    # answers "a scan is already running" for ever.
+    "reap-abandoned-scans": {
+        "task": "cloudguard.reap_abandoned_scans",
+        "schedule": 60.0,
+    },
+}
+
 celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",

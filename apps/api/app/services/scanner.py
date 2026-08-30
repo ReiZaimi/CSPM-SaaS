@@ -26,7 +26,7 @@ the scan record it was handed — never from client input.
 """
 
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import and_, or_, select, update
@@ -126,7 +126,16 @@ class _ScanProgress:
                 await progress_session.execute(
                     update(Scan)
                     .where(Scan.id == self.scan_id)
-                    .values(progress_done=done, progress_total=total)
+                    .values(
+                        progress_done=done,
+                        progress_total=total,
+                        # Progress is the cheapest available proof that this
+                        # worker is alive, so it carries the lease. A scan that
+                        # is still collecting keeps extending; one whose worker
+                        # died stops, and the reaper takes it.
+                        lease_until=datetime.now(UTC)
+                        + timedelta(seconds=Scan.LEASE_SECONDS),
+                    )
                 )
                 await progress_session.commit()
         except Exception as exc:  # pragma: no cover - progress is never fatal
@@ -686,6 +695,7 @@ class ScanPipeline:
         scan.finding_count = finding_count
         scan.completed_at = datetime.now(UTC)
         scan.status = ScanStatus.PARTIAL if degraded else ScanStatus.COMPLETED
+        scan.lease_until = None  # finished; nothing left to reclaim
         await session.commit()
 
         log.info(
@@ -963,12 +973,20 @@ class ScanPipeline:
         self, session: AsyncSession, scan: Scan, status: ScanStatus
     ) -> None:
         scan.status = status
+        # Every phase change is a sign of life, and the phases bracket the two
+        # stretches that report nothing while they run: rule evaluation and
+        # finding reconciliation. Extending here means the lease covers them
+        # without a heartbeat task of its own.
+        scan.lease_until = datetime.now(UTC) + timedelta(seconds=Scan.LEASE_SECONDS)
         await session.commit()
 
     async def _fail(self, session: AsyncSession, scan: Scan, message: str) -> None:
         scan.status = ScanStatus.FAILED
         scan.error_message = message[:2000]
         scan.completed_at = datetime.now(UTC)
+        # Terminal, so nothing should reclaim it. Released rather than left to
+        # expire, so the reaper's index does not carry finished work.
+        scan.lease_until = None
         await session.commit()
 
     # -------------------------------------------------------------- resources

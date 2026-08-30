@@ -157,8 +157,19 @@ Node installed on your machine.
    section:
 
    ```
-   celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+   celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --loglevel=INFO --concurrency=2
    ```
+
+   > **Keep `--beat`.** It runs Celery's scheduler inside the worker, and one
+   > scheduled task depends on it: the reaper that closes scans whose worker
+   > died mid-run. Without it those scans stay non-terminal for ever, and a
+   > connection with one of them answers "a scan is already running" to every
+   > future scan — the exact symptom that looks like a broken product and is
+   > actually a missing flag. `--schedule` points its state file at a path that
+   > is writable in the container.
+   >
+   > Safe with more than one worker replica: the reaper is idempotent, so two
+   > schedulers firing it merely means one of them finds nothing left to close.
 
    > **Not Custom Build Command.** They sit near each other in Railway's
    > settings and the mistake is silent: a build command runs at build time,
@@ -431,7 +442,7 @@ service, built from the same image but started with
 `infrastructure/railway/worker.json`:
 
 ```
-celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --loglevel=INFO --concurrency=2
 ```
 
 Check, in order:

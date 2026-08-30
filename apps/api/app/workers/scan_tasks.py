@@ -8,8 +8,9 @@ can never be the source of a tenant boundary decision.
 import asyncio
 from uuid import UUID
 
-from app.core.db import dispose_engines
+from app.core.db import dispose_engines, service_session
 from app.core.logging import configure_logging, get_logger
+from app.services import scans as scans_service
 from app.services.scanner import ScanPipeline
 from app.workers.celery_app import celery_app
 
@@ -42,6 +43,33 @@ def replay_scan(self: object, scan_id: str) -> dict:
     log.info("scan.replay_task_received", scan_id=scan_id)
     asyncio.run(_replay_and_release(UUID(scan_id)))
     return {"scan_id": scan_id}
+
+
+@celery_app.task(name="cloudguard.reap_abandoned_scans", bind=True, max_retries=0)
+def reap_abandoned_scans(self: object) -> dict:
+    """Close scans nothing is working on. Runs on the beat schedule.
+
+    Not housekeeping. A scan that never reaches a terminal status counts as in
+    flight for ever, and a connection with one of those cannot be scanned at
+    all -- so this is the difference between a worker restart costing a customer
+    one scan and costing them the product.
+    """
+    configure_logging()
+    closed = asyncio.run(_reap_and_release())
+    if closed:
+        log.warning("scan.reaped_abandoned", count=len(closed))
+    return {"closed": len(closed)}
+
+
+async def _reap_and_release() -> list[str]:
+    try:
+        async with service_session() as session:
+            closed = await scans_service.reap_abandoned_scans(session)
+        for scan_id, reason in closed:
+            log.warning("scan.abandoned", scan_id=str(scan_id), reason=reason)
+        return [str(scan_id) for scan_id, _ in closed]
+    finally:
+        await dispose_engines()
 
 
 async def _run_and_release(scan_id: UUID) -> None:

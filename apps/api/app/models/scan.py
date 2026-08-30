@@ -98,6 +98,24 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
         end = self.completed_at or datetime.now(UTC)
         return max(0, int((end - self.started_at).total_seconds()))
 
+    # Held by whichever worker is running this scan, and extended as it makes
+    # progress. A worker that dies stops extending, which is what lets an
+    # abandoned scan be reclaimed instead of blocking its connection for ever.
+    # NULL while queued: nothing has claimed it yet.
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # How long a running scan's lease lasts. Long enough to cover the longest
+    # stretch between two signs of life -- a large tenant's finding
+    # reconciliation, which reports nothing while it runs -- and short enough
+    # that a customer whose worker was redeployed is not locked out for an hour.
+    LEASE_SECONDS: ClassVar[int] = 900
+
+    # How long a scan may sit queued before nobody is coming for it. Much more
+    # generous than the lease, because a deep queue is normal and a lost message
+    # is not: the cost of waiting is a delayed scan, and the cost of reaping too
+    # early is failing one that was about to run.
+    QUEUE_GRACE_SECONDS: ClassVar[int] = 3600
+
     # How long a scan may sit unclaimed before the UI stops implying it is
     # about to start. A worker picks work up in seconds when one is running, so
     # minutes of silence means nothing is listening -- almost always the Celery
