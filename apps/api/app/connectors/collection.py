@@ -27,9 +27,11 @@ import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from app.connectors.evidence import EvidenceCategory, EvidenceKey
+from app.connectors.planning import CollectionPlan
 from app.core.enums import TaskOutcome
 from app.core.logging import get_logger
 
@@ -80,6 +82,10 @@ class TaskResult:
     # redeployed between the scan and the question: what matters is what the
     # read actually needed at the moment it was made.
     permissions: tuple[str, ...] = ()
+    # Set only on a reading this run did not make: when the provider was
+    # actually read, on the earlier scan the plan carried this forward from.
+    # Absent means the obvious thing -- this run read it, just now.
+    carried_from: datetime | None = None
 
     @property
     def is_trustworthy(self) -> bool:
@@ -160,16 +166,24 @@ class CoverageReport:
         return {category: "; ".join(reasons) for category, reasons in problems.items()}
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            key: {
+        entries: dict[str, Any] = {}
+        for key, r in self.results.items():
+            entry: dict[str, Any] = {
                 "category": r.category.value,
                 "outcome": r.outcome.value,
                 "detail": r.detail,
                 "item_count": r.item_count,
                 "permissions": list(r.permissions),
             }
-            for key, r in self.results.items()
-        }
+            # Written only where it applies, so a capture taken entirely by
+            # this run looks exactly as it always did. It is provenance for
+            # whoever reads the stored snapshot later: without it a carried
+            # reading inside a capture is indistinguishable from one taken at
+            # the moment the capture was written.
+            if r.carried_from is not None:
+                entry["carried_from"] = r.carried_from.isoformat()
+            entries[key] = entry
+        return entries
 
 
 @dataclass
@@ -193,11 +207,49 @@ class CollectionRun:
         tasks: list[CollectionTask],
         *,
         on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> None:
-        self.tasks = tasks
+        # The plan is applied to what the provider offers, never the other way
+        # round: a plan naming a key this provider does not produce asks for
+        # nothing rather than inventing a task.
+        self.plan = plan.restrict(t.key for t in tasks) if plan is not None else None
+        self.carried = dict(self.plan.carried) if self.plan is not None else {}
+        self.tasks = self._select(tasks)
         self.on_progress = on_progress
-        self._by_key = {t.key: t for t in tasks}
+        self._by_key = {t.key: t for t in self.tasks}
         self._validate()
+
+    def _select(self, tasks: list[CollectionTask]) -> list[CollectionTask]:
+        """The tasks this run will actually execute.
+
+        Without a plan, all of them -- the shape every scan had before planning
+        existed, and still the shape of a scan with nothing to carry forward.
+
+        With one, the plan's keys *and whatever those keys need*. A plan is
+        written against what the rules and the product ask for, and asking for
+        diagnostic settings is asking for the storage and SQL listings whose ids
+        they are read from, whether or not anything else wanted those. The
+        planner does not know that -- dependencies are declared by the provider,
+        on the tasks, which is where they belong -- so the closure is taken here
+        rather than refused here. The alternative is a scan that raises on a
+        plan nobody could tell was incomplete.
+        """
+        if self.plan is None:
+            return list(tasks)
+
+        by_key = {t.key: t for t in tasks}
+        wanted = {t.key for t in tasks if self.plan.wants(t.key)}
+        frontier = list(wanted)
+        while frontier:
+            task = by_key.get(frontier.pop())
+            if task is None:
+                continue
+            for dependency in task.depends_on:
+                if dependency in wanted or dependency in self.carried:
+                    continue
+                wanted.add(dependency)
+                frontier.append(dependency)
+        return [t for t in tasks if t.key in wanted]
 
     def _validate(self) -> None:
         """A plan that cannot run should say so before it starts running.
@@ -215,15 +267,25 @@ class CollectionRun:
 
         for task in self.tasks:
             for dependency in task.depends_on:
-                if dependency not in self._by_key:
-                    raise ValueError(
-                        f"Task {task.key!r} depends on {dependency!r}, which no task produces"
-                    )
+                # Carried counts: the payload is seeded before the first wave,
+                # so a task reading it has its input. Anything else here is the
+                # original typo -- a dependency the provider never produces --
+                # since a plan that omits a dependency has already had it added
+                # back by :meth:`_select`.
+                if dependency in self._by_key or dependency in self.carried:
+                    continue
+                raise ValueError(
+                    f"Task {task.key!r} depends on {dependency!r}, which no task produces"
+                )
 
     def waves(self) -> list[list[CollectionTask]]:
         """Tasks grouped so everything in a wave can run at once."""
         remaining = dict(self._by_key)
-        satisfied: set[str] = set()
+        # A carried reading satisfies a dependency exactly as a fresh one does:
+        # its payload is seeded into the run's data before the first wave, so a
+        # task reading it cannot tell the difference and has no business being
+        # able to.
+        satisfied: set[str] = set(self.carried)
         waves: list[list[CollectionTask]] = []
 
         while remaining:
@@ -255,6 +317,7 @@ class CollectionRun:
         """
         report = CoverageReport()
         done = 0
+        self._seed_carried(report, data)
 
         for wave in self.waves():
             runnable, skipped = self._partition(wave, report)
@@ -287,6 +350,35 @@ class CollectionRun:
                 await self.on_progress(done, self.size)
 
         return report
+
+    def _seed_carried(self, report: CoverageReport, data: dict[str, Any]) -> None:
+        """Put the readings this run is not making into the capture.
+
+        A carried reading enters the run as data and as coverage both, because
+        the capture has to be whole: replay reads the snapshot, the normalizer
+        reads the merged data, and a hole where a task used to be would read as
+        evidence that never arrived rather than evidence already held.
+
+        Recorded COMPLETE, which is what it was. Age is not incompleteness --
+        the reading is exactly what the provider said, and ``carried_from``
+        says when it said it. Degrading it to PARTIAL would tell every rule
+        that reads it to return UNKNOWN, which is how a cost optimization turns
+        into a product that knows less than it did.
+        """
+        for key, reading in self.carried.items():
+            data.update(reading.payload)
+            report.record(
+                TaskResult(
+                    key=key,
+                    category=key.category,
+                    outcome=TaskOutcome.COMPLETE,
+                    detail="carried forward from an earlier scan",
+                    item_count=reading.item_count,
+                    permissions=reading.permissions,
+                    carried_from=reading.collected_at,
+                ),
+                reading.payload,
+            )
 
     def _partition(
         self, wave: list[CollectionTask], report: CoverageReport

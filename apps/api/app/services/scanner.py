@@ -40,6 +40,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.connectors.azure.evidence import keys_in
 from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.evidence import EvidenceCategory
+from app.connectors.planning import CollectionPlan
 from app.connectors.registry import get_connector
 from app.core.db import scan_session, service_session
 from app.core.enums import (
@@ -76,6 +77,7 @@ from app.rules.base import RuleContext, SecurityRule
 from app.rules.engine import EvaluationReport, RuleEngine
 from app.services import orchestrator
 from app.services.cloud_connections import degraded_categories
+from app.services.evidence_planner import plan_collection, required_evidence
 
 log = get_logger(__name__)
 
@@ -414,7 +416,25 @@ class ScanPipeline:
                 tenant_id=account.tenant_id,
                 subscription_id=account.subscription_id,
             )
-            snapshot = await connector.collect(_StepHeartbeat(step_id, scan.organization_id))
+            # What this reading is for, decided before it is taken: every key
+            # some enabled rule reads, plus the ones the product itself is
+            # built from, minus whatever is already held fresh enough to stand
+            # in for a new read.
+            plan = await plan_collection(
+                session,
+                organization_id=scan.organization_id,
+                provider=account.provider,
+                required=required_evidence(
+                    account.provider, connector.baseline_evidence()
+                ),
+                scan_id=scan.id,
+                cloud_account_id=account.id,
+                connection_id=account.connection_id,
+                now=observed_at,
+            )
+            snapshot = await connector.collect(
+                _StepHeartbeat(step_id, scan.organization_id), plan
+            )
             await self._explain_role_drift(session, account, snapshot)
 
             # Persisted before interpretation, always. One row per subscription,
@@ -437,6 +457,7 @@ class ScanPipeline:
                 snapshot,
                 observed_at=observed_at,
                 account=account,
+                plan=plan,
             )
             account.last_scan_at = observed_at
             await session.commit()
@@ -571,8 +592,19 @@ class ScanPipeline:
             tenant_id=connection.tenant_id,
             subscription_id=None,
         )
+        plan = await plan_collection(
+            session,
+            organization_id=scan.organization_id,
+            provider=connection.provider,
+            required=required_evidence(
+                connection.provider, connector.baseline_evidence()
+            ),
+            scan_id=scan.id,
+            connection_id=connection.id,
+            now=observed_at,
+        )
         try:
-            snapshot = await connector.collect_directory(heartbeat)
+            snapshot = await connector.collect_directory(heartbeat, plan)
         except Exception as exc:
             if required:
                 raise
@@ -605,6 +637,7 @@ class ScanPipeline:
             snapshot,
             observed_at=observed_at,
             connection=connection,
+            plan=plan,
         )
         return connector.normalize(snapshot), snapshot
 
@@ -635,6 +668,7 @@ class ScanPipeline:
         observed_at: datetime,
         account: CloudAccount | None = None,
         connection: CloudConnection | None = None,
+        plan: CollectionPlan | None = None,
     ) -> None:
         """One row per reading, and one stored copy of what it produced.
 
@@ -660,6 +694,14 @@ class ScanPipeline:
         digests = {
             key: _digest(payload) for key, payload in snapshot.payloads.items()
         }
+        # Readings this run did not take, and when they were taken. Read off
+        # the plan rather than off the capture: the capture carries the same
+        # fact as text for whoever reads a snapshot later, and a datetime that
+        # never became a string cannot come back as a different one.
+        carried_at = {
+            key.value: reading.collected_at
+            for key, reading in (plan.carried.items() if plan else ())
+        }
         await self._store_blobs(session, org_id, snapshot.payloads, digests, observed_at)
 
         for key, entry in snapshot.coverage.items():
@@ -676,7 +718,12 @@ class ScanPipeline:
                     outcome=TaskOutcome(entry.get("outcome", TaskOutcome.FAILED.value)),
                     detail=entry.get("detail") or None,
                     item_count=int(entry.get("item_count", 0)),
-                    collected_at=observed_at,
+                    # When the provider was read, which for a carried reading
+                    # is not now. Recording it as now would make the freshness
+                    # question ask about the last scan that reused a reading
+                    # rather than about the read itself, and one reading could
+                    # then be carried for ever, each scan renewing it.
+                    collected_at=carried_at.get(key, observed_at),
                     permissions=list(entry.get("permissions") or []),
                     # NULL where a task produced nothing, which a failed one
                     # did. A hash of an empty payload would claim there was

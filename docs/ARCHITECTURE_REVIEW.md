@@ -776,10 +776,41 @@ on the reaper.
 
 ### Phase 2 — planning and context
 
-10. The evidence planner: rule-set union minus fresh evidence. Yields
-    incremental and targeted verification scans immediately. Keep it static and
-    rule-derived rather than adaptive — determinism is worth more than
-    cleverness, and an adaptive planner cannot be tested.
+10. **Done, and one half of it deliberately does almost nothing.**
+    `app/services/evidence_planner.py` builds a `CollectionPlan` before every
+    collection step: the union of every enabled rule's `requires_evidence` plus
+    the connector's `baseline_evidence`, minus whatever is already held fresh
+    enough to stand in for a new read. The provider's plan is filtered through
+    it, and `CollectionRun` takes the dependency closure of what survives —
+    dependencies are declared on the tasks, where they belong, so a planner
+    that knows only what the rules asked for cannot be expected to know that
+    diagnostic settings need the storage and SQL listings first.
+
+    The rule-set half is exact today: union equals plan, nothing is dropped, no
+    request is saved. That is the intended result rather than a disappointing
+    one — what it buys is that the equality is now *checked*. Three keys are
+    named by no rule (inventory, role assignments, role definitions), and the
+    connector declares them as baseline rather than the plan carrying them by
+    habit; a listing whose last reader is deleted now fails a test instead of
+    being collected for ever.
+
+    The freshness half is where the review's arithmetic and the product part
+    company. "Minus fresh evidence" reads as a cost optimization, and applied
+    broadly it would quietly destroy the claim the whole system is built to
+    support: a scan that verifies a fix against a reading taken before the fix
+    is not a cheaper scan, it is a wrong one. Reuse is therefore per key and off
+    by default (`EvidenceKey.reuse_window`), justified by the provider only
+    where a stale reading cannot change a verdict — which today is
+    `role_definitions` and nothing else, with a test failing the build if a key
+    any rule reads is ever given a window. See `DECISIONS.md` §16.
+
+    Targeted verification scans are the part still owed, and they are item 12's
+    to finish rather than this one's: narrowing a scan to one rule needs the
+    engine to evaluate only what it collected fresh and leave every other
+    finding untouched, or a targeted scan would re-assert stale verdicts about
+    everything it did not look at. The planner is the seam that makes that
+    buildable; the rule about what a narrowed scan may conclude is not a
+    planning decision.
 11. A context engine as its own module, out of the normalizer, with every fact
     carrying source and confidence. Add customer-declared context: a screen
     where a customer marks a subscription "production" beats any tag heuristic

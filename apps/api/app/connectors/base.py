@@ -15,6 +15,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.connectors.evidence import EvidenceKey
+from app.connectors.planning import CollectionPlan
 from app.core.enums import CollectionScope, Provider, RelationshipType, TaskOutcome
 from app.domain.resource import CloudResource
 
@@ -172,20 +174,45 @@ class CloudConnector(ABC):
     async def validate_connection(self) -> ConnectionCheck:
         """Prove read access works, by actually calling the provider."""
 
+    @staticmethod
+    def baseline_evidence() -> frozenset[EvidenceKey]:
+        """Evidence this provider collects whatever the rule set asks for.
+
+        The rules declare most of it: a plan derived from ``requires_evidence``
+        collects everything some rule reads and nothing else. What that misses
+        is the evidence the *product* is built from rather than judged from --
+        the asset inventory, the graph's edges -- which no rule names and which
+        a rule-derived plan would therefore quietly stop collecting.
+
+        Empty by default, and a provider that forgets to override it does not
+        fail quietly: every key its plan produces must be either required by a
+        rule or declared here, and a test says so.
+        """
+        return frozenset()
+
     @abstractmethod
     async def collect(
-        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+        self,
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         """Gather one account's raw state. Never evaluates anything.
 
         ``on_progress`` is called as units of collection finish, with (done,
         total). The total is known before collection starts, which is what lets
         the slowest phase of a scan report something better than a phase name.
+
+        ``plan`` narrows what is read and supplies what is carried forward from
+        earlier scans. ``None`` reads everything the provider offers, which is
+        what an unplanned scan has always done and what a scan with nothing
+        reusable still does.
         """
 
     @abstractmethod
     async def collect_directory(
-        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+        self,
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         """Gather the trust boundary's own state, once per scan.
 

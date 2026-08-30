@@ -26,6 +26,7 @@ The mapping between the two lives with the keys, so a task never declares its
 own category and the two can never disagree.
 """
 
+from datetime import timedelta
 from enum import StrEnum
 
 
@@ -71,3 +72,23 @@ class EvidenceKey(StrEnum):
         raise NotImplementedError(
             f"{type(self).__name__} does not map {self.value} to a category"
         )
+
+    @property
+    def reuse_window(self) -> timedelta | None:
+        """How old a complete reading of this may be and still be reused.
+
+        ``None`` -- the default, and the answer for almost every key -- means
+        never: the scan reads it again. That is not caution about correctness so
+        much as about what a scan is *for*. A customer fixes something and asks
+        CloudGuard to check; an answer assembled from this morning's reading
+        would still be a true statement about this morning and a false one about
+        the question asked. "Verified fixed" is the strongest claim this product
+        makes, and it survives exactly as long as nothing verifies a fix against
+        evidence collected before it.
+
+        A window is therefore justified per key, by the provider that produces
+        it, and only where a stale reading cannot change a verdict -- not by how
+        expensive the call is or how rarely the data moves. Those are reasons to
+        *want* a window; they are not reasons one is safe.
+        """
+        return None

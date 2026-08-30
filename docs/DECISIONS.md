@@ -261,6 +261,53 @@ request count, the peak in flight and the time spent queued behind the ceiling,
 because a scan that never waits and one that waits a minute are otherwise
 indistinguishable — and only the second is evidence the number wants changing.
 
+## 16. A scan's collection plan is derived; carrying evidence forward is opt-in per key
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §7 and §12 item 10 — "the evidence planner:
+rule-set union minus fresh evidence".
+
+Two halves, and only the first came out the way the review assumed.
+
+**Derived, not written down.** What a scan collects is now the union of every
+enabled rule's `requires_evidence` plus the connector's `baseline_evidence`,
+and the provider's plan is filtered through it. Three Azure keys are named by
+no rule — inventory, role assignments, role definitions — and they are the
+reason the baseline exists rather than an oversight to be tidied away: the
+first is what the customer's asset list is made of, and the other two are what
+the graph's identity edges are built from. A rule-derived plan without a
+declared baseline would have dropped all three while every check carried on
+passing.
+
+Today the union equals the plan exactly, so nothing is dropped and no request
+is saved. What the derivation buys is that the equality is now checked: a
+listing whose last reader was deleted fails a test instead of being collected
+at the customer's expense for ever, and a rule added with a new dependency
+starts being collected for.
+
+**Reuse is off unless a key earns it.** Evidence has carried provenance and a
+content hash since migration 0010, so a complete reading from an earlier scan
+can stand in for a new one. Almost none of it should. The strongest claim this
+product makes is "verified fixed", and it survives exactly as long as nothing
+verifies a fix against evidence collected before the fix: a customer who
+corrects a storage account and asks CloudGuard to check must be answered from
+the storage account as it is now, or the word means nothing.
+
+So `EvidenceKey.reuse_window` defaults to `None` — read it again — and a window
+is granted per key, by the provider that produces it, only where a stale reading
+cannot change a verdict. Being expensive to collect or slow to change are
+reasons to *want* a window; they are not reasons one is safe. Exactly one Azure
+key qualifies today: `role_definitions`, the catalogue of what each role
+permits, several hundred near-static rows per subscription that no rule reads.
+Role assignments are deliberately excluded on the same reasoning inverted —
+they change constantly and every privilege path is drawn from them. A test
+fails the build if any key some rule reads is ever given a window.
+
+A carried reading is recorded COMPLETE, because that is what it was: age is not
+incompleteness, and degrading it to PARTIAL would tell every rule reading it to
+return UNKNOWN. Its evidence row keeps the *original* `collected_at`, so the
+next scan's freshness question is asked about the read rather than about the
+last scan that reused it — otherwise one reading renews itself for ever.
+
 ---
 
 ## Open items carried forward

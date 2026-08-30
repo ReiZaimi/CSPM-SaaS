@@ -27,6 +27,7 @@ from app.connectors.azure.client import DEFAULT_TIMEOUT, RequestLimiter
 from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.base import RawSnapshot
 from app.connectors.collection import CollectionRun, CollectionTask
+from app.connectors.planning import CollectionPlan
 from app.core.enums import CollectionScope, Provider
 from app.core.logging import get_logger
 
@@ -69,7 +70,9 @@ class AzureCollector:
         self._http = http_client
 
     async def collect(
-        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+        self,
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         """Build the account plan, run it, and record what it managed to see.
 
@@ -90,10 +93,13 @@ class AzureCollector:
             ),
             lambda builder: builder.build_account_plan(),
             on_progress,
+            plan,
         )
 
     async def collect_directory(
-        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+        self,
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         """Read the tenant directory, once for the whole scan.
 
@@ -110,6 +116,7 @@ class AzureCollector:
             ),
             lambda builder: builder.build_directory_plan(),
             on_progress,
+            plan,
         )
 
     async def _run(
@@ -117,6 +124,7 @@ class AzureCollector:
         snapshot: RawSnapshot,
         select_plan: Callable[[AzurePlanBuilder], list[CollectionTask]],
         on_progress: Callable[[int, int], Awaitable[None]] | None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         """Execute one plan into one snapshot.
 
@@ -137,7 +145,9 @@ class AzureCollector:
             builder = AzurePlanBuilder(
                 self.tokens, self.subscription_id, http, limiter=limiter
             )
-            run = CollectionRun(select_plan(builder), on_progress=on_progress)
+            run = CollectionRun(
+                select_plan(builder), on_progress=on_progress, plan=plan
+            )
             report = await run.execute(snapshot.data)
         finally:
             if owns_http:
@@ -163,6 +173,10 @@ class AzureCollector:
             subscription_id=self.subscription_id,
             scope=snapshot.scope.value,
             tasks=run.size,
+            # Read now against carried forward. A scan that read nine listings
+            # and one that read three are not the same scan, and without this
+            # the log says they are.
+            carried=sorted(run.carried),
             complete=report.is_complete,
             degraded=sorted(snapshot.errors),
             # What the run cost in requests, and how long it spent queued

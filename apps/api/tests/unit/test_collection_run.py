@@ -8,6 +8,8 @@ though it were the whole environment, and a rule returned PASS over resources
 nobody had looked at.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.connectors.collection import (
@@ -17,6 +19,7 @@ from app.connectors.collection import (
     TaskOutcome,
 )
 from app.connectors.evidence import EvidenceCategory, EvidenceKey
+from app.connectors.planning import CarriedReading, CollectionPlan
 
 
 class Evidence(EvidenceKey):
@@ -229,3 +232,163 @@ def test_duplicate_keys_are_refused() -> None:
     """Two tasks writing one key means one silently wins."""
     with pytest.raises(ValueError, match="Duplicate collection task keys: a"):
         CollectionRun([task(Evidence.A), task(Evidence.A)])
+
+
+# ------------------------------------------------------------- running a plan
+def carried(key, payload, *, age_hours: int = 3) -> CarriedReading:
+    return CarriedReading(
+        key=key,
+        payload=payload,
+        collected_at=datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+        - timedelta(hours=age_hours),
+        item_count=len(payload),
+        permissions=("Microsoft.Test/read",),
+    )
+
+
+async def test_a_plan_narrows_what_is_read_from_the_provider() -> None:
+    """The provider still declares every task; the plan says which to run."""
+    run = CollectionRun(
+        [task(Evidence.A), task(Evidence.B), task(Evidence.C)],
+        plan=CollectionPlan(collect=frozenset({Evidence.A, Evidence.C})),
+    )
+    data: dict = {}
+    report = await run.execute(data)
+
+    assert data == {"a": ["a"], "c": ["c"]}
+    assert set(report.results) == {"a", "c"}
+
+
+async def test_a_plan_naming_a_key_this_provider_lacks_asks_for_nothing() -> None:
+    """A requirement set spans every scope a scan covers.
+
+    The account plan holds no directory tasks and the directory plan holds no
+    subscription ones, so each is handed keys it cannot produce every time. That
+    is not a plan to refuse -- it is the other scope's half of the same scan.
+    """
+    run = CollectionRun(
+        [task(Evidence.A)],
+        plan=CollectionPlan(collect=frozenset({Evidence.A, Evidence.LATE})),
+    )
+    assert [t.key for t in run.tasks] == [Evidence.A]
+
+
+async def test_a_carried_reading_is_not_read_again_but_is_still_in_the_capture() -> None:
+    """The capture has to be whole however much of it was read just now.
+
+    Replay reads the snapshot and the normalizer reads the merged data, so a
+    hole where a task used to be would read as evidence that never arrived
+    rather than as evidence already held.
+    """
+    run = CollectionRun(
+        [task(Evidence.A), task(Evidence.B, boom="must not be called")],
+        plan=CollectionPlan(
+            collect=frozenset({Evidence.A, Evidence.B}),
+            carried={Evidence.B: carried(Evidence.B, {"b": ["from-yesterday"]})},
+        ),
+    )
+    data: dict = {}
+    report = await run.execute(data)
+
+    assert data == {"a": ["a"], "b": ["from-yesterday"]}
+    assert report.is_complete
+    assert report.payloads["b"] == {"b": ["from-yesterday"]}
+
+
+async def test_a_carried_reading_is_complete_and_says_when_it_was_taken() -> None:
+    """Age is not incompleteness.
+
+    The reading is exactly what the provider said; ``carried_from`` says when it
+    said it. Recording it as PARTIAL would tell every rule reading it to return
+    UNKNOWN, which is how saving a request turns into knowing less.
+    """
+    reading = carried(Evidence.B, {"b": ["x"]})
+    run = CollectionRun(
+        [task(Evidence.B)],
+        plan=CollectionPlan(collect=frozenset({Evidence.B}), carried={Evidence.B: reading}),
+    )
+    report = await run.execute({})
+
+    result = report.results["b"]
+    assert result.outcome == TaskOutcome.COMPLETE
+    assert result.carried_from == reading.collected_at
+    assert report.key_problems() == {}
+    assert report.to_json()["b"]["carried_from"] == reading.collected_at.isoformat()
+
+
+async def test_a_reading_taken_now_carries_no_timestamp() -> None:
+    """A capture taken entirely by this run looks exactly as it always did."""
+    report = await CollectionRun([task(Evidence.A)]).execute({})
+    assert report.results["a"].carried_from is None
+    assert "carried_from" not in report.to_json()["a"]
+
+
+async def test_a_carried_reading_satisfies_what_depends_on_it() -> None:
+    """Its payload is seeded before the first wave, so a dependent task reads
+    its input without being able to tell where it came from."""
+    seen: dict = {}
+
+    async def dependent(collected: dict) -> TaskData:
+        seen.update(collected)
+        return TaskData({"dependent": ["ok"]})
+
+    run = CollectionRun(
+        [
+            task(Evidence.SOURCE, boom="must not be called"),
+            CollectionTask(
+                key=Evidence.DEPENDENT, run=dependent, depends_on=(Evidence.SOURCE,)
+            ),
+        ],
+        plan=CollectionPlan(
+            collect=frozenset({Evidence.SOURCE, Evidence.DEPENDENT}),
+            carried={Evidence.SOURCE: carried(Evidence.SOURCE, {"source": ["held"]})},
+        ),
+    )
+    report = await run.execute({})
+
+    assert seen["source"] == ["held"]
+    assert report.results["dependent"].outcome == TaskOutcome.COMPLETE
+
+
+async def test_a_plan_that_drops_an_input_still_collects_it() -> None:
+    """Asking for diagnostic settings is asking for the ids they are read from.
+
+    Dependencies are declared by the provider, on the tasks, so a planner that
+    knows only what the rules asked for cannot know this. The closure is taken
+    here rather than refused here -- the alternative is a scan that raises on a
+    plan nobody could tell was incomplete.
+    """
+    run = CollectionRun(
+        [
+            task(Evidence.SOURCE),
+            task(Evidence.DEPENDENT, depends_on=(Evidence.SOURCE,)),
+        ],
+        plan=CollectionPlan(collect=frozenset({Evidence.DEPENDENT})),
+    )
+    data: dict = {}
+    await run.execute(data)
+
+    assert {t.key for t in run.tasks} == {Evidence.SOURCE, Evidence.DEPENDENT}
+    assert data["source"] == ["source"]
+
+
+async def test_progress_counts_only_what_is_actually_read() -> None:
+    """A carried reading is not work, and a denominator that counted it would
+    stall at the fraction the run never has to do."""
+    seen: list[tuple[int, int]] = []
+
+    async def record(done: int, total: int) -> None:
+        seen.append((done, total))
+
+    run = CollectionRun(
+        [task(Evidence.A), task(Evidence.B)],
+        on_progress=record,
+        plan=CollectionPlan(
+            collect=frozenset({Evidence.A, Evidence.B}),
+            carried={Evidence.B: carried(Evidence.B, {"b": ["held"]})},
+        ),
+    )
+    await run.execute({})
+
+    assert run.size == 1
+    assert seen[-1] == (1, 1)

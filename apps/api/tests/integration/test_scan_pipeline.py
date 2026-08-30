@@ -85,17 +85,24 @@ class ReplayConnector(CloudConnector):
 
     def __init__(self, payload: dict, **_: object) -> None:
         self.payload = payload
+        self.plans: list = []
         self._normalizer = AzureNormalizer()
 
     async def validate_connection(self):  # pragma: no cover -- not used here
         raise NotImplementedError
 
-    async def collect(self, on_progress=None) -> RawSnapshot:
+    async def collect(self, on_progress=None, plan=None) -> RawSnapshot:
+        # The plan is accepted and ignored: a recording has already been
+        # collected, so there is nothing to narrow and nothing to carry. What
+        # the double must do is take the argument, because the pipeline passes
+        # one to every connector.
+        self.plans.append(plan)
         if on_progress:
             await on_progress(1, 1)
         return self._slice(directory=False)
 
-    async def collect_directory(self, on_progress=None) -> RawSnapshot:
+    async def collect_directory(self, on_progress=None, plan=None) -> RawSnapshot:
+        self.plans.append(plan)
         if on_progress:
             await on_progress(1, 1)
         return self._slice(directory=True)

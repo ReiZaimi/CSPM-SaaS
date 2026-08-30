@@ -127,3 +127,46 @@ def test_the_mfa_rule_depends_on_the_evidence_it_actually_reads() -> None:
         AzureEvidence.DIRECTORY_ROLES,
         AzureEvidence.USER_ROLE_MAP,
     }
+
+
+def test_every_collected_key_is_wanted_by_a_rule_or_declared_baseline() -> None:
+    """Nothing is collected because it always has been.
+
+    A plan is derived from the rule set plus the connector's baseline, so a key
+    in neither would simply stop being gathered. Failing here is the cheap
+    version of that: either some rule reads it and should say so, or the product
+    needs it and ``baseline_evidence`` should say so.
+    """
+    from app.connectors.azure.connector import AzureConnector
+
+    wanted = {key for rule in RULE_REGISTRY for key in rule.requires_evidence}
+    unexplained = planned_keys() - wanted - AzureConnector.baseline_evidence()
+    assert not unexplained, (
+        f"collected but nothing declares a need for it: "
+        f"{sorted(k.value for k in unexplained)}"
+    )
+
+
+def test_the_baseline_is_evidence_the_plans_actually_produce() -> None:
+    """The other direction: a baseline key no task produces asks for nothing."""
+    from app.connectors.azure.connector import AzureConnector
+
+    assert AzureConnector.baseline_evidence() <= planned_keys()
+
+
+def test_no_rule_reads_evidence_that_may_be_carried_forward() -> None:
+    """The line that keeps "verified fixed" true.
+
+    A reuse window says a stale reading of this key cannot change a verdict.
+    The moment a rule reads that key, it can: a customer fixes something, asks
+    CloudGuard to check, and is answered from the environment as it stood before
+    the fix. Granting a window is therefore allowed only for evidence no rule
+    depends on, and this is where that is enforced rather than remembered.
+    """
+    judged = {key for rule in RULE_REGISTRY for key in rule.requires_evidence}
+    reusable = {key for key in AzureEvidence if key.reuse_window is not None}
+    overlap = judged & reusable
+    assert not overlap, (
+        "these keys may be carried forward and are also read by a rule, so a "
+        f"verdict could be reached from stale evidence: {sorted(k.value for k in overlap)}"
+    )

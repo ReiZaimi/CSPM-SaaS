@@ -11,6 +11,8 @@ category said network was a perfectly valid thing to write, and the only symptom
 was a rule that quietly never degraded.
 """
 
+from datetime import timedelta
+
 from app.connectors.evidence import EvidenceCategory, EvidenceKey
 
 
@@ -53,6 +55,10 @@ class AzureEvidence(EvidenceKey):
     def category(self) -> EvidenceCategory:
         return _CATEGORIES[self]
 
+    @property
+    def reuse_window(self) -> timedelta | None:
+        return _REUSE_WINDOWS.get(self)
+
 
 _CATEGORIES: dict[AzureEvidence, EvidenceCategory] = {
     AzureEvidence.RESOURCES: EvidenceCategory.RESOURCES,
@@ -79,6 +85,51 @@ if _missing:  # pragma: no cover - import-time guard
     raise RuntimeError(
         "AzureEvidence members with no category: " + ", ".join(sorted(_missing))
     )
+
+
+# Evidence CloudGuard collects because the product needs it, not because a rule
+# judges it. Every other key in the plans above is named by some rule's
+# ``requires_evidence``; these three are named by none, and would therefore be
+# dropped the moment a plan is derived from the rule set rather than written out
+# by hand.
+#
+# They are not leftovers. Inventory is what the customer's asset list is made
+# of -- the one reading that covers resource types no rule has been written for
+# yet -- and the two authorization listings are what the asset graph's identity
+# edges are built from: who holds which role, and what that role permits. No
+# rule reads any of them, and dropping them would cost the customer their
+# inventory and every privilege path in one go.
+#
+# Declared here rather than inferred, because "no rule needs it" and "nothing
+# needs it" are different statements and only the second is a reason to stop
+# collecting.
+BASELINE_EVIDENCE: frozenset[AzureEvidence] = frozenset(
+    {
+        AzureEvidence.RESOURCES,
+        AzureEvidence.ROLE_ASSIGNMENTS,
+        AzureEvidence.ROLE_DEFINITIONS,
+    }
+)
+
+# How old a complete reading may be and still be carried into a later scan
+# instead of re-read. Absent means never, which is the answer for all but one
+# key and the right default (``EvidenceKey.reuse_window``).
+#
+# Role *definitions* are the exception, and only because of what they are: the
+# catalogue of what each role permits, overwhelmingly Azure's own built-ins,
+# several hundred rows per subscription that change when Microsoft ships a new
+# role. No rule reads them -- they label the graph's identity edges -- so a
+# stale definition cannot turn a FAIL into a PASS or a PASS into a FAIL. The
+# worst a week-old catalogue can do is describe a freshly edited custom role by
+# its previous permissions, in the label on an edge whose existence is decided
+# by the role *assignment*, which is read fresh every scan.
+#
+# Role assignments are deliberately not here, for that same reason inverted:
+# they are who can do what, they change constantly, and every privilege path in
+# the graph is drawn from them.
+_REUSE_WINDOWS: dict[AzureEvidence, timedelta] = {
+    AzureEvidence.ROLE_DEFINITIONS: timedelta(days=7),
+}
 
 
 def keys_in(category: EvidenceCategory) -> frozenset[AzureEvidence]:

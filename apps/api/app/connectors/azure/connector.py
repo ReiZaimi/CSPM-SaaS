@@ -12,8 +12,11 @@ from app.connectors.azure.auth import (
 )
 from app.connectors.azure.client import ArmClient, GraphClient, ResourceGraphClient
 from app.connectors.azure.collector import AzureCollector
+from app.connectors.azure.evidence import BASELINE_EVIDENCE
 from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import CloudConnector, ConnectionCheck, NormalizedState, RawSnapshot
+from app.connectors.evidence import EvidenceKey
+from app.connectors.planning import CollectionPlan
 from app.core.enums import Provider
 from app.core.logging import get_logger
 
@@ -184,8 +187,22 @@ class AzureConnector(CloudConnector):
         )
         return check
 
+    @staticmethod
+    def baseline_evidence() -> frozenset[EvidenceKey]:
+        """Inventory and the authorization listings the asset graph is built from.
+
+        No rule names any of the three, so a plan derived from the rule set
+        alone would stop collecting them -- and the customer would lose their
+        asset list and every privilege path in the graph, with every check
+        still passing and nothing to explain where the rest of the product
+        went.
+        """
+        return frozenset(BASELINE_EVIDENCE)
+
     async def collect(
-        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+        self,
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         if not self.subscription_id:
             raise ValueError("A subscription id is required to collect Azure state")
@@ -194,17 +211,19 @@ class AzureConnector(CloudConnector):
             subscription_id=self.subscription_id,
             http_client=self._http,
         )
-        return await collector.collect(on_progress)
+        return await collector.collect(on_progress, plan)
 
     async def collect_directory(
-        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+        self,
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+        plan: CollectionPlan | None = None,
     ) -> RawSnapshot:
         """The tenant's directory, read once regardless of subscription count."""
         collector = AzureCollector(
             tenant_id=self.tenant_id,
             http_client=self._http,
         )
-        return await collector.collect_directory(on_progress)
+        return await collector.collect_directory(on_progress, plan)
 
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
         return self._normalizer.normalize(snapshot)
