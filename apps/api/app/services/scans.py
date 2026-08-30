@@ -19,7 +19,7 @@ from app.core.errors import ScanNotFound
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
-from app.models.scan import Scan, ScanCollectionResult
+from app.models.scan import Evidence, Scan
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
@@ -350,16 +350,16 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
     rows = list(
         (
             await session.execute(
-                select(ScanCollectionResult, CloudAccount.display_name)
+                select(Evidence, CloudAccount.display_name)
                 .outerjoin(
                     CloudAccount,
-                    CloudAccount.id == ScanCollectionResult.cloud_account_id,
+                    CloudAccount.id == Evidence.cloud_account_id,
                 )
                 .where(
-                    ScanCollectionResult.scan_id == scan.id,
-                    ScanCollectionResult.organization_id == scan.organization_id,
+                    Evidence.scan_id == scan.id,
+                    Evidence.organization_id == scan.organization_id,
                 )
-                .order_by(CloudAccount.display_name, ScanCollectionResult.task_key)
+                .order_by(CloudAccount.display_name, Evidence.evidence_key)
             )
         ).all()
     )
@@ -373,7 +373,10 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
             "cloud_account_id": (
                 str(row.cloud_account_id) if row.cloud_account_id else None
             ),
-            "task": row.task_key,
+            # Named "task" for the reader rather than "evidence_key" for the
+            # schema. This is the report that answers "what could you not
+            # read", and a task is the thing a person pictures failing.
+            "task": row.evidence_key,
             "category": row.category,
             "outcome": row.outcome.value,
             "detail": row.detail,

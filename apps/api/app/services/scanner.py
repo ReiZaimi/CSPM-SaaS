@@ -25,6 +25,8 @@ owner connection and scopes every write by the ``organization_id`` taken from
 the scan record it was handed — never from client input.
 """
 
+import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -56,8 +58,9 @@ from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding
 from app.models.scan import (
     CloudSnapshot,
+    Evidence,
+    EvidenceBlob,
     Scan,
-    ScanCollectionResult,
     ScanEvaluationGap,
     ScanRuleResult,
 )
@@ -67,6 +70,18 @@ from app.rules.engine import EvaluationReport, RuleEngine
 from app.services.cloud_connections import degraded_categories
 
 log = get_logger(__name__)
+
+
+def _digest(payload: dict) -> tuple[str, int]:
+    """A payload's content hash and serialized size.
+
+    ``sort_keys`` and the compact separators are what make it a *content*
+    hash rather than a hash of one particular serialization. Two runs that read
+    the same environment must produce the same digest, or the deduplication is
+    decorative -- and JSON dict ordering is not something a provider promises.
+    """
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
 class _ScanProgress:
@@ -205,7 +220,7 @@ class ScanPipeline:
                 # user assets each time, and with them a duplicate finding per
                 # subscription for every administrator missing MFA.
                 directory = await self._collect_directory(
-                    session, scan, connection, progress
+                    session, scan, connection, progress, observed_at
                 )
                 identity_gap: str | None = None
                 if directory is not None:
@@ -264,8 +279,13 @@ class ScanPipeline:
                     for category, reason in snapshot.errors.items():
                         errors[self._scoped_key(account, category, len(accounts))] = reason
 
-                    self._record_collection_status(
-                        session, org_id, scan, snapshot, account=account
+                    await self._record_evidence(
+                        session,
+                        org_id,
+                        scan,
+                        snapshot,
+                        observed_at=observed_at,
+                        account=account,
                     )
 
                     state = connector.normalize(snapshot)
@@ -322,6 +342,7 @@ class ScanPipeline:
         scan: Scan,
         connection: CloudConnection | None,
         progress: "_ScanProgress",
+        observed_at: datetime,
     ) -> tuple[NormalizedState, RawSnapshot] | None:
         """Read the tenant directory once, and store it as its own capture.
 
@@ -368,8 +389,13 @@ class ScanPipeline:
                 data=snapshot.to_json(),
             )
         )
-        self._record_collection_status(
-            session, scan.organization_id, scan, snapshot, connection=connection
+        await self._record_evidence(
+            session,
+            scan.organization_id,
+            scan,
+            snapshot,
+            observed_at=observed_at,
+            connection=connection,
         )
         return connector.normalize(snapshot), snapshot
 
@@ -390,43 +416,122 @@ class ScanPipeline:
                 return await session.get(CloudConnection, account.connection_id)
         return None
 
-    def _record_collection_status(
+    async def _record_evidence(
         self,
         session: AsyncSession,
         org_id: UUID,
         scan: Scan,
         snapshot: RawSnapshot,
         *,
+        observed_at: datetime,
         account: CloudAccount | None = None,
         connection: CloudConnection | None = None,
     ) -> None:
-        """Turn the run's coverage report into rows that can be queried.
+        """One row per reading, and one stored copy of what it produced.
 
-        The same facts already travel inside the snapshot, which is the right
-        home for them -- a replay has to see exactly what the original run saw.
-        But a fact buried in a JSONB payload can answer questions about one
-        scan and no questions at all about a fleet, and "has storage been
-        truncating in this subscription all week?" is the one that matters when
-        deciding whether a customer has an outage or simply a large tenant.
+        The rows answer questions the snapshot cannot. The same facts travel
+        inside the capture, which is the right home for them -- a replay has to
+        see exactly what the original run saw -- but a fact buried in a JSONB
+        payload can answer questions about one scan and none at all about a
+        fleet, and "has storage been truncating in this subscription all week?"
+        is the one that matters when deciding whether a customer has an outage
+        or simply a large tenant.
+
+        The payloads are stored by content hash, which is where the cost goes.
+        A customer scanning daily whose network security groups have not changed
+        in a month stored thirty identical copies of them. Keyed by hash they
+        store one, and every later scan of an unchanged environment adds rows
+        rather than megabytes.
         """
         connection_id = (
             connection.id if connection is not None else
             account.connection_id if account is not None else None
         )
+        account_id = account.id if account is not None else None
+        digests = {
+            key: _digest(payload) for key, payload in snapshot.payloads.items()
+        }
+        await self._store_blobs(session, org_id, snapshot.payloads, digests, observed_at)
+
         for key, entry in snapshot.coverage.items():
+            digest = digests.get(key)
             session.add(
-                ScanCollectionResult(
+                Evidence(
                     organization_id=org_id,
                     scan_id=scan.id,
-                    cloud_account_id=account.id if account is not None else None,
+                    cloud_account_id=account_id,
                     connection_id=connection_id,
-                    task_key=key,
+                    provider=snapshot.provider,
+                    evidence_key=key,
                     category=entry.get("category", ""),
                     outcome=TaskOutcome(entry.get("outcome", TaskOutcome.FAILED.value)),
                     detail=entry.get("detail") or None,
                     item_count=int(entry.get("item_count", 0)),
+                    collected_at=observed_at,
+                    permissions=list(entry.get("permissions") or []),
+                    # NULL where a task produced nothing, which a failed one
+                    # did. A hash of an empty payload would claim there was
+                    # something to point at.
+                    content_hash=digest[0] if digest else None,
+                    byte_size=digest[1] if digest else 0,
                 )
             )
+
+    async def _store_blobs(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        payloads: dict[str, dict],
+        digests: dict[str, tuple[str, int]],
+        observed_at: datetime,
+    ) -> None:
+        """Write the payloads this run produced that are not already stored.
+
+        One query for what exists rather than one per payload: a scan produces
+        a dozen readings and a tenant-wide one produces a dozen per
+        subscription, and the whole point of content addressing is that most of
+        them are already here.
+        """
+        if not digests:
+            return
+
+        hashes = {digest for digest, _size in digests.values()}
+        existing = {
+            row.content_hash: row
+            for row in (
+                await session.execute(
+                    select(EvidenceBlob).where(
+                        EvidenceBlob.organization_id == org_id,
+                        EvidenceBlob.content_hash.in_(hashes),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+
+        for key, (digest, size) in digests.items():
+            stored = existing.get(digest)
+            if stored is not None:
+                # Already held, byte for byte. Touched rather than rewritten,
+                # so retention can tell a payload still in use from one whose
+                # last reference was months ago.
+                stored.last_seen_at = max(stored.last_seen_at or observed_at, observed_at)
+                continue
+            blob = EvidenceBlob(
+                organization_id=org_id,
+                content_hash=digest,
+                payload=payloads[key],
+                byte_size=size,
+                first_stored_at=observed_at,
+                last_seen_at=observed_at,
+            )
+            session.add(blob)
+            # Registered immediately: two readings in one scan can produce
+            # identical bytes -- two subscriptions with no storage accounts do
+            # -- and a second insert of the same key would break on the
+            # primary key.
+            existing[digest] = blob
 
     # ------------------------------------------------------------------ scope
     async def _resolve_scope(

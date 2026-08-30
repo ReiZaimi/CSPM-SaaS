@@ -181,8 +181,8 @@ class TestCollectionStatusIsolation:
         )
         await session.execute(
             text(
-                "INSERT INTO scan_collection_results "
-                "(organization_id, scan_id, cloud_account_id, task_key, category, outcome) "
+                "INSERT INTO evidence "
+                "(organization_id, scan_id, cloud_account_id, evidence_key, category, outcome) "
                 "VALUES (:org, :sid, :aid, :task, 'storage', 'PARTIAL')"
             ),
             {"org": org_id, "sid": sid, "aid": aid, "task": task},
@@ -201,7 +201,7 @@ class TestCollectionStatusIsolation:
         async with rls_session(USER_A) as session:
             keys = (
                 await session.execute(
-                    text("SELECT task_key FROM scan_collection_results")
+                    text("SELECT evidence_key FROM evidence")
                 )
             ).scalars().all()
 
@@ -231,8 +231,8 @@ class TestCollectionStatusIsolation:
             async with rls_session(USER_A) as session:
                 await session.execute(
                     text(
-                        "INSERT INTO scan_collection_results "
-                        "(organization_id, scan_id, cloud_account_id, task_key, "
+                        "INSERT INTO evidence "
+                        "(organization_id, scan_id, cloud_account_id, evidence_key, "
                         "category, outcome) "
                         "VALUES (:org, :sid, :aid, 'stolen', 'storage', 'FAILED')"
                     ),
@@ -318,3 +318,56 @@ class TestConnectionRoleItself:
                 )
             ).scalar_one()
         assert bypass is False
+
+
+class TestEvidenceBlobIsolation:
+    """Content-addressed storage, scoped per tenant on purpose.
+
+    A blob table shared across tenants would deduplicate correctly and still be
+    wrong: whether a write finds an existing row is observable, so a shared
+    table lets one tenant learn that another holds identical bytes. The
+    organization is half the primary key, so there is no way to address a blob
+    without naming whose it is.
+    """
+
+    async def _seed(self, session, org_id: uuid.UUID, digest: str) -> None:
+        await session.execute(
+            text(
+                "INSERT INTO evidence_blobs "
+                "(organization_id, content_hash, payload, byte_size) "
+                "VALUES (:org, :hash, '{\"storage_accounts\": []}'::jsonb, 23)"
+            ),
+            {"org": org_id, "hash": digest},
+        )
+
+    async def test_identical_content_stays_two_rows_in_two_tenants(
+        self, two_orgs
+    ) -> None:
+        """The same bytes in two tenants are two rows, not one shared row.
+
+        Deduplication is a saving inside a tenant, never a structure spanning
+        them.
+        """
+        org_a, org_b = two_orgs
+        digest = "a" * 64
+
+        async with rls_session(USER_A) as session:
+            await self._seed(session, org_a, digest)
+        async with rls_session(USER_B) as session:
+            await self._seed(session, org_b, digest)
+
+        async with rls_session(USER_A) as session:
+            rows = (
+                await session.execute(
+                    text("SELECT organization_id FROM evidence_blobs")
+                )
+            ).scalars().all()
+
+        assert rows == [org_a], "a tenant saw a payload row belonging to another"
+
+    async def test_cannot_write_a_blob_into_another_tenant(self, two_orgs) -> None:
+        _, org_b = two_orgs
+        with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+            async with rls_session(USER_A) as session:
+                await self._seed(session, org_b, "b" * 64)
+        assert "row-level security" in str(exc.value).lower()

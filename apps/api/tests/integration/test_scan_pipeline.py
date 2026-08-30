@@ -58,6 +58,13 @@ DIRECTORY_KEYS = frozenset(
 )
 DIRECTORY_CATEGORY = "identity"
 
+# Which payload keys each reading owns. The real plan does not need this -- a
+# task returns its own output and the executor keeps it -- but the recording is
+# one merged blob, so the double has to say how to cut it up again. Only the
+# task that produces two is listed; every other reading owns the key it is
+# named after.
+OWNED_PAYLOAD_KEYS = {"user_role_map": ("user_role_map", "authentication_methods")}
+
 
 class ReplayConnector(CloudConnector):
     """Replays a recorded Azure snapshot through the real normalizer.
@@ -122,6 +129,24 @@ class ReplayConnector(CloudConnector):
             for key, entry in snapshot.coverage.items()
             if entry["outcome"] != TaskOutcome.COMPLETE.value
         }
+        # And the per-reading payloads, which a real run gets for free because
+        # each task returns its own output. A task that failed produced nothing,
+        # so it contributes none -- which is what leaves its evidence row
+        # pointing at no payload rather than at a hash of an empty object.
+        snapshot.payloads = {}
+        for key, entry in snapshot.coverage.items():
+            if entry["outcome"] in (
+                TaskOutcome.FAILED.value,
+                TaskOutcome.SKIPPED.value,
+            ):
+                continue
+            owned = {
+                name: snapshot.data[name]
+                for name in OWNED_PAYLOAD_KEYS.get(key, (key,))
+                if name in snapshot.data
+            }
+            if owned:
+                snapshot.payloads[key] = owned
         return snapshot
 
     @staticmethod
@@ -1098,7 +1123,7 @@ class TestCollectionStatus:
         scan_id = await run_scan(org_id, account_id)
 
         rows = await fetch(
-            "SELECT task_key, outcome FROM scan_collection_results WHERE scan_id = :s",
+            "SELECT evidence_key, outcome FROM evidence WHERE scan_id = :s",
             {"s": scan_id},
         )
         assert rows, "collection status was recorded"
@@ -1150,8 +1175,8 @@ class TestCollectionStatus:
         scan_id = await run_connection_scan(org_id, connection_id)
 
         rows = await fetch(
-            "SELECT count(*) FROM scan_collection_results "
-            "WHERE scan_id = :s AND task_key = 'storage_accounts'",
+            "SELECT count(*) FROM evidence "
+            "WHERE scan_id = :s AND evidence_key = 'storage_accounts'",
             {"s": scan_id},
         )
         assert rows[0][0] == 2
@@ -1170,7 +1195,7 @@ class TestCollectionStatus:
             await session.commit()
 
         rows = await fetch(
-            "SELECT count(*) FROM scan_collection_results WHERE scan_id = :s",
+            "SELECT count(*) FROM evidence WHERE scan_id = :s",
             {"s": scan_id},
         )
         assert rows[0][0] == 0
@@ -1411,3 +1436,120 @@ class TestScanScope:
             {"o": other_org},
         )
         assert before == after
+
+
+class TestEvidence:
+    """One row per reading, one stored copy of what it produced."""
+
+    async def test_a_successful_reading_is_recorded_with_its_payload(
+        self, replay, connected_account
+    ) -> None:
+        """The half that was missing. The ledger recorded failures; a success
+        left nothing behind but data inside a blob nothing could point at."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT evidence_key, content_hash, byte_size FROM evidence "
+            "WHERE scan_id = :s AND outcome = 'COMPLETE'",
+            {"s": scan_id},
+        )
+        assert rows, "a completed scan records what it read"
+        for key, content_hash, byte_size in rows:
+            assert content_hash is not None, f"{key} recorded no payload"
+            assert len(content_hash) == 64
+            assert byte_size > 0
+
+    # Permissions are recorded from the plan's own declaration, which the
+    # recorded fixture predates -- so the assertion that a reading carries them
+    # lives in tests/unit/test_evidence_store.py, against a real coverage
+    # report rather than against a recording that could only echo whatever was
+    # written into it.
+
+    async def test_an_unchanged_environment_stores_its_payloads_once(
+        self, replay, connected_account
+    ) -> None:
+        """The reason the payloads are content-addressed.
+
+        A customer scanning daily whose environment has not changed stored the
+        whole thing again every time. Scanning the same recording twice must add
+        evidence rows and no new payloads at all.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        after_first = await fetch(
+            "SELECT count(*) FROM evidence_blobs WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        await run_scan(org_id, account_id)
+        after_second = await fetch(
+            "SELECT count(*) FROM evidence_blobs WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        evidence_rows = await fetch(
+            "SELECT count(*) FROM evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert after_first[0][0] == after_second[0][0], "identical bytes stored twice"
+        assert evidence_rows[0][0] > after_second[0][0], (
+            "the second scan should still record that it read everything again"
+        )
+
+    async def test_re_reading_the_same_payload_touches_it(
+        self, replay, connected_account
+    ) -> None:
+        """What retention reads. A payload still being collected must not look
+        like one whose last reference was months ago."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        first = await fetch(
+            "SELECT max(last_seen_at), max(first_stored_at) FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        await run_scan(org_id, account_id)
+        second = await fetch(
+            "SELECT max(last_seen_at), max(first_stored_at) FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert second[0][0] >= first[0][0], "last_seen_at went backwards"
+        assert second[0][1] == first[0][1], "first_stored_at is not the storing time"
+
+    async def test_a_failed_reading_points_at_no_payload(
+        self, replay, connected_account
+    ) -> None:
+        """A hash of nothing would claim there was something to point at."""
+        org_id, account_id = connected_account
+        replay["payload"]["errors"]["storage"] = "Azure API timeout"
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT content_hash, byte_size FROM evidence "
+            "WHERE scan_id = :s AND outcome <> 'COMPLETE'",
+            {"s": scan_id},
+        )
+        assert rows, "the injected failure should have been recorded"
+        for content_hash, byte_size in rows:
+            assert content_hash is None
+            assert byte_size == 0
+
+    async def test_evidence_records_when_the_provider_was_read(
+        self, replay, connected_account
+    ) -> None:
+        """``collected_at``, not the row's write time. The two are the same for
+        a live scan and months apart for a replay, and freshness is about the
+        first."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT count(*) FROM evidence "
+            "WHERE scan_id = :s AND collected_at IS NOT NULL",
+            {"s": scan_id},
+        )
+        assert rows[0][0] > 0

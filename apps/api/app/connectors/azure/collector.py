@@ -144,6 +144,10 @@ class AzureCollector:
                 await http.aclose()
 
         snapshot.coverage = report.to_json()
+        # Held for the pipeline to store as evidence, then dropped: they are
+        # the same objects already inside ``data``, sliced by what produced
+        # them.
+        snapshot.payloads = report.payloads
         # Both views derived from the one report, never assigned separately.
         # ``gaps`` is what the rules degrade on, key by key; ``errors`` is the
         # category summary the scan banner and the role-drift explanation read.

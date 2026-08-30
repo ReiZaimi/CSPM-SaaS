@@ -43,28 +43,28 @@ def test_the_model_keys_a_reading_to_its_subscription() -> None:
     """A tenant-wide scan reads each subscription separately and they fail
     separately, so an outcome that did not name its subscription would be
     unactionable in exactly the case tenant-wide scans were built for."""
-    from app.models.scan import ScanCollectionResult
+    from app.models.scan import Evidence
 
     constraint = next(
         c
-        for c in ScanCollectionResult.__table_args__
-        if getattr(c, "name", "") == "uq_scan_collection_scan_account_task"
+        for c in Evidence.__table_args__
+        if getattr(c, "name", "") == "uq_evidence_scan_account_key"
     )
     assert [c.name for c in constraint.columns] == [
         "scan_id",
         "cloud_account_id",
-        "task_key",
+        "evidence_key",
     ]
 
 
 def test_a_reading_carries_the_category_the_rules_degrade_on() -> None:
-    """``task_key`` is what was read; ``category`` is the bucket
+    """``evidence_key`` is what was read; ``category`` is the bucket
     the customer's role is granted on. Both are needed: one names the listing,
     the other names the checks that lose their verdict over it."""
-    from app.models.scan import ScanCollectionResult
+    from app.models.scan import Evidence
 
-    columns = {c.name for c in ScanCollectionResult.__table__.columns}
-    assert {"task_key", "category", "outcome", "detail", "item_count"} <= columns
+    columns = {c.name for c in Evidence.__table__.columns}
+    assert {"evidence_key", "category", "outcome", "detail", "item_count"} <= columns
 
 
 # ------------------------------------------------------------ schema shape
@@ -100,9 +100,9 @@ def test_a_reading_names_the_scope_it_came_from() -> None:
     recording it against one would send a customer to check a subscription that
     is working.
     """
-    from app.models.scan import ScanCollectionResult
+    from app.models.scan import Evidence
 
-    columns = {c.name: c for c in ScanCollectionResult.__table__.columns}
+    columns = {c.name: c for c in Evidence.__table__.columns}
     assert columns["cloud_account_id"].nullable
     assert columns["connection_id"].nullable
 

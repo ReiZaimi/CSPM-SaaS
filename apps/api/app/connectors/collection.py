@@ -75,6 +75,11 @@ class TaskResult:
     outcome: TaskOutcome
     detail: str = ""
     item_count: int = 0
+    # The provider actions the read was made under, copied from the task's own
+    # declaration. Recorded rather than looked up later because a role can be
+    # redeployed between the scan and the question: what matters is what the
+    # read actually needed at the moment it was made.
+    permissions: tuple[str, ...] = ()
 
     @property
     def is_trustworthy(self) -> bool:
@@ -91,9 +96,24 @@ class CoverageReport:
     """
 
     results: dict[str, TaskResult] = field(default_factory=dict)
+    # What each task produced, kept apart rather than only merged.
+    #
+    # The merged dict the executor fills is what the normalizer reads, and it
+    # is all a scan needed while evidence was one blob per subscription. Storing
+    # evidence per unit needs the units, and they are the same objects -- held
+    # by reference here, not copied -- so keeping them costs nothing and is the
+    # difference between an unchanged listing being stored once or once per
+    # scan for ever.
+    #
+    # Deliberately absent from :meth:`to_json`: that serializes the *coverage*,
+    # which travels inside the snapshot, and putting the payloads there would
+    # write every listing into the snapshot a second time.
+    payloads: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def record(self, result: TaskResult) -> None:
+    def record(self, result: TaskResult, payload: dict[str, Any] | None = None) -> None:
         self.results[result.key] = result
+        if payload:
+            self.payloads[result.key] = payload
 
     @property
     def is_complete(self) -> bool:
@@ -146,6 +166,7 @@ class CoverageReport:
                 "outcome": r.outcome.value,
                 "detail": r.detail,
                 "item_count": r.item_count,
+                "permissions": list(r.permissions),
             }
             for key, r in self.results.items()
         }
@@ -246,6 +267,7 @@ class CollectionRun:
                     TaskResult(
                         key=task.key,
                         category=task.category,
+                        permissions=task.actions,
                         outcome=TaskOutcome.SKIPPED,
                         detail=f"needs {blocker}, which did not produce usable data",
                     )
@@ -258,7 +280,7 @@ class CollectionRun:
             )
             for result, produced in results:
                 data.update(produced)
-                report.record(result)
+                report.record(result, produced)
                 done += 1
 
             if self.on_progress:
@@ -298,6 +320,7 @@ class CollectionRun:
                 TaskResult(
                     key=task.key,
                     category=task.category,
+                    permissions=task.actions,
                     outcome=TaskOutcome.FAILED,
                     detail=message,
                 ),
@@ -318,6 +341,7 @@ class CollectionRun:
                 TaskResult(
                     key=task.key,
                     category=task.category,
+                    permissions=task.actions,
                     outcome=TaskOutcome.PARTIAL,
                     detail=partial_reason,
                     item_count=count,
@@ -329,6 +353,7 @@ class CollectionRun:
             TaskResult(
                 key=task.key,
                 category=task.category,
+                permissions=task.actions,
                 outcome=TaskOutcome.COMPLETE,
                 item_count=count,
             ),

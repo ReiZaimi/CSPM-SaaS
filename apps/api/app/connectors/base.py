@@ -76,6 +76,18 @@ class RawSnapshot:
     # it, kept so a scan can explain *which* listing was short rather than only
     # that the category is unreliable.
     coverage: dict[str, Any] = field(default_factory=dict)
+    # What each unit of collection produced, kept apart from the merged ``data``
+    # above and deliberately **not serialized**.
+    #
+    # ``data`` is the snapshot -- the whole capture, stored verbatim, which is
+    # what replay reads. This is the same content sliced by the unit that
+    # produced it, which is what evidence is stored by: one row and one
+    # content-addressed payload per reading, so an unchanged listing is kept
+    # once rather than once per scan.
+    #
+    # Absent after :meth:`from_json`, and correctly so. A replay collected
+    # nothing, so it has no readings to record -- only the capture it was handed.
+    payloads: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     def to_json(self) -> dict[str, Any]:
         return {

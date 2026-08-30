@@ -698,10 +698,25 @@ on the reaper.
    becomes structural.
 7. Scan steps and the orchestrator: PLAN / COLLECT / ANALYZE, leased and
    retryable, with split queues. (§6)
-8. The evidence model: an `evidence` table, blobs in object storage with
-   content-hash dedup, a retention policy. (§7, §2.5, §2.6)
-9. Typed `EvidenceKey` replacing the string agreement, with a test asserting
-   every declared key is produced by some task. (§2.7)
+8. **Partly done** — the evidence model. (§7, §2.5, §2.6) Migration 0010
+   renames `scan_collection_results` to `evidence` and gives a reading the
+   provenance it lacked: the provider, when it was collected, the permissions
+   the read was made under, and the hash of what it produced. `evidence_blobs`
+   stores those payloads content-addressed and scoped per organization, so an
+   unchanged listing is kept once rather than once per scan.
+
+   Still to do: blobs in object storage rather than PostgreSQL, a retention
+   policy that prunes them, and the flip that makes replay read evidence
+   instead of `cloud_snapshots`. The last of those is gated on
+   `test_the_payloads_reconstruct_the_capture_exactly` holding against real
+   scans, which is why both are written for now.
+9. ~~Typed `EvidenceKey`~~ (§2.7). Keys are an enum per provider, each carrying
+   its category, so a task no longer declares one and the two cannot disagree.
+   Rules declare `requires_evidence` as keys rather than category names, which
+   also removed a real defect: `has_collection_error("identity", "mfa")` named
+   evidence nothing produces, so half that call had never checked anything.
+   `tests/unit/test_evidence_keys.py` fails the build if a rule ever again
+   depends on evidence no task collects.
 
 ### Phase 2 — planning and context
 

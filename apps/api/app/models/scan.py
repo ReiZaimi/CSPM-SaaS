@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import ScanStatus, TaskOutcome
+from app.core.enums import Provider, ScanStatus, TaskOutcome
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -224,30 +224,50 @@ class ScanEvaluationGap(UUIDPrimaryKey, TenantOwned, Base):
     )
 
 
-class ScanCollectionResult(UUIDPrimaryKey, TenantOwned, Base):
-    """One row per (scan, subscription, collection task): what was read.
+class Evidence(UUIDPrimaryKey, TenantOwned, Base):
+    """One reading: what was collected, for which scope, and under what terms.
 
     The sibling of ``ScanRuleResult``. That table records what the rules
     concluded; this records whether they were entitled to conclude anything --
-    and until now the answer lived only as a sentence in
+    and before it existed the answer lived only as a sentence in
     ``scans.collection_errors``, which could be read by a person and by nothing
     else.
 
     Structured because the interesting questions are not answerable from prose:
-    which subscription is failing, whether a category is *failing* or merely
+    which subscription is failing, whether a listing is *failing* or merely
     *truncated*, whether this has been happening for a week. A string that
     concatenates all of that is a report; these are the facts behind it.
+
+    It now also records the successes, which is the half that was missing. A
+    row says what was read, when it was read from the provider, which
+    permissions the read was made under, and the hash of the payload it
+    produced -- so a finding is traceable to a specific reading rather than to
+    a scan holding one blob of everything.
+
+    ``content_hash`` points into :class:`EvidenceBlob` without a foreign key,
+    deliberately. Retention prunes payloads long before it prunes the record
+    that they were collected, and a row whose blob has aged out still says
+    truthfully what was read and what came of it.
     """
 
-    __tablename__ = "scan_collection_results"
+    __tablename__ = "evidence"
     __table_args__ = (
         UniqueConstraint(
             "scan_id",
             "cloud_account_id",
-            "task_key",
-            name="uq_scan_collection_scan_account_task",
+            "evidence_key",
+            name="uq_evidence_scan_account_key",
         ),
-        Index("ix_scan_collection_outcome", "organization_id", "outcome"),
+        Index("ix_evidence_outcome", "organization_id", "outcome"),
+        # What the evidence planner will ask: what do we already hold for this
+        # scope, recent enough to reuse.
+        Index(
+            "ix_evidence_freshness",
+            "organization_id",
+            "cloud_account_id",
+            "evidence_key",
+            "collected_at",
+        ),
     )
 
     scan_id: Mapped[uuid.UUID] = mapped_column(
@@ -269,9 +289,13 @@ class ScanCollectionResult(UUIDPrimaryKey, TenantOwned, Base):
     connection_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("cloud_connections.id", ondelete="CASCADE")
     )
-    # The plan task, e.g. "storage_accounts".
-    task_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    # The gap bucket the rule engine degrades on, e.g. "storage".
+    provider: Mapped[Provider] = mapped_column(
+        StrEnumType(Provider, 16), nullable=False, default=Provider.AZURE
+    )
+    # Which unit of collection produced this, e.g. "storage_accounts". The same
+    # value a rule declares in ``requires_evidence``.
+    evidence_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The permission bucket it belongs to, e.g. "storage".
     category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     outcome: Mapped[TaskOutcome] = mapped_column(
         StrEnumType(TaskOutcome, 16), nullable=False
@@ -280,6 +304,66 @@ class ScanCollectionResult(UUIDPrimaryKey, TenantOwned, Base):
     # How much came back. Meaningful next to PARTIAL, where the useful question
     # is "some of what?".
     item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # When the provider was read, not when this row was written. The two are the
+    # same for a live scan and months apart for a replay, and every question
+    # about freshness is about the first.
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # The actions the read was made under, copied from the task's own
+    # declaration. Turns "we could not read storage" into "we could not read
+    # storage, and this is the action your role is missing" without anyone
+    # correlating two files by hand.
+    permissions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # SHA-256 of the payload, or NULL where there is no payload: a task that
+    # failed outright collected nothing, and a hash of nothing would say
+    # otherwise.
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class EvidenceBlob(Base):
+    """One stored copy of a payload, addressed by its content.
+
+    A customer scanning daily whose network security groups have not changed in
+    a month stored thirty identical copies of them. Keyed by hash, they store
+    one -- and an unchanged environment costs almost nothing to keep looking at,
+    which is what makes daily scanning affordable rather than merely possible.
+
+    Scoped per organization, and that is a security decision rather than a
+    modelling one. Content-addressed storage shared across tenants would
+    deduplicate correctly and still be wrong: whether a write finds an existing
+    row is observable, so a shared table would let one tenant learn that another
+    holds identical bytes. Inside one tenant the saving is the same, because the
+    repetition being removed is the same environment read again tomorrow.
+    """
+
+    __tablename__ = "evidence_blobs"
+    __table_args__ = (
+        Index("ix_evidence_blobs_last_seen", "organization_id", "last_seen_at"),
+    )
+
+    # Half the primary key rather than a plain tenant column, which is what
+    # makes the isolation above structural: there is no way to address a blob
+    # without naming whose it is.
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_stored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Bumped every time a scan stores this content again. What retention reads:
+    # the oldest payloads nothing has referenced lately.
+    last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
