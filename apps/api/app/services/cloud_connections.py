@@ -47,6 +47,7 @@ from app.core.logging import get_logger
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import CloudConnectionCreate
+from app.services import findings as findings_service
 
 log = get_logger(__name__)
 
@@ -533,6 +534,46 @@ def degraded_categories(connection: CloudConnection) -> dict[EvidenceCategory, s
         category: explanation
         for category in categories_behind(connection.role_version)
     }
+
+
+async def set_scan_schedule(
+    session: AsyncSession,
+    tenant: TenantContext,
+    connection_id: UUID,
+    interval_hours: int | None,
+) -> CloudConnection:
+    """Turn recurring scanning on, off, or to a different cadence.
+
+    Refused on a connection that cannot scan yet: scheduling one would queue a
+    scan every interval that fails for the same reason each time, which reads
+    to the customer as a broken product rather than as consent they have not
+    granted.
+
+    Takes effect on the next tick rather than immediately -- with one
+    exception that falls out of the query rather than being special-cased. A
+    connection that has never been scanned is overdue by definition, so
+    switching scheduling on for a fresh connection starts a scan within
+    minutes, which is what somebody who just enabled it expects.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if interval_hours is not None and not connection.is_verified:
+        raise ValidationFailed(
+            "This connection is not ready to scan yet, so there is nothing to "
+            "schedule. Grant admin consent and assign the Reader role first."
+        )
+
+    connection.scan_interval_hours = interval_hours
+    await findings_service.record_audit(
+        session,
+        tenant,
+        action="connection.schedule_changed",
+        resource_type="cloud_connection",
+        resource_id=connection.id,
+        metadata={"scan_interval_hours": interval_hours},
+    )
+    await commit_unless_externally_managed(session)
+    return connection
 
 
 def deploy_to_azure_url(connection: CloudConnection) -> str | None:

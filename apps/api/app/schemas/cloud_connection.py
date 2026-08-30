@@ -9,6 +9,7 @@ from app.core.enums import (
     ConsentStatus,
     Provider,
 )
+from app.models.cloud_connection import CloudConnection
 
 
 class CloudConnectionCreate(BaseModel):
@@ -46,6 +47,8 @@ class CloudConnectionOut(BaseModel):
     status: CloudAccountStatus
     status_detail: str | None = None
     last_discovery_at: datetime | None = None
+    # How often this environment is re-read. NULL means manual only.
+    scan_interval_hours: int | None = None
     created_at: datetime
     is_verified: bool = False
     subscription_count: int = 0
@@ -77,6 +80,25 @@ class DiscoveredSubscription(BaseModel):
     discovered_at: datetime | None = None
     last_scan_at: datetime | None = None
     is_scannable: bool = False
+
+
+class ScheduleUpdate(BaseModel):
+    """How often this environment should be re-read.
+
+    ``None`` turns scheduling off and leaves the connection scannable by hand,
+    which is where every connection starts: turning a customer's cloud into a
+    recurring API cost without being asked would be a surprise on their bill.
+    """
+
+    scan_interval_hours: int | None = Field(
+        default=None,
+        ge=CloudConnection.MIN_INTERVAL_HOURS,
+        le=CloudConnection.MAX_INTERVAL_HOURS,
+        description=(
+            "Read this environment at least this often. Omit or send null for "
+            "manual scanning only."
+        ),
+    )
 
 
 class ScopeSelection(BaseModel):

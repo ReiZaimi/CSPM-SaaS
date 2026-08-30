@@ -478,3 +478,64 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
             {t["category"] for t in tasks if t["outcome"] != TaskOutcome.COMPLETE.value}
         ),
     }
+
+
+# How many scheduled scans one tick may start. A cap rather than a rate: the
+# tick runs often enough that a backlog drains in minutes, and starting five
+# hundred at once would put a tenant-wide burst on the queue for no better
+# reason than that they happened to come due together.
+SCHEDULED_START_LIMIT = 20
+
+
+async def connections_due(session: AsyncSession, *, limit: int) -> list[CloudConnection]:
+    """Scheduled connections whose environment has not been read recently enough.
+
+    "Recently enough" is measured from when a scan *started*, not from when it
+    finished. A scan that takes forty minutes should not push the next one forty
+    minutes later every time -- the interval is a promise about how often the
+    environment is read, and drift would quietly turn a daily scan into an
+    every-other-day one.
+
+    Ordered by how overdue each is, so a backlog drains worst-first rather than
+    alphabetically.
+    """
+    now = datetime.now(UTC)
+
+    # The newest scan per connection, whatever came of it. Deliberately not
+    # "the newest successful one": a connection whose scans keep failing is
+    # already telling the customer something, and retrying it every minute
+    # would add a queue full of failures to a problem they can see.
+    newest = (
+        select(
+            Scan.connection_id.label("connection_id"),
+            func.max(Scan.created_at).label("last_started"),
+        )
+        .where(Scan.connection_id.is_not(None))
+        .group_by(Scan.connection_id)
+        .subquery()
+    )
+
+    due_at = newest.c.last_started + (
+        func.make_interval(0, 0, 0, 0, CloudConnection.scan_interval_hours)
+    )
+
+    rows = (
+        (
+            await session.execute(
+                select(CloudConnection)
+                .outerjoin(newest, newest.c.connection_id == CloudConnection.id)
+                .where(
+                    CloudConnection.scan_interval_hours.is_not(None),
+                    # Never scanned, or due. A connection that has never been
+                    # scanned is due immediately, which is what a customer who
+                    # just switched scheduling on expects to happen.
+                    or_(newest.c.last_started.is_(None), due_at <= now),
+                )
+                .order_by(newest.c.last_started.asc().nullsfirst())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows)

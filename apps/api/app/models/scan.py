@@ -23,6 +23,7 @@ from app.core.enums import (
     ScanStatus,
     ScanStepKind,
     ScanStepStatus,
+    ScanTrigger,
     TaskOutcome,
 )
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
@@ -71,6 +72,12 @@ class Scan(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
 
     # Who asked for this run. Not an FK: auth.users belongs to Supabase.
     triggered_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    # And why. A NULL user became ambiguous once scans could start themselves --
+    # an old manual scan whose user record had gone looked exactly like a
+    # scheduled one.
+    trigger: Mapped[ScanTrigger] = mapped_column(
+        StrEnumType(ScanTrigger, 16), nullable=False, default=ScanTrigger.MANUAL
+    )
 
     # Set when this run re-evaluated an earlier scan's stored snapshot instead
     # of collecting. ``SET NULL`` so pruning the original execution log does not

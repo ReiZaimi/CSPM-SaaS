@@ -97,6 +97,19 @@ class CollectionScope(StrEnum):
     DIRECTORY = "directory"
 
 
+class ScanTrigger(StrEnum):
+    """Why a scan ran.
+
+    ``triggered_by_user_id`` used to carry this by implication, and stopped
+    being able to the moment scans could start themselves: a manual scan whose
+    user record had since gone looked exactly like a scheduled one. Stating it
+    is cheaper than inferring it.
+    """
+
+    MANUAL = "MANUAL"
+    SCHEDULED = "SCHEDULED"
+
+
 class ScanStepKind(StrEnum):
     """The stages a scan runs as separately durable units.
 

@@ -812,8 +812,22 @@ on the reaper.
     evidence-freshness and coverage gauges.
 18. The temporal model: `asset_change_events`, `finding_events`,
     `risk_history`. (§2.10)
-19. Scheduling and continuous monitoring, eventually change-triggered targeted
-    scans.
+19. **Done for the interval half** — §2.12. Migration 0013 adds
+    `cloud_connections.scan_interval_hours` and `scans.trigger`; a beat task
+    starts scans for connections whose environment is overdue a reading, using
+    the same advisory lock and in-flight check the API uses. Off by default:
+    turning a customer's cloud into a recurring API cost without being asked
+    would be a surprise on their bill.
+
+    An interval rather than a cron expression, deliberately. "Every night at
+    03:00" needs a timezone, a window and an answer for what happens when a
+    scan overruns its slot; an interval says the only thing a scanner can
+    promise, which is that the environment is read at least this often. Due-ness
+    is measured from when the last scan *started*, so a slow scan does not drift
+    the schedule later every time.
+
+    Still to do: the frontend control to set it, and change-triggered scans via
+    Azure Event Grid.
 20. Remediation as data: `expected_state` and `verification_spec` beside the
     human text, with IaC and Policy snippets generated from the same
     declaration that generates the RBAC artifact — the `rbac.py` pattern

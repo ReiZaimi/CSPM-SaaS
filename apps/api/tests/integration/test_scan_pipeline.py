@@ -32,6 +32,7 @@ from app.core.enums import (
     ScanStatus,
     ScanStepKind,
     ScanStepStatus,
+    ScanTrigger,
     TaskOutcome,
 )
 from app.models.cloud_account import CloudAccount
@@ -2005,3 +2006,145 @@ class TestOrchestration:
         assert all(s["attempt"] == 1 for s in stages), (
             "an uninterrupted scan took one attempt per stage"
         )
+
+
+class TestScheduling:
+    """Which connections are overdue a reading, and what starting one does.
+
+    The decision is a query over the newest scan per connection, so it needs a
+    real database: the interval arithmetic, the never-scanned case and the
+    ordering are all things SQL does and a fake would only restate.
+    """
+
+    async def _set_interval(self, connection_id: uuid.UUID, hours: int | None) -> None:
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE cloud_connections SET scan_interval_hours = :h "
+                    "WHERE id = :c"
+                ),
+                {"h": hours, "c": connection_id},
+            )
+            await session.commit()
+
+    async def _due(self) -> set[uuid.UUID]:
+        async with service_session() as session:
+            due = await scans_service.connections_due(session, limit=50)
+        return {c.id for c in due}
+
+    async def test_an_unscheduled_connection_is_never_due(
+        self, replay, connected_tenant
+    ) -> None:
+        """Every connection starts this way, and stays this way until asked."""
+        _org_id, connection_id = connected_tenant
+        assert connection_id not in await self._due()
+
+    async def test_a_scheduled_connection_that_has_never_scanned_is_due_now(
+        self, replay, connected_tenant
+    ) -> None:
+        """What somebody who just switched scheduling on expects to happen.
+
+        It falls out of the interval arithmetic rather than being special-cased:
+        a connection with no scan has nothing to measure an interval from, so it
+        is overdue by definition.
+        """
+        _org_id, connection_id = connected_tenant
+        await self._set_interval(connection_id, 24)
+        assert connection_id in await self._due()
+
+    async def test_a_recently_scanned_connection_is_not_due(
+        self, replay, connected_tenant
+    ) -> None:
+        org_id, connection_id = connected_tenant
+        await self._set_interval(connection_id, 24)
+        await run_connection_scan(org_id, connection_id)
+
+        assert connection_id not in await self._due()
+
+    async def test_a_connection_becomes_due_once_its_interval_has_elapsed(
+        self, replay, connected_tenant
+    ) -> None:
+        """Measured from when the last scan *started*.
+
+        From when it finished, a scan that takes forty minutes would push the
+        next one forty minutes later every time, and a daily scan would drift
+        into an every-other-day one.
+        """
+        org_id, connection_id = connected_tenant
+        await self._set_interval(connection_id, 24)
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text("UPDATE scans SET created_at = :t WHERE id = :s"),
+                {"t": datetime.now(UTC) - timedelta(hours=25), "s": scan_id},
+            )
+            await session.commit()
+
+        assert connection_id in await self._due()
+
+    async def test_turning_scheduling_off_stops_it(
+        self, replay, connected_tenant
+    ) -> None:
+        _org_id, connection_id = connected_tenant
+        await self._set_interval(connection_id, 24)
+        assert connection_id in await self._due()
+
+        await self._set_interval(connection_id, None)
+        assert connection_id not in await self._due()
+
+    async def test_a_scheduled_scan_says_it_was_scheduled(
+        self, replay, connected_tenant
+    ) -> None:
+        """A NULL user could not carry this once scans could start themselves:
+        a manual scan whose user record had gone looked identical."""
+        org_id, connection_id = connected_tenant
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                connection_id=connection_id,
+                status=ScanStatus.QUEUED,
+                trigger=ScanTrigger.SCHEDULED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+
+        async with service_session() as session:
+            stored = await session.get(Scan, scan_id)
+        assert stored.trigger == ScanTrigger.SCHEDULED
+        assert stored.triggered_by_user_id is None
+
+    async def test_a_manual_scan_still_says_manual(
+        self, replay, connected_account
+    ) -> None:
+        """The default, so nothing that predates the column is mislabelled."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.trigger == ScanTrigger.MANUAL
+
+    async def test_the_scheduler_does_not_pile_a_scan_on_a_running_one(
+        self, replay, connected_tenant
+    ) -> None:
+        """The interval is a floor on how often the environment is read, not an
+        instruction to stack scans on top of each other."""
+        org_id, connection_id = connected_tenant
+        await self._set_interval(connection_id, 24)
+
+        async with service_session() as session:
+            session.add(
+                Scan(
+                    organization_id=org_id,
+                    connection_id=connection_id,
+                    status=ScanStatus.DISCOVERING,
+                )
+            )
+            await session.commit()
+
+            in_flight = await scans_service.scan_in_flight(
+                session, org_id, connection_id, None
+            )
+        assert in_flight, "the scheduler's own guard should see this one"

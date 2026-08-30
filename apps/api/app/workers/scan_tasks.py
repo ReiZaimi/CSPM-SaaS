@@ -17,7 +17,7 @@ from uuid import UUID
 
 from app.core.config import settings
 from app.core.db import dispose_engines, service_session
-from app.core.enums import ScanStatus, ScanStepKind
+from app.core.enums import ScanStatus, ScanStepKind, ScanTrigger
 from app.core.logging import configure_logging, get_logger
 from app.models.scan import Scan
 from app.services import orchestrator
@@ -153,6 +153,29 @@ def reap_abandoned_scans(self: object) -> dict:
     return {"reclaimed": len(reclaimed), "closed": len(closed)}
 
 
+@celery_app.task(name="cloudguard.start_due_scans", bind=True, max_retries=0)
+def start_due_scans(self: object) -> dict:
+    """Start scans for connections whose environment is overdue a reading.
+
+    The product's first claim is continuous posture assessment, and until this
+    existed every scan was a button press: a customer who connected Azure,
+    scanned once and got on with their week had a report that aged silently
+    while the environment moved.
+
+    Runs on the beat schedule beside the reaper, and starts scans the same way
+    the API does -- same advisory lock, same in-flight check, same task. A
+    scheduled scan is a scan; the only thing that differs is who asked for it.
+    """
+    configure_logging()
+    _announce_tenancy()
+    started = asyncio.run(_start_due())
+    if started:
+        log.info("scan.scheduled_starts", count=len(started))
+    for scan_id in started:
+        run_scan.delay(str(scan_id))
+    return {"started": len(started)}
+
+
 # ------------------------------------------------------------------ internals
 #
 # Every one of these disposes its engines before its loop ends. ``asyncio.run``
@@ -215,6 +238,51 @@ async def _run_step(scan_id: UUID, step_id: UUID) -> str:
     """
     try:
         return (await ScanPipeline(scan_id).run_step(step_id)).value
+    finally:
+        await dispose_engines()
+
+
+async def _start_due() -> list[UUID]:
+    """Queue a scan for each connection that is due one.
+
+    Each connection is locked and checked individually rather than in one
+    sweep. A connection whose scan is already running must be skipped, not
+    waited for, and a lock held across the whole batch would serialize every
+    tenant behind whichever one happened to be first.
+    """
+    started: list[UUID] = []
+    try:
+        async with service_session() as session:
+            due = await scans_service.connections_due(
+                session, limit=scans_service.SCHEDULED_START_LIMIT
+            )
+
+        for connection in due:
+            async with service_session() as session:
+                await scans_service.lock_scan_target(
+                    session, connection.organization_id, connection.id, None
+                )
+                if await scans_service.scan_in_flight(
+                    session, connection.organization_id, connection.id, None
+                ):
+                    # Still working through the last one. The schedule is a
+                    # floor on how often the environment is read, not an
+                    # instruction to pile scans on top of each other.
+                    continue
+
+                scan = Scan(
+                    organization_id=connection.organization_id,
+                    connection_id=connection.id,
+                    status=ScanStatus.QUEUED,
+                    # Nobody asked for it, and saying so is the point of the
+                    # column: a NULL user alone could not distinguish this from
+                    # a manual scan whose user record had gone.
+                    trigger=ScanTrigger.SCHEDULED,
+                )
+                session.add(scan)
+                await session.commit()
+                started.append(scan.id)
+        return started
     finally:
         await dispose_engines()
 

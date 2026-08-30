@@ -21,6 +21,7 @@ from app.schemas.cloud_connection import (
     CloudConnectionCreate,
     CloudConnectionOut,
     DiscoveredSubscription,
+    ScheduleUpdate,
     ScopeSelection,
 )
 from app.services import cloud_connections as service
@@ -297,6 +298,24 @@ async def set_scope(
         session, tenant, connection_id, payload.in_scope
     )
     return envelope([_serialize_subscription(a) for a in accounts])
+
+
+@router.patch("/{connection_id}/schedule")
+async def set_schedule(
+    connection_id: UUID, payload: ScheduleUpdate, session: DbSession, tenant: Tenant
+) -> dict:
+    """Read this environment on a schedule, or stop.
+
+    Every connection starts unscheduled. Turning a customer's cloud into a
+    recurring API cost without being asked would be a surprise on their Azure
+    bill as much as on ours, so continuous scanning is something they switch on
+    rather than something they discover.
+    """
+    tenant.require_write()
+    connection = await service.set_scan_schedule(
+        session, tenant, connection_id, payload.scan_interval_hours
+    )
+    return envelope(_serialize(connection))
 
 
 @router.post("/{connection_id}/cancel")

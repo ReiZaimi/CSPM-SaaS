@@ -43,6 +43,14 @@ celery_app.conf.beat_schedule = {
         "task": "cloudguard.reap_abandoned_scans",
         "schedule": 60.0,
     },
+    # Every five minutes rather than hourly. The interval a customer sets is a
+    # floor on how often their environment is read, and a coarse tick would
+    # quietly add up to half an hour to it -- a daily scan is then daily plus
+    # whenever the scheduler next happens to look.
+    "start-due-scans": {
+        "task": "cloudguard.start_due_scans",
+        "schedule": 300.0,
+    },
 }
 
 celery_app.conf.update(
