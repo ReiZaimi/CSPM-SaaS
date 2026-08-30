@@ -11,7 +11,20 @@ from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrim
 
 
 class ResourceRecord(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
-    """A normalized asset. Cloud-neutral by design -- no Azure types leak in."""
+    """A normalized asset. Cloud-neutral by design -- no Azure types leak in.
+
+    An asset belongs to exactly one of two scopes, and which one is not a
+    detail. A virtual machine is in a subscription; a directory user is in a
+    tenant and in no subscription at all. Modelling the second as though it
+    were the first is what made one administrator into one asset per
+    subscription -- and, through the finding's (organization, rule, resource)
+    identity, one MFA finding per subscription for the same person.
+
+    So ``cloud_account_id`` is set for account-scoped assets and NULL for
+    directory-scoped ones, which carry ``connection_id`` instead. Exactly one
+    of the two is always present; the database enforces that rather than
+    trusting this comment.
+    """
 
     __tablename__ = "cloud_resources"
     __table_args__ = (
@@ -19,8 +32,19 @@ class ResourceRecord(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
         Index("ix_cloud_resources_org_type", "organization_id", "resource_type"),
     )
 
-    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE"), nullable=False
+    # NULL for a directory-scoped asset. PostgreSQL treats NULLs as distinct in
+    # the unique constraint above, so those rows are keyed by the partial index
+    # on (connection_id, provider_resource_id) created in migration 0008.
+    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE")
+    )
+    # Set for directory-scoped assets, and the reason they survive the deletion
+    # of any one subscription: the directory outlives the subscriptions under
+    # it, and is gone only when the connection is.
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cloud_connections.id", ondelete="CASCADE"),
+        index=True,
     )
     provider: Mapped[Provider] = mapped_column(StrEnumType(Provider, 16), nullable=False)
     provider_resource_id: Mapped[str] = mapped_column(String(1024), nullable=False)

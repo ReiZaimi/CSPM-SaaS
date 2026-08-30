@@ -26,8 +26,8 @@ from app.connectors.azure.auth import TokenProvider
 from app.connectors.azure.client import DEFAULT_TIMEOUT, RequestLimiter
 from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.base import RawSnapshot
-from app.connectors.collection import CollectionRun
-from app.core.enums import Provider
+from app.connectors.collection import CollectionRun, CollectionTask
+from app.core.enums import CollectionScope, Provider
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -60,7 +60,7 @@ class AzureCollector:
     def __init__(
         self,
         tenant_id: str,
-        subscription_id: str,
+        subscription_id: str | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.tenant_id = tenant_id
@@ -71,7 +71,7 @@ class AzureCollector:
     async def collect(
         self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
     ) -> RawSnapshot:
-        """Build the plan, run it, and record what it managed to see.
+        """Build the account plan, run it, and record what it managed to see.
 
         The sequence of ``_collect_category`` calls this replaced encoded three
         things it could not express: that NSGs and public IPs are independent,
@@ -79,12 +79,52 @@ class AzureCollector:
         is not a listing. ``plan.py`` declares all three and
         :class:`CollectionRun` acts on them.
         """
-        snapshot = RawSnapshot(
-            provider=Provider.AZURE,
-            tenant_id=self.tenant_id,
-            subscription_id=self.subscription_id,
+        if not self.subscription_id:
+            raise ValueError("A subscription id is required to collect Azure state")
+        return await self._run(
+            RawSnapshot(
+                provider=Provider.AZURE,
+                tenant_id=self.tenant_id,
+                subscription_id=self.subscription_id,
+                scope=CollectionScope.ACCOUNT,
+            ),
+            lambda builder: builder.build_account_plan(),
+            on_progress,
         )
 
+    async def collect_directory(
+        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+    ) -> RawSnapshot:
+        """Read the tenant directory, once for the whole scan.
+
+        Carries no subscription id, because there is no subscription in the
+        answer: Graph is scoped by the token, and the token belongs to the
+        tenant the connection was consented in.
+        """
+        return await self._run(
+            RawSnapshot(
+                provider=Provider.AZURE,
+                tenant_id=self.tenant_id,
+                subscription_id=None,
+                scope=CollectionScope.DIRECTORY,
+            ),
+            lambda builder: builder.build_directory_plan(),
+            on_progress,
+        )
+
+    async def _run(
+        self,
+        snapshot: RawSnapshot,
+        select_plan: Callable[[AzurePlanBuilder], list[CollectionTask]],
+        on_progress: Callable[[int, int], Awaitable[None]] | None,
+    ) -> RawSnapshot:
+        """Execute one plan into one snapshot.
+
+        Shared by both scopes deliberately. Coverage, degradation and the
+        request ceiling are properties of *a collection run*, not of what it
+        happened to be reading, and letting the two scopes each grow their own
+        copy is how one of them ends up quietly not recording a gap.
+        """
         # One connection pool for the whole run; each task wraps it in its own
         # client so truncation stays attributable. One request limiter too, and
         # for the opposite reason: what must not be per task is how many
@@ -94,10 +134,10 @@ class AzureCollector:
         http = self._http or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
         limiter = RequestLimiter()
         try:
-            plan = AzurePlanBuilder(
+            builder = AzurePlanBuilder(
                 self.tokens, self.subscription_id, http, limiter=limiter
-            ).build()
-            run = CollectionRun(plan, on_progress=on_progress)
+            )
+            run = CollectionRun(select_plan(builder), on_progress=on_progress)
             report = await run.execute(snapshot.data)
         finally:
             if owns_http:
@@ -114,6 +154,7 @@ class AzureCollector:
             "azure.collection_finished",
             tenant_id=self.tenant_id,
             subscription_id=self.subscription_id,
+            scope=snapshot.scope.value,
             tasks=run.size,
             complete=report.is_complete,
             degraded=sorted(snapshot.errors),

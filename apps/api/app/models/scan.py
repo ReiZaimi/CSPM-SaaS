@@ -128,17 +128,26 @@ class CloudSnapshot(UUIDPrimaryKey, TenantOwned, Base):
     # several subscriptions and each provider payload is kept as its own
     # verbatim record -- merging them before storage would destroy the property
     # the snapshot exists for, which is that it is what Azure actually said.
+    #
+    # Plus at most one directory capture per scan, which is a reading of the
+    # tenant rather than of any subscription in it. That one carries a NULL
+    # account, so this constraint does not bound it; migration 0008's partial
+    # unique index on (scan_id) WHERE cloud_account_id IS NULL does.
     __table_args__ = (
         UniqueConstraint(
             "scan_id", "cloud_account_id", name="uq_cloud_snapshots_scan_account"
         ),
     )
 
-    # Always exactly one subscription. A snapshot is a capture of one
-    # provider account, which is why a tenant-wide scan holds several of them
-    # rather than one wide one.
-    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE"), nullable=False
+    # Exactly one subscription for an account capture, NULL for the scan's
+    # directory capture.
+    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE")
+    )
+    # Which connection this capture was taken through. Always set for a
+    # directory capture, since that is the only thing left to attribute it to.
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_connections.id", ondelete="CASCADE")
     )
     scan_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
@@ -230,10 +239,17 @@ class ScanCollectionResult(UUIDPrimaryKey, TenantOwned, Base):
     # one separately and they fail separately, so an outcome that did not name
     # its subscription would be unactionable in exactly the case the tenant-wide
     # scan was built for.
-    cloud_account_id: Mapped[uuid.UUID] = mapped_column(
+    #
+    # NULL for the scan's directory tasks, which are a reading of the tenant.
+    # Attributing those to a subscription would be the same mistake one layer
+    # down: a directory read that failed did not fail *in* a subscription, and
+    # naming one would send someone to check a subscription that is fine.
+    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("cloud_accounts.id", ondelete="CASCADE"),
-        nullable=False,
+    )
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_connections.id", ondelete="CASCADE")
     )
     # The plan task, e.g. "storage_accounts".
     task_key: Mapped[str] = mapped_column(String(64), nullable=False)

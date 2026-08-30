@@ -196,6 +196,16 @@ class AzureConnector(CloudConnector):
         )
         return await collector.collect(on_progress)
 
+    async def collect_directory(
+        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+    ) -> RawSnapshot:
+        """The tenant's directory, read once regardless of subscription count."""
+        collector = AzureCollector(
+            tenant_id=self.tenant_id,
+            http_client=self._http,
+        )
+        return await collector.collect_directory(on_progress)
+
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
         return self._normalizer.normalize(snapshot)
 

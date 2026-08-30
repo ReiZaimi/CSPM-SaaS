@@ -37,8 +37,16 @@ from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
 from app.core.config import settings
 from app.core.db import service_session
-from app.core.enums import CloudAccountStatus, ConsentStatus, Provider, ScanStatus
+from app.core.enums import (
+    CloudAccountStatus,
+    CollectionScope,
+    ConnectionScope,
+    ConsentStatus,
+    Provider,
+    ScanStatus,
+)
 from app.models.cloud_account import CloudAccount
+from app.models.cloud_connection import CloudConnection
 from app.models.scan import Scan
 from app.services import scanner as scanner_module
 from app.services.rule_sync import sync_rules_to_database
@@ -46,6 +54,13 @@ from app.services.scanner import ScanPipeline
 
 SNAPSHOT = Path("/srv/apps/api/tests/fixtures/azure_raw/snapshot_mixed.json")
 DEMO_ORG = "Banka Kombetare (demo)"
+
+
+# The recording is one file, but a scan reads two scopes: the subscription and
+# the tenant directory above it. These keys belong to the second.
+DIRECTORY_KEYS = frozenset(
+    {"users", "directory_roles", "user_role_map", "authentication_methods"}
+)
 
 
 class ReplayConnector(CloudConnector):
@@ -58,14 +73,39 @@ class ReplayConnector(CloudConnector):
     async def validate_connection(self):
         raise NotImplementedError
 
-    async def collect(self) -> RawSnapshot:
+    async def collect(self, on_progress=None) -> RawSnapshot:
+        return self._slice(directory=False)
+
+    async def collect_directory(self, on_progress=None) -> RawSnapshot:
+        return self._slice(directory=True)
+
+    def _slice(self, *, directory: bool) -> RawSnapshot:
+        """The recording, split the way the real connector splits its plans.
+
+        Serving the whole thing to both would put the directory back inside the
+        per-subscription read, which is the shape that produced one asset per
+        subscription for every user in the tenant.
+        """
         return RawSnapshot(
             provider=Provider.AZURE,
             tenant_id=self.payload["tenant_id"],
-            subscription_id=self.payload["subscription_id"],
+            subscription_id=(
+                None if directory else self.payload["subscription_id"]
+            ),
+            scope=(
+                CollectionScope.DIRECTORY if directory else CollectionScope.ACCOUNT
+            ),
             version=self.payload["version"],
-            data=copy.deepcopy(self.payload["data"]),
-            errors=copy.deepcopy(self.payload["errors"]),
+            data={
+                key: copy.deepcopy(value)
+                for key, value in self.payload["data"].items()
+                if (key in DIRECTORY_KEYS) is directory
+            },
+            errors={
+                category: reason
+                for category, reason in self.payload["errors"].items()
+                if (category == "identity") is directory
+            },
         )
 
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
@@ -160,8 +200,26 @@ async def seed(email: str, fix: bool) -> None:
         ).scalar_one_or_none()
 
         if account_id is None:
+            # The connection is what the tenant directory is read through, so a
+            # demo account without one would show every identity check as
+            # UNKNOWN -- and the MFA finding is half of what the demo is for.
+            connection = CloudConnection(
+                organization_id=org_id,
+                provider=Provider.AZURE,
+                name="Demo tenant",
+                scope_type=ConnectionScope.TENANT_ROOT,
+                tenant_id=payload["tenant_id"],
+                consent_status=ConsentStatus.GRANTED,
+                consented_at=datetime.now(UTC),
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+            )
+            session.add(connection)
+            await session.flush()
+
             account = CloudAccount(
                 organization_id=org_id,
+                connection_id=connection.id,
                 provider=Provider.AZURE,
                 account_name="Production Subscription (demo)",
                 tenant_id=payload["tenant_id"],

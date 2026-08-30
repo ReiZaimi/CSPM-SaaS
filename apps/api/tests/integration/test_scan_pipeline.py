@@ -23,6 +23,7 @@ from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
 from app.core.db import service_session
 from app.core.enums import (
     CloudAccountStatus,
+    CollectionScope,
     ConsentStatus,
     FindingStatus,
     Level,
@@ -48,8 +49,24 @@ def load_raw(name: str = "snapshot_mixed") -> dict:
     return json.loads((RAW / f"{name}.json").read_text())
 
 
+# The recorded fixture is one file covering a whole scan, but a scan reads two
+# scopes and the pipeline asks for them separately. These are the keys that
+# belong to the tenant rather than to any subscription in it.
+DIRECTORY_KEYS = frozenset(
+    {"users", "directory_roles", "user_role_map", "authentication_methods"}
+)
+DIRECTORY_CATEGORY = "identity"
+
+
 class ReplayConnector(CloudConnector):
-    """Replays a recorded Azure snapshot through the real normalizer."""
+    """Replays a recorded Azure snapshot through the real normalizer.
+
+    Splits the recording the same way the real connector splits its plans: the
+    directory half answers ``collect_directory`` once per scan, the rest answers
+    ``collect`` once per subscription. Serving the whole recording to both would
+    hide the bug these tests exist to hold shut -- the users would come back per
+    subscription again, exactly as they did before the split.
+    """
 
     provider = Provider.AZURE
 
@@ -63,8 +80,40 @@ class ReplayConnector(CloudConnector):
     async def collect(self, on_progress=None) -> RawSnapshot:
         if on_progress:
             await on_progress(1, 1)
-        snapshot = RawSnapshot.from_json(copy.deepcopy(self.payload))
+        snapshot = self._slice(directory=False)
         self._align_coverage(snapshot)
+        return snapshot
+
+    async def collect_directory(self, on_progress=None) -> RawSnapshot:
+        if on_progress:
+            await on_progress(1, 1)
+        snapshot = self._slice(directory=True)
+        self._align_coverage(snapshot)
+        return snapshot
+
+    def _slice(self, *, directory: bool) -> RawSnapshot:
+        snapshot = RawSnapshot.from_json(copy.deepcopy(self.payload))
+        snapshot.data = {
+            key: value
+            for key, value in snapshot.data.items()
+            if (key in DIRECTORY_KEYS) is directory
+        }
+        snapshot.coverage = {
+            key: entry
+            for key, entry in snapshot.coverage.items()
+            if (entry.get("category") == DIRECTORY_CATEGORY) is directory
+        }
+        # ``errors`` is injected directly by tests rather than derived, so it is
+        # filtered on the same axis: an identity error belongs to the directory
+        # capture and a storage error to the subscription's.
+        snapshot.errors = {
+            category: reason
+            for category, reason in snapshot.errors.items()
+            if (category == DIRECTORY_CATEGORY) is directory
+        }
+        if directory:
+            snapshot.subscription_id = None
+            snapshot.scope = CollectionScope.DIRECTORY
         return snapshot
 
     @staticmethod
@@ -100,12 +149,38 @@ def replay(monkeypatch):
 
 @pytest.fixture
 async def connected_account(cleanup_orgs):
+    """One subscription, beneath the connection that grants access to it.
+
+    The connection is not decoration. A subscription is discovered under a
+    connection and never exists without one in production, and the connection is
+    what the tenant directory is read through -- so an account without one is a
+    shape the pipeline is right to refuse the directory for, and the wrong thing
+    to write the rest of these tests against.
+    """
+    from app.core.enums import ConnectionScope
+    from app.models.cloud_connection import CloudConnection
+
     org_id = await create_org_as(USER, "Scan Test Org")
     cleanup_orgs.append(org_id)
 
     async with service_session() as session:
+        connection = CloudConnection(
+            organization_id=org_id,
+            provider=Provider.AZURE,
+            name="production",
+            scope_type=ConnectionScope.TENANT_ROOT,
+            role_version="v1",
+            tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            consent_status=ConsentStatus.GRANTED,
+            rbac_verified_at=datetime.now(UTC),
+            status=CloudAccountStatus.ACTIVE,
+        )
+        session.add(connection)
+        await session.flush()
+
         account = CloudAccount(
             organization_id=org_id,
+            connection_id=connection.id,
             provider=Provider.AZURE,
             account_name="Production Subscription",
             tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -846,8 +921,25 @@ class TestTenantWideScan:
             "SELECT cloud_account_id FROM cloud_snapshots WHERE scan_id = :s",
             {"s": scan_id},
         )
-        assert len(rows) == 2
-        assert len({r[0] for r in rows}) == 2, "one per subscription"
+        accounts = [r[0] for r in rows if r[0] is not None]
+        assert len(accounts) == 2
+        assert len(set(accounts)) == 2, "one per subscription"
+
+    async def test_the_directory_is_captured_once_for_the_whole_scan(
+        self, replay, connected_tenant
+    ) -> None:
+        """Not once per subscription. The tenant is the same tenant from each of
+        them, and a second capture would be a second copy of one answer."""
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        rows = await fetch(
+            "SELECT connection_id FROM cloud_snapshots "
+            "WHERE scan_id = :s AND cloud_account_id IS NULL",
+            {"s": scan_id},
+        )
+        assert len(rows) == 1, "one directory capture per scan"
+        assert rows[0][0] == connection_id
 
     async def test_resources_from_both_subscriptions_land_in_one_scan(
         self, replay, connected_tenant
@@ -859,14 +951,63 @@ class TestTenantWideScan:
             scan = await session.get(Scan, scan_id)
 
         assert scan.resource_count > 0
-        # Both subscriptions replay the same fixture, so every resource is
-        # discovered twice -- once per subscription, under its own account.
+        # Both subscriptions replay the same fixture, so every subscription
+        # resource is discovered twice -- once per subscription, under its own
+        # account.
         rows = await fetch(
             "SELECT DISTINCT cloud_account_id FROM cloud_resources "
-            "WHERE organization_id = :o",
+            "WHERE organization_id = :o AND cloud_account_id IS NOT NULL",
             {"o": org_id},
         )
         assert len(rows) == 2, "assets attributed to the subscription they came from"
+
+    async def test_a_directory_user_is_one_asset_not_one_per_subscription(
+        self, replay, connected_tenant
+    ) -> None:
+        """The regression this whole split exists for.
+
+        Directory tasks used to run inside the per-subscription plan, so each
+        subscription contributed its own copy of every user. ``cloud_resources``
+        is unique on (cloud_account_id, provider_resource_id), so the copies
+        were separate asset rows -- and a finding is identified by
+        (organization, rule, resource), which turned one administrator without
+        MFA into one CRITICAL finding per subscription.
+        """
+        org_id, connection_id = connected_tenant
+        await run_connection_scan(org_id, connection_id)
+
+        rows = await fetch(
+            "SELECT provider_resource_id, count(*) FROM cloud_resources "
+            "WHERE organization_id = :o AND resource_type = 'user' "
+            "GROUP BY provider_resource_id",
+            {"o": org_id},
+        )
+        assert rows, "the fixture is supposed to contain directory users"
+        assert all(count == 1 for _id, count in rows), (
+            "a directory user is one asset in the tenant, not one per subscription"
+        )
+        assert all(r[0] is None for r in await fetch(
+            "SELECT cloud_account_id FROM cloud_resources "
+            "WHERE organization_id = :o AND resource_type = 'user'",
+            {"o": org_id},
+        )), "a user belongs to the tenant, so it names no subscription"
+
+    async def test_one_administrator_raises_one_finding(
+        self, replay, connected_tenant
+    ) -> None:
+        """The same regression, at the layer the customer would have seen it."""
+        org_id, connection_id = connected_tenant
+        await run_connection_scan(org_id, connection_id)
+
+        rows = await fetch(
+            "SELECT rule_id, resource_id, count(*) FROM findings "
+            "WHERE organization_id = :o AND rule_id = 'AZ-ID-001' "
+            "GROUP BY rule_id, resource_id",
+            {"o": org_id},
+        )
+        # However many administrators the fixture holds, each is one row. Two
+        # subscriptions must not double them.
+        assert all(count == 1 for *_keys, count in rows)
 
     async def test_a_scan_with_nothing_in_scope_says_so(
         self, replay, connected_tenant

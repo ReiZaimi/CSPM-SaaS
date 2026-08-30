@@ -150,9 +150,25 @@ async def rescan_finding(finding_id: UUID, session: DbSession, tenant: Tenant) -
             "This finding is not tied to a single resource. Run a full scan instead."
         )
 
-    account = await accounts_service.get_cloud_account(
-        session, tenant, resource.cloud_account_id
-    )
+    # A directory asset lives in the tenant and in no subscription, so there is
+    # no account id on it to rescan. Any scannable subscription under the same
+    # connection does the job: a scan resolves its connection from whichever
+    # account it covers and reads the directory once through that, so the
+    # cheapest scan available still re-reads the thing this finding is about.
+    if resource.cloud_account_id is None:
+        account = await accounts_service.first_scannable_account(
+            session, tenant, resource.connection_id
+        )
+        if account is None:
+            raise ValidationFailed(
+                "This finding is about the tenant directory, and the connection "
+                "it came from has no subscription ready to scan. Validate the "
+                "connection, then try again."
+            )
+    else:
+        account = await accounts_service.get_cloud_account(
+            session, tenant, resource.cloud_account_id
+        )
     if not account.is_scannable:
         raise ValidationFailed("This connection is not ready to scan")
 

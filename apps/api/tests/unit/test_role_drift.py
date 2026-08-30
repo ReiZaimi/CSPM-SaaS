@@ -38,7 +38,7 @@ def build_test_plan():
 
     return AzurePlanBuilder(
         tokens=object(), subscription_id="sub-1", http_client=httpx.AsyncClient()
-    ).build()
+    ).build_account_plan()
 
 
 def make_connection(role_version: str, provider: Provider = Provider.AZURE):

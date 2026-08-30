@@ -1,4 +1,12 @@
-"""Azure's collection plan: what to gather, and what each piece needs.
+"""Azure's collection plans: what to gather, and what each piece needs.
+
+Two plans, not one, because a scan reads two different things. ARM answers
+questions about a *subscription* and is asked once per subscription;
+Graph answers questions about the *tenant* and must be asked once for the whole
+scan. Collecting both under one plan meant the directory was re-read for every
+subscription -- and, worse than the cost, normalized into a separate set of user
+resources each time, so one administrator without MFA produced one finding per
+subscription.
 
 One entry per listing, rather than one per category. That granularity is the
 whole reason the plan exists -- ``_collect_network`` used to gather NSGs, NICs
@@ -45,12 +53,19 @@ DETAIL_CONCURRENCY = 8
 
 
 class AzurePlanBuilder:
-    """Builds the task list for one subscription."""
+    """Builds the task lists a scan runs.
+
+    ``subscription_id`` is optional because the directory plan does not need
+    one: it reads the tenant, and the tenant is whichever one the token
+    provider authenticates against. Building an account plan without a
+    subscription is refused rather than allowed to produce URLs with ``None``
+    in them.
+    """
 
     def __init__(
         self,
         tokens: TokenProvider,
-        subscription_id: str,
+        subscription_id: str | None,
         http_client: httpx.AsyncClient,
         limiter: RequestLimiter | None = None,
     ) -> None:
@@ -106,8 +121,18 @@ class AzurePlanBuilder:
 
         return list(await asyncio.gather(*(bounded(c) for c in coros)))
 
-    # ----------------------------------------------------------------- plan
-    def build(self) -> list[CollectionTask]:
+    # ----------------------------------------------------------------- plans
+    def build_account_plan(self) -> list[CollectionTask]:
+        """Everything that is a reading of one subscription.
+
+        No Graph task belongs here. A directory read placed in this plan runs
+        once per subscription and is the same answer every time, which is both
+        the cost and the correctness problem this split exists to fix.
+        """
+        if not self.subscription_id:
+            raise ValueError(
+                "An account plan reads one subscription and needs its id"
+            )
         sub = self.subscription_id
 
         async def nsgs(arm: ArmClient) -> dict[str, Any]:
@@ -197,9 +222,17 @@ class AzurePlanBuilder:
             ),
             self._inventory_task(),
             self._diagnostics_task(),
-            *self._identity_tasks(),
         ]
         return tasks
+
+    def build_directory_plan(self) -> list[CollectionTask]:
+        """Everything that is a reading of the tenant directory.
+
+        Run once per scan, whatever the scan covers. Needs no subscription:
+        Graph is scoped by the token, and the token is issued for the tenant
+        the connection was consented in.
+        """
+        return self._identity_tasks()
 
     def _inventory_task(self) -> CollectionTask:
         """Everything in the subscription, read through Resource Graph.
@@ -217,11 +250,19 @@ class AzurePlanBuilder:
         thing to move and the cheapest one to get wrong.
         """
 
+        # Bound here rather than read off ``self`` inside the closure: this task
+        # only ever appears in the account plan, which has already refused to
+        # build without a subscription, and capturing it says so to the reader
+        # and the type checker at once.
+        sub = self.subscription_id
+        if not sub:
+            raise ValueError("The inventory task reads one subscription")
+
         async def run(collected: dict[str, Any]) -> TaskData:
             client = ResourceGraphClient(
                 self.tokens, self._http, limiter=self._limiter
             )
-            rows = await client.list_inventory(self.subscription_id)
+            rows = await client.list_inventory(sub)
             data = {"resources": rows}
             if client.truncated:
                 return TaskData(

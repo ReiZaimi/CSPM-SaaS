@@ -22,6 +22,10 @@ from app.models.scan import Scan, ScanCollectionResult
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
+# What the collection report calls a task that read the tenant rather than a
+# subscription. One label, so the API and any screen reading it agree.
+DIRECTORY_LABEL = "Tenant directory"
+
 # A scan already in flight for the same target. Shared by every route that
 # starts one, so they cannot drift into disagreeing about what "already
 # running" means.
@@ -238,11 +242,14 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
     "we looked and it was fine" in the first place. Rule coverage says what the
     checks concluded; this says whether they were entitled to conclude it.
     """
+    # Outer join, because a directory task belongs to no subscription. An inner
+    # join silently dropped those rows, which would leave the identity category
+    # missing from the very report that exists to say what could not be read.
     rows = list(
         (
             await session.execute(
                 select(ScanCollectionResult, CloudAccount.display_name)
-                .join(
+                .outerjoin(
                     CloudAccount,
                     CloudAccount.id == ScanCollectionResult.cloud_account_id,
                 )
@@ -257,8 +264,13 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
 
     tasks = [
         {
-            "subscription": name,
-            "cloud_account_id": str(row.cloud_account_id),
+            # Named for what it is a reading of. "Tenant directory" rather than
+            # a blank or a borrowed subscription name: the customer needs to
+            # know a failure there is not a failure in any one subscription.
+            "subscription": name or DIRECTORY_LABEL,
+            "cloud_account_id": (
+                str(row.cloud_account_id) if row.cloud_account_id else None
+            ),
             "task": row.task_key,
             "category": row.category,
             "outcome": row.outcome.value,

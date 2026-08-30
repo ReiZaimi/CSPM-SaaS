@@ -149,13 +149,9 @@ async def run_identity(token: str, http: httpx.AsyncClient):
         def arm_token(self) -> str:
             return "arm"
 
-    tasks = [
-        t
-        for t in AzurePlanBuilder(
-            tokens=Tokens(), subscription_id="sub-1", http_client=http
-        ).build()
-        if t.category == "identity"
-    ]
+    tasks = AzurePlanBuilder(
+        tokens=Tokens(), subscription_id=None, http_client=http
+    ).build_directory_plan()
     return await CollectionRun(tasks).execute({})
 
 

@@ -76,9 +76,9 @@ async def run_identity(monkeypatch: pytest.MonkeyPatch, denied: set[str]):
     monkeypatch.setattr(plan_module, "GraphClient", FakeGraph)
 
     builder = AzurePlanBuilder(
-        tokens=object(), subscription_id="s", http_client=httpx.AsyncClient()
+        tokens=object(), subscription_id=None, http_client=httpx.AsyncClient()
     )
-    tasks = [t for t in builder.build() if t.category == "identity"]
+    tasks = builder.build_directory_plan()
     data: dict = {}
     report = await CollectionRun(tasks).execute(data)
     return data, report

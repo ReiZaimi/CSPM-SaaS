@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.enums import Provider, RelationshipType
+from app.core.enums import CollectionScope, Provider, RelationshipType
 from app.domain.resource import CloudResource
 
 
@@ -49,6 +49,12 @@ class RawSnapshot:
     provider: Provider
     tenant_id: str
     subscription_id: str | None
+    # What this capture is a reading of. ACCOUNT snapshots belong to one
+    # subscription; a DIRECTORY snapshot belongs to the tenant and is taken once
+    # per scan. Stated rather than inferred from ``subscription_id`` being None,
+    # because replay has to know which it is holding and an absent id is a
+    # weaker signal than a declared scope.
+    scope: CollectionScope = CollectionScope.ACCOUNT
     version: str = "1.0"
     # category -> provider payload, e.g. {"network_security_groups": [...]}
     data: dict[str, Any] = field(default_factory=dict)
@@ -67,6 +73,7 @@ class RawSnapshot:
             "provider": self.provider.value,
             "tenant_id": self.tenant_id,
             "subscription_id": self.subscription_id,
+            "scope": self.scope.value,
             "version": self.version,
             "data": self.data,
             "errors": self.errors,
@@ -88,6 +95,10 @@ class RawSnapshot:
             provider=Provider(payload["provider"]),
             tenant_id=payload["tenant_id"],
             subscription_id=payload.get("subscription_id"),
+            # Absent on snapshots taken before directory collection was hoisted
+            # to the tenant. Every one of those was a subscription capture, so
+            # ACCOUNT is not a default here so much as the fact about them.
+            scope=CollectionScope(payload.get("scope", CollectionScope.ACCOUNT.value)),
             version=payload.get("version", "1.0"),
             data=dict(payload.get("data") or {}),
             errors=dict(payload.get("errors") or {}),
@@ -119,11 +130,29 @@ class CloudConnector(ABC):
     async def collect(
         self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
     ) -> RawSnapshot:
-        """Gather raw provider state. Never evaluates anything.
+        """Gather one account's raw state. Never evaluates anything.
 
         ``on_progress`` is called as units of collection finish, with (done,
         total). The total is known before collection starts, which is what lets
         the slowest phase of a scan report something better than a phase name.
+        """
+
+    @abstractmethod
+    async def collect_directory(
+        self, on_progress: Callable[[int, int], Awaitable[None]] | None = None
+    ) -> RawSnapshot:
+        """Gather the trust boundary's own state, once per scan.
+
+        Separate from :meth:`collect` because it is a reading of a different
+        thing. Users, groups and directory roles belong to the tenant, not to
+        any subscription beneath it, and every cloud has this split -- an AWS
+        organization and a GCP organization are the same shape of fact.
+
+        Collecting it inside the per-account plan was not merely wasteful. The
+        directory came back once per subscription and normalized into one set
+        of user resources per subscription, so a tenant of twenty subscriptions
+        held twenty rows for every administrator and raised twenty findings for
+        each one that lacked MFA.
         """
 
     @abstractmethod

@@ -249,7 +249,7 @@ async def test_the_whole_plan_shares_one_request_ceiling() -> None:
         subscription_id="sub-1",
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         limiter=limiter,
-    ).build()
+    ).build_account_plan()
 
     await CollectionRun(plan).execute({})
 

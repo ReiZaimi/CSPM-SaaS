@@ -80,6 +80,23 @@ class TaskOutcome(StrEnum):
         return self is TaskOutcome.COMPLETE
 
 
+class CollectionScope(StrEnum):
+    """What a unit of collection is a reading *of*.
+
+    Not a naming distinction. A subscription's resources and a tenant's
+    directory are collected against different scopes, and collecting the second
+    once per subscription is how one administrator without MFA became one
+    finding per subscription: the directory is the same directory each time, so
+    every subscription contributed its own copy of every user.
+
+    ``ACCOUNT`` is per subscription; ``DIRECTORY`` is per tenant, gathered once
+    for the whole scan however many subscriptions it covers.
+    """
+
+    ACCOUNT = "account"
+    DIRECTORY = "directory"
+
+
 class ScanStatus(StrEnum):
     QUEUED = "QUEUED"
     DISCOVERING = "DISCOVERING"

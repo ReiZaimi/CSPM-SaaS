@@ -29,8 +29,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.registry import get_connector
@@ -64,6 +65,74 @@ from app.rules.engine import EvaluationReport, RuleEngine
 from app.services.cloud_connections import degraded_categories
 
 log = get_logger(__name__)
+
+
+class _ScanProgress:
+    """How far along collection is, across every phase of one scan.
+
+    Two things it does that the closure it replaced could not.
+
+    It writes through its **own** session. The old reporter committed on the
+    pipeline's session, mid-pipeline: a commit there is not merely a wasted
+    round trip, it ends the transaction the pipeline is still building work in.
+    A short UPDATE of two columns on a separate connection says the same thing
+    and touches nothing else.
+
+    And it accumulates across phases rather than assuming they are identical.
+    Progress used to be ``index * plan_size + done``, which reads every phase as
+    the same size as the one currently reporting -- true while every phase was
+    one subscription running one fixed plan, and false the moment a
+    tenant-scoped directory phase runs a plan of its own. The total grows as
+    phases announce their size, so it can be short early but is never wrong
+    about what has finished.
+    """
+
+    def __init__(self, scan_id: UUID, account_count: int) -> None:
+        self.scan_id = scan_id
+        self.account_count = account_count
+        self._finished = 0  # units completed in phases that have ended
+        self._directory_size = 0
+        self._account_size = 0
+
+    def directory_reporter(self) -> Callable[[int, int], Awaitable[None]]:
+        return self._reporter(is_directory=True)
+
+    def account_reporter(self) -> Callable[[int, int], Awaitable[None]]:
+        return self._reporter(is_directory=False)
+
+    def _reporter(self, *, is_directory: bool) -> Callable[[int, int], Awaitable[None]]:
+        # Captured when the phase starts, so the next phase resumes from where
+        # this one left off instead of restarting the count at each
+        # subscription. The executor's last callback carries done == plan_size,
+        # which is what leaves ``_finished`` at the phase's full size.
+        base = self._finished
+
+        async def report(done: int, plan_size: int) -> None:
+            if is_directory:
+                self._directory_size = plan_size
+            else:
+                self._account_size = plan_size
+            self._finished = base + done
+            await self._write(self._finished, self._total())
+
+        return report
+
+    def _total(self) -> int:
+        return self._directory_size + self.account_count * self._account_size
+
+    async def _write(self, done: int, total: int) -> None:
+        try:
+            async with service_session() as progress_session:
+                await progress_session.execute(
+                    update(Scan)
+                    .where(Scan.id == self.scan_id)
+                    .values(progress_done=done, progress_total=total)
+                )
+                await progress_session.commit()
+        except Exception as exc:  # pragma: no cover - progress is never fatal
+            # A scan must not fail because a cosmetic counter could not be
+            # written. The bar stops moving; the scan keeps going.
+            log.warning("scan.progress_write_failed", scan_id=str(self.scan_id), error=str(exc))
 
 
 class ScanPipeline:
@@ -115,17 +184,51 @@ class ScanPipeline:
                 merged = NormalizedState()
                 account_state: list[tuple[CloudAccount, NormalizedState]] = []
                 errors: dict[str, str] = {}
+                connection = await self._resolve_connection(session, scan, accounts)
+                progress = _ScanProgress(scan.id, len(accounts))
 
-                for index, account in enumerate(accounts):
+                # --- the tenant, once ---------------------------------------
+                # Before any subscription, and exactly once however many there
+                # are. The directory is the same directory from every one of
+                # them; reading it per subscription produced a duplicate set of
+                # user assets each time, and with them a duplicate finding per
+                # subscription for every administrator missing MFA.
+                directory = await self._collect_directory(
+                    session, scan, connection, progress
+                )
+                if directory is not None:
+                    directory_state, directory_snapshot = directory
+                    # Unqualified, unlike a subscription's. A directory failure
+                    # happened once, to the tenant, and naming a subscription
+                    # beside it would invite someone to go and look at one.
+                    errors.update(directory_snapshot.errors)
+                    merged.resources.extend(directory_state.resources)
+                    merged.relationships.extend(directory_state.relationships)
+                elif connection is not None:
+                    errors["identity"] = (
+                        "The directory could not be read for this scan, so no "
+                        "identity check could reach a verdict."
+                    )
+                else:
+                    # A subscription with no connection behind it predates
+                    # connections entirely. There is no tenant-level grant to
+                    # read the directory through, and saying so is the only
+                    # honest answer -- the identity rules degrade to UNKNOWN
+                    # rather than passing over a directory nobody looked at.
+                    errors["identity"] = (
+                        "This subscription is not attached to a cloud connection, "
+                        "so CloudGuard has no grant to read its tenant directory. "
+                        "Reconnect it from the connections page."
+                    )
+
+                # --- each subscription --------------------------------------
+                for account in accounts:
                     connector = get_connector(
                         account.provider,
                         tenant_id=account.tenant_id,
                         subscription_id=account.subscription_id,
                     )
-                    progress = self._progress_reporter(
-                        session, scan, index, len(accounts)
-                    )
-                    snapshot = await connector.collect(progress)
+                    snapshot = await connector.collect(progress.account_reporter())
                     await self._explain_role_drift(session, account, snapshot)
 
                     # Persisted before interpretation, always. One row per
@@ -135,6 +238,7 @@ class ScanPipeline:
                         CloudSnapshot(
                             organization_id=org_id,
                             cloud_account_id=account.id,
+                            connection_id=account.connection_id,
                             scan_id=scan.id,
                             snapshot_version=snapshot.version,
                             data=snapshot.to_json(),
@@ -146,7 +250,9 @@ class ScanPipeline:
                     for category, reason in snapshot.errors.items():
                         errors[self._scoped_key(account, category, len(accounts))] = reason
 
-                    self._record_collection_status(session, org_id, scan, account, snapshot)
+                    self._record_collection_status(
+                        session, org_id, scan, snapshot, account=account
+                    )
 
                     state = connector.normalize(snapshot)
                     account_state.append((account, state))
@@ -161,6 +267,10 @@ class ScanPipeline:
                     for _account, state in account_state
                     for category, reason in state.collection_errors.items()
                 }
+                if directory is not None:
+                    merged.collection_errors.update(directory[0].collection_errors)
+                elif "identity" in errors:
+                    merged.collection_errors["identity"] = errors["identity"]
                 await session.commit()
 
                 await self._evaluate(
@@ -171,6 +281,11 @@ class ScanPipeline:
                     observed_at=observed_at,
                     mutate_findings=True,
                     degraded=bool(errors),
+                    directory=(
+                        (connection, directory[0])
+                        if directory is not None and connection is not None
+                        else None
+                    ),
                 )
 
                 for account in accounts:
@@ -182,13 +297,89 @@ class ScanPipeline:
                 await session.rollback()
                 await self._fail(session, scan, str(exc))
 
+    async def _collect_directory(
+        self,
+        session: AsyncSession,
+        scan: Scan,
+        connection: CloudConnection | None,
+        progress: "_ScanProgress",
+    ) -> tuple[NormalizedState, RawSnapshot] | None:
+        """Read the tenant directory once, and store it as its own capture.
+
+        Returns ``None`` when there is nothing to read it through, or when the
+        read failed outright. Both cases end as a recorded gap rather than as a
+        failed scan: a directory CloudGuard could not reach costs the identity
+        rules their verdict and costs the subscription rules nothing.
+
+        The capture is stored with a NULL ``cloud_account_id`` because it is not
+        a reading of any subscription. That is also what makes it replayable on
+        its own terms -- a replay reconstructs the tenant from this row and the
+        subscriptions from theirs, exactly as the original scan saw them.
+        """
+        if connection is None or not connection.tenant_id:
+            return None
+
+        connector = get_connector(
+            connection.provider,
+            tenant_id=connection.tenant_id,
+            subscription_id=None,
+        )
+        try:
+            snapshot = await connector.collect_directory(progress.directory_reporter())
+        except Exception as exc:
+            # Never fatal. The same position collection takes on a single
+            # failing ARM category, applied one level up: the directory is one
+            # source among several, and losing it must cost the checks that
+            # needed it and nothing else.
+            log.warning(
+                "scan.directory_collection_failed",
+                scan_id=str(scan.id),
+                connection_id=str(connection.id),
+                error=str(exc),
+            )
+            return None
+
+        session.add(
+            CloudSnapshot(
+                organization_id=scan.organization_id,
+                cloud_account_id=None,
+                connection_id=connection.id,
+                scan_id=scan.id,
+                snapshot_version=snapshot.version,
+                data=snapshot.to_json(),
+            )
+        )
+        self._record_collection_status(
+            session, scan.organization_id, scan, snapshot, connection=connection
+        )
+        return connector.normalize(snapshot), snapshot
+
+    async def _resolve_connection(
+        self, session: AsyncSession, scan: Scan, accounts: list[CloudAccount]
+    ) -> CloudConnection | None:
+        """The connection this scan reads through.
+
+        Named on the scan for a tenant-wide run and reachable through the
+        account for a single-subscription one. Both forms cover subscriptions
+        beneath a single grant, so there is at most one connection either way --
+        which is what makes "read the directory once" well defined.
+        """
+        if scan.connection_id is not None:
+            return await session.get(CloudConnection, scan.connection_id)
+        for account in accounts:
+            if account.connection_id is not None:
+                return await session.get(CloudConnection, account.connection_id)
+        return None
+
     def _record_collection_status(
         self,
         session: AsyncSession,
         org_id: UUID,
         scan: Scan,
-        account: CloudAccount,
         snapshot: RawSnapshot,
+        *,
+        account: CloudAccount | None = None,
+        connection: CloudConnection | None = None,
     ) -> None:
         """Turn the run's coverage report into rows that can be queried.
 
@@ -199,12 +390,17 @@ class ScanPipeline:
         truncating in this subscription all week?" is the one that matters when
         deciding whether a customer has an outage or simply a large tenant.
         """
+        connection_id = (
+            connection.id if connection is not None else
+            account.connection_id if account is not None else None
+        )
         for key, entry in snapshot.coverage.items():
             session.add(
                 ScanCollectionResult(
                     organization_id=org_id,
                     scan_id=scan.id,
-                    cloud_account_id=account.id,
+                    cloud_account_id=account.id if account is not None else None,
+                    connection_id=connection_id,
                     task_key=key,
                     category=entry.get("category", ""),
                     outcome=TaskOutcome(entry.get("outcome", TaskOutcome.FAILED.value)),
@@ -255,22 +451,6 @@ class ScanPipeline:
             return category
         return f"{account.display_name or account.subscription_id}: {category}"
 
-    def _progress_reporter(
-        self, session: AsyncSession, scan: Scan, index: int, total_accounts: int
-    ) -> Callable[[int, int], Awaitable[None]]:
-        """Progress across every subscription, not just the current one.
-
-        Each subscription runs the same plan, so once the first callback
-        reports a plan size the overall total is exact rather than an estimate.
-        """
-
-        async def report(done: int, plan_size: int) -> None:
-            scan.progress_done = index * plan_size + done
-            scan.progress_total = total_accounts * plan_size
-            await session.commit()
-
-        return report
-
     async def replay(self) -> None:
         """Re-evaluate an earlier scan's stored snapshots against today's rules.
 
@@ -320,6 +500,7 @@ class ScanPipeline:
 
                 merged = NormalizedState()
                 account_state: list[tuple[CloudAccount, NormalizedState]] = []
+                directory: tuple[CloudConnection, NormalizedState] | None = None
                 errors: dict[str, str] = {}
                 is_current = True
                 observed_at = min(row.created_at for row in stored)
@@ -329,13 +510,35 @@ class ScanPipeline:
                 # newest snapshot are two statements each, which a tenant-wide
                 # replay would multiply by every subscription it covered.
                 accounts = await self._accounts_by_id(
-                    session, org_id, [row.cloud_account_id for row in stored]
+                    session,
+                    org_id,
+                    [row.cloud_account_id for row in stored if row.cloud_account_id],
                 )
                 newest_by_account = await self._newest_snapshot_ids(
                     session, org_id, list(accounts)
                 )
 
                 for row in stored:
+                    # The scan's directory capture, replayed on its own terms.
+                    # It is a reading of the tenant, so it has no account to
+                    # resolve and no per-subscription staleness to check --
+                    # only whether a later scan has since re-read the same
+                    # directory through the same connection.
+                    if row.cloud_account_id is None:
+                        replayed = await self._replay_directory(
+                            session, org_id, row
+                        )
+                        if replayed is None:
+                            is_current = False
+                            continue
+                        directory, snapshot, current = replayed
+                        is_current = is_current and current
+                        merged.resources.extend(directory[1].resources)
+                        merged.relationships.extend(directory[1].relationships)
+                        merged.collection_errors.update(directory[1].collection_errors)
+                        errors.update(snapshot.errors)
+                        continue
+
                     account = accounts.get(row.cloud_account_id)
                     if account is None:
                         # The subscription is gone. Its capture is still real
@@ -363,7 +566,7 @@ class ScanPipeline:
                         ] = reason
                     merged.collection_errors.update(state.collection_errors)
 
-                if not account_state:
+                if not account_state and directory is None:
                     await self._fail(
                         session,
                         scan,
@@ -387,6 +590,7 @@ class ScanPipeline:
                     observed_at=observed_at,
                     mutate_findings=is_current,
                     degraded=bool(errors),
+                    directory=directory,
                 )
 
                 # ``last_scan_at`` is deliberately left alone: it records when
@@ -409,6 +613,7 @@ class ScanPipeline:
         observed_at: datetime,
         mutate_findings: bool,
         degraded: bool,
+        directory: tuple[CloudConnection, NormalizedState] | None = None,
     ) -> None:
         """Everything downstream of the snapshots: persist, evaluate, finalize.
 
@@ -426,7 +631,7 @@ class ScanPipeline:
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
         if mutate_findings:
             id_map = await self._persist_resources(
-                session, org_id, account_state, observed_at
+                session, org_id, account_state, observed_at, directory=directory
             )
         else:
             # A superseded capture describes an environment that has since
@@ -436,7 +641,10 @@ class ScanPipeline:
             # ``evaluation_only`` means the run changes nothing, and the asset
             # inventory is part of "nothing".
             id_map = await self._existing_resource_ids(
-                session, org_id, [account.id for account, _ in account_state]
+                session,
+                org_id,
+                [account.id for account, _ in account_state],
+                connection_id=directory[0].id if directory is not None else None,
             )
         scan.resource_count = len(merged.resources)
 
@@ -492,7 +700,12 @@ class ScanPipeline:
         )
 
     async def _existing_resource_ids(
-        self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        account_ids: list[UUID],
+        *,
+        connection_id: UUID | None = None,
     ) -> dict[str, UUID]:
         """Provider id -> database id, read without writing anything.
 
@@ -502,9 +715,21 @@ class ScanPipeline:
         -- which is accurate: there is no asset to point at any more.
 
         One query for every subscription, for the same reason its writing
-        counterpart takes them all at once.
+        counterpart takes them all at once. Directory assets are read by
+        connection in the same statement: they have no account, so an
+        account-only filter would leave every identity gap unattributed.
         """
-        if not account_ids:
+        scopes: list[ColumnElement[bool]] = []
+        if account_ids:
+            scopes.append(ResourceRecord.cloud_account_id.in_(account_ids))
+        if connection_id is not None:
+            scopes.append(
+                and_(
+                    ResourceRecord.cloud_account_id.is_(None),
+                    ResourceRecord.connection_id == connection_id,
+                )
+            )
+        if not scopes:
             return {}
         rows = (
             (
@@ -513,7 +738,7 @@ class ScanPipeline:
                         ResourceRecord.provider_resource_id, ResourceRecord.id
                     ).where(
                         ResourceRecord.organization_id == org_id,
-                        ResourceRecord.cloud_account_id.in_(account_ids),
+                        or_(*scopes),
                     )
                 )
             )
@@ -589,6 +814,49 @@ class ScanPipeline:
             .all()
         )
 
+    async def _replay_directory(
+        self, session: AsyncSession, org_id: UUID, row: CloudSnapshot
+    ) -> tuple[tuple[CloudConnection, NormalizedState], RawSnapshot, bool] | None:
+        """Re-normalize a stored directory capture.
+
+        Returns the state, the snapshot it came from, and whether that capture
+        is still the newest directory read for its connection. ``None`` when
+        the connection is gone -- the capture remains real history, but there is
+        no tenant left to attribute directory assets to.
+
+        The staleness question is the same one asked of a subscription, asked of
+        the right thing. A directory capture from last month cannot resolve an
+        MFA finding today, for exactly the reason a month-old subscription
+        capture cannot resolve a storage finding: nothing was observed.
+        """
+        if row.connection_id is None:
+            return None
+        connection = await session.get(CloudConnection, row.connection_id)
+        if connection is None or connection.organization_id != org_id:
+            return None
+
+        newest = (
+            await session.execute(
+                select(CloudSnapshot.id)
+                .where(
+                    CloudSnapshot.organization_id == org_id,
+                    CloudSnapshot.connection_id == connection.id,
+                    CloudSnapshot.cloud_account_id.is_(None),
+                )
+                .order_by(CloudSnapshot.created_at.desc(), CloudSnapshot.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        snapshot = RawSnapshot.from_json(row.data)
+        connector = get_connector(
+            connection.provider,
+            tenant_id=connection.tenant_id,
+            subscription_id=None,
+        )
+        state = connector.normalize(snapshot)
+        return (connection, state), snapshot, row.id == newest
+
     async def _accounts_by_id(
         self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
     ) -> dict[UUID, CloudAccount]:
@@ -626,6 +894,11 @@ class ScanPipeline:
                     select(CloudSnapshot.cloud_account_id, CloudSnapshot.id)
                     .where(
                         CloudSnapshot.organization_id == org_id,
+                        # Not merely redundant with the ``in_`` beside it. The
+                        # column is nullable now -- a directory capture has no
+                        # account -- and the NOT NULL is what lets the result be
+                        # read as the account-keyed mapping this returns.
+                        CloudSnapshot.cloud_account_id.is_not(None),
                         CloudSnapshot.cloud_account_id.in_(account_ids),
                     )
                     .distinct(CloudSnapshot.cloud_account_id)
@@ -639,7 +912,13 @@ class ScanPipeline:
             .tuples()
             .all()
         )
-        return dict(rows)
+        # The NOT NULL in the query is what makes this narrowing sound; the
+        # comprehension states it in a form the type checker can follow.
+        return {
+            account_id: snapshot_id
+            for account_id, snapshot_id in rows
+            if account_id is not None
+        }
 
     # -------------------------------------------------------------- role drift
     async def _explain_role_drift(
@@ -699,8 +978,10 @@ class ScanPipeline:
         org_id: UUID,
         account_state: list[tuple[CloudAccount, NormalizedState]],
         observed_at: datetime,
+        *,
+        directory: tuple[CloudConnection, NormalizedState] | None = None,
     ) -> dict[str, UUID]:
-        """Upsert every subscription's assets, returning provider id -> row id.
+        """Upsert this scan's assets, returning provider id -> row id.
 
         Resources are updated rather than replaced so ``first_seen_at`` survives
         and a finding keeps pointing at the same asset row across scans.
@@ -709,6 +990,13 @@ class ScanPipeline:
         processed. The two are the same for a live scan and months apart for a
         replay, and ``last_seen_at`` means nothing if a replay of an old
         snapshot can report a deleted resource as seen today.
+
+        Assets arrive in two scopes and are keyed differently because they are
+        different things. A subscription's assets are keyed by (account,
+        provider id); the directory's are keyed by (connection, provider id) and
+        written once, which is the whole point -- keyed per account they became
+        one row per subscription for every user in the tenant, and one finding
+        per subscription for every administrator missing MFA.
 
         Every subscription is handled in one pass on purpose. Per-subscription
         this was one query for the existing rows, one more for *each newly
@@ -719,8 +1007,22 @@ class ScanPipeline:
         """
         now = observed_at
         account_ids = [account.id for account, _ in account_state]
-        if not account_ids:
+        if not account_ids and directory is None:
             return {}
+
+        # Both scopes read in one statement. The directory rows carry a NULL
+        # account, so an ``in_(account_ids)`` filter alone would not see them
+        # and every user would be inserted afresh on every scan.
+        scopes: list[ColumnElement[bool]] = []
+        if account_ids:
+            scopes.append(ResourceRecord.cloud_account_id.in_(account_ids))
+        if directory is not None:
+            scopes.append(
+                and_(
+                    ResourceRecord.cloud_account_id.is_(None),
+                    ResourceRecord.connection_id == directory[0].id,
+                )
+            )
 
         existing = {
             (row.cloud_account_id, row.provider_resource_id): row
@@ -728,7 +1030,7 @@ class ScanPipeline:
                 await session.execute(
                     select(ResourceRecord).where(
                         ResourceRecord.organization_id == org_id,
-                        ResourceRecord.cloud_account_id.in_(account_ids),
+                        or_(*scopes),
                     )
                 )
             )
@@ -740,40 +1042,68 @@ class ScanPipeline:
         # already in hand; the read-back loop existed only because this
         # reference was dropped.
         touched: dict[str, ResourceRecord] = {}
+
+        def upsert(
+            resource: CloudResource,
+            *,
+            account_id: UUID | None,
+            connection_id: UUID | None,
+        ) -> None:
+            row = existing.get((account_id, resource.provider_resource_id))
+            if row is None:
+                row = ResourceRecord(
+                    organization_id=org_id,
+                    cloud_account_id=account_id,
+                    connection_id=connection_id,
+                    provider=resource.provider,
+                    provider_resource_id=resource.provider_resource_id,
+                    first_seen_at=now,
+                )
+                session.add(row)
+
+            row.resource_type = resource.resource_type
+            row.name = resource.name
+            row.region = resource.region
+            row.environment = resource.environment
+            row.criticality = resource.criticality
+            row.data_sensitivity = resource.data_sensitivity
+            row.public_exposure = resource.public_exposure
+            row.resource_metadata = resource.metadata
+            # Never moved backwards. A replay carries the capture's own
+            # time, which is older than a detection already recorded
+            # against a live scan -- and "last seen" going backwards would
+            # be a lie in the one direction that matters, making a present
+            # resource look stale.
+            row.last_seen_at = max(row.last_seen_at or now, now)
+            touched[resource.provider_resource_id] = row
+
         for account, state in account_state:
             for resource in state.resources:
-                row = existing.get((account.id, resource.provider_resource_id))
-                if row is None:
-                    row = ResourceRecord(
-                        organization_id=org_id,
-                        cloud_account_id=account.id,
-                        provider=resource.provider,
-                        provider_resource_id=resource.provider_resource_id,
-                        first_seen_at=now,
-                    )
-                    session.add(row)
+                upsert(
+                    resource,
+                    account_id=account.id,
+                    connection_id=account.connection_id,
+                )
 
-                row.resource_type = resource.resource_type
-                row.name = resource.name
-                row.region = resource.region
-                row.environment = resource.environment
-                row.criticality = resource.criticality
-                row.data_sensitivity = resource.data_sensitivity
-                row.public_exposure = resource.public_exposure
-                row.resource_metadata = resource.metadata
-                # Never moved backwards. A replay carries the capture's own
-                # time, which is older than a detection already recorded
-                # against a live scan -- and "last seen" going backwards would
-                # be a lie in the one direction that matters, making a present
-                # resource look stale.
-                row.last_seen_at = max(row.last_seen_at or now, now)
-                touched[resource.provider_resource_id] = row
+        # The directory last, and the order is load-bearing. ``touched`` is
+        # keyed by provider id alone, so if a scan run before this split left
+        # per-account copies of a user behind, whichever scope is written second
+        # is the row findings get attributed to. That has to be the tenant-scoped
+        # one: it is the row that will still be here after the stale copies age
+        # out, and attributing to a per-account copy would re-create the
+        # duplicate finding this split exists to remove.
+        if directory is not None:
+            connection, directory_state = directory
+            for resource in directory_state.resources:
+                upsert(resource, account_id=None, connection_id=connection.id)
 
         # One flush assigns every pending primary key.
         await session.flush()
         id_map = {provider_id: row.id for provider_id, row in touched.items()}
 
         edges = [edge for _account, state in account_state for edge in state.relationships]
+        if directory is not None:
+            edges.extend(directory[1].relationships)
         await self._persist_relationships(session, org_id, edges, id_map)
         await session.commit()
         return id_map
