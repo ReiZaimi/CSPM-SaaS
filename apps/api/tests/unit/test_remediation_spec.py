@@ -16,12 +16,21 @@ import pytest
 
 from app.core.enums import Level, RuleState
 from app.domain.resource import CloudResource
-from app.remediation import RemediationSpec, azure_policy, terraform_hints
+from app.remediation import (
+    Comparison,
+    RemediationSpec,
+    azure_policy,
+    terraform_hints,
+)
 from app.remediation.spec import ExpectedState
 from app.rules.base import RuleContext
 from app.rules.registry import RULE_REGISTRY
 
 DECLARED = [rule for rule in RULE_REGISTRY if rule.remediation_spec is not None]
+# Rules whose expectation can be turned into an asset, which is what makes the
+# agreement checkable. The rest are not a loophole -- see the test below.
+CHECKABLE = [rule for rule in DECLARED if rule.remediation_spec.expected]
+UNCHECKABLE = [rule for rule in DECLARED if not rule.remediation_spec.expected]
 
 
 def resource_meeting(rule, satisfied: bool) -> CloudResource:
@@ -31,10 +40,15 @@ def resource_meeting(rule, satisfied: bool) -> CloudResource:
     false -- to something it plainly is not. Built from the declaration rather
     than by hand, which is the whole point: a rule whose check drifts away from
     its remediation fails here rather than in a customer's inbox.
+
+    The collection comparisons are why a declaration carries a witness. "No
+    inbound rule allows 3389 from anywhere" cannot be turned into an asset the
+    rule should fail unless the declaration says what such a rule looks like,
+    and a declaration that says so is one a customer can read too.
     """
-    metadata = {}
+    metadata = dict(rule.remediation_spec.applies_when)
     for state in rule.remediation_spec.expected:
-        metadata[state.field] = state.equals if satisfied else _violation(state.equals)
+        metadata[state.field] = _value_for(state, satisfied)
     return CloudResource(
         provider_resource_id="/x/asset",
         resource_type=rule.applies_to[0],
@@ -43,6 +57,16 @@ def resource_meeting(rule, satisfied: bool) -> CloudResource:
         data_sensitivity=Level.MEDIUM,
         metadata=metadata,
     )
+
+
+def _value_for(state, satisfied: bool):
+    if state.comparison is Comparison.NONE_MATCHING:
+        assert state.example, "a NONE_MATCHING state needs the shape it forbids"
+        return [] if satisfied else [state.example]
+    if state.comparison is Comparison.NOT_EMPTY:
+        assert state.example, "a NOT_EMPTY state needs an entry that satisfies it"
+        return [state.example] if satisfied else []
+    return state.equals if satisfied else _violation(state.equals)
 
 
 def _violation(value: object) -> object:
@@ -65,7 +89,7 @@ def evaluate(rule, resource: CloudResource) -> RuleState:
 
 
 # ------------------------------------------- the rule and its remediation agree
-@pytest.mark.parametrize("rule", DECLARED, ids=lambda r: r.rule_id)
+@pytest.mark.parametrize("rule", CHECKABLE, ids=lambda r: r.rule_id)
 def test_meeting_the_expected_state_makes_the_rule_pass(rule) -> None:
     """The claim a remediation makes, checked against the check itself.
 
@@ -76,7 +100,7 @@ def test_meeting_the_expected_state_makes_the_rule_pass(rule) -> None:
     assert evaluate(rule, resource_meeting(rule, satisfied=True)) is RuleState.PASS
 
 
-@pytest.mark.parametrize("rule", DECLARED, ids=lambda r: r.rule_id)
+@pytest.mark.parametrize("rule", CHECKABLE, ids=lambda r: r.rule_id)
 def test_violating_the_expected_state_makes_the_rule_fail(rule) -> None:
     """The other direction. A declaration nothing can violate would pass the
     test above while describing nothing the rule cares about."""
@@ -89,6 +113,33 @@ def test_a_declared_rule_says_something_in_words_too(rule) -> None:
     in the morning, and it is what a finding snapshot-copies."""
     assert rule.remediation
     assert all(state.describes for state in rule.remediation_spec.expected)
+
+
+@pytest.mark.parametrize("rule", UNCHECKABLE, ids=lambda r: r.rule_id)
+def test_an_expectation_nobody_can_state_has_to_say_why(rule) -> None:
+    """The one thing that stops "no expected state" becoming a way out.
+
+    Two rules genuinely have none: one judges a ratio across the whole
+    directory, and one is about a relationship between a machine and the
+    security groups that govern it. Neither is a setting on an asset. But an
+    empty declaration is also exactly what a rule looks like when somebody could
+    not be bothered, and those must not be indistinguishable -- so an empty one
+    owes a reason and something a customer can still do.
+    """
+    spec = rule.remediation_spec
+    assert spec.notes, "an empty expectation must explain itself"
+    assert spec.cli, "and still say what to run"
+    assert spec.enforceable is False
+
+
+def test_every_rule_now_carries_a_declaration() -> None:
+    """Both directions of the same discipline as ``rbac.py``: no rule ships
+    without a machine-readable remediation, and none carries one that says
+    nothing without saying why."""
+    undeclared = [
+        rule.rule_id for rule in RULE_REGISTRY if rule.remediation_spec is None
+    ]
+    assert not undeclared, f"rules with no remediation declaration: {undeclared}"
 
 
 # ------------------------------------------------------------ generated policy

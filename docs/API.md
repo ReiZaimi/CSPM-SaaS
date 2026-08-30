@@ -76,7 +76,17 @@ code, and — only where one can genuinely enforce the whole rule — a generate
 Azure Policy definition. `enforceable: false` with `azure_policy: null` is a
 fact about the check rather than missing work: whether an administrator has MFA
 is a directory setting, and no `policyRule` can express it. A rule with no
-declaration at all returns `remediation_spec: null`, which is the other answer.
+declaration at all returns `remediation_spec: null`; every rule in the current
+set has one, so that answer is reserved for a rule added without one.
+
+Each expected state carries its `comparison` — `equals`, `none_matching` or
+`not_empty` — because without it a collection expectation serializes as
+`equals: null`, which reads as "this must be null" rather than "this must not be
+empty". A collection expectation also carries an `example`: the rule shape that
+must not exist, or an entry that satisfies. Two rules report an empty
+`expected_state` with a `notes` field explaining why — one judges a ratio across
+the directory, the other a relationship between two assets — rather than
+inventing a per-asset setting to point at.
 
 `/dashboard` carries two figures that are easy to confuse and answer different
 questions. `coverage` is the share of checks that reached a verdict;

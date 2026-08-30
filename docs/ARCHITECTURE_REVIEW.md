@@ -1108,15 +1108,36 @@ on the reaper.
     claim is made, so `remediation_verifications` is now literally the
     expected-state record this item asked for.
 
-    Three rules carry a declaration, and the other seven do not for a reason
-    rather than for want of typing: their expectations are predicates over
-    *collections* -- no security rule admits 3389 from the internet, every
-    covered resource has a diagnostic setting, this administrator has at least
-    one MFA method -- and `ExpectedState` expresses a scalar equality. Growing
-    it into something that can say those is inventing a small query language,
-    which is a decision to take on its own rather than at the end of this one.
-    The three declared are the three whose expectation genuinely is "this
-    setting equals that value", and the pattern is proven by them.
+    **All ten rules now carry a declaration**, which needed the vocabulary to
+    grow by exactly two comparisons. Most of what a rule expects is not "this
+    setting equals that value" but a statement about a collection --
+    `NONE_MATCHING` (no inbound rule admits 3389 from anywhere) and `NOT_EMPTY`
+    (this resource sends its logs somewhere; this administrator has a second
+    factor). Three comparisons and no more: anything they cannot express stays
+    undeclared rather than half-declared, because a remediation describing most
+    of a check is worse than one describing none — a customer satisfies what
+    they were shown and the finding stays open.
+
+    A collection expectation carries a **witness**: the concrete element that
+    must not be there, or one that satisfies. It earns its place twice, being
+    both the clearest statement of what is looked for and the thing a test needs
+    to build an asset the rule must fail. Eight rules are therefore checked in
+    both directions against their own declaration.
+
+    Two rules have no per-asset expectation and say why. AZ-ID-002 judges a
+    *ratio across the directory*, and AZ-CMP-001 is about a *relationship*
+    between a machine and the security groups that govern it — neither is a
+    setting on an asset, and the fix for the second lands on the NSG where
+    AZ-NET-001 already declares it. An empty declaration is also what a rule
+    looks like when nobody could be bothered, so a test requires an empty one to
+    carry a reason and something a customer can still run.
+
+    Policy generation stayed narrow on purpose: three rules produce one. The
+    network and logging expectations *could* be expressed as Azure Policy
+    `count` expressions and DeployIfNotExists definitions respectively, and
+    neither the aliases nor the expressions have been verified against a real
+    deployment from here — which `rbac.py` records the cost of. The generator
+    declines rather than guesses.
 21. A second provider, behind the existing `CloudConnector` seam. Only then
     generalize the permission-manifest pattern and migrate the scope
     vocabulary, in the order `MULTI_CLOUD.md` §8 already argues for.

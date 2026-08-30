@@ -23,7 +23,7 @@ from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
 from app.models.rule import Rule
 from app.models.verification import RemediationVerification
-from app.remediation import azure_policy, terraform_hints
+from app.remediation import Comparison, ExpectedState, azure_policy, terraform_hints
 from app.risk.scorer import default_scorer
 from app.rules.registry import get_rule
 from app.services import verification as verification_service
@@ -318,6 +318,28 @@ def rule_metadata(rule_id: str) -> dict:
     }
 
 
+def _state_json(state: ExpectedState) -> dict:
+    """One expected state, in a shape that cannot be misread.
+
+    ``comparison`` travels with the value because without it a collection
+    expectation serializes as ``equals: null``, which reads as "this must be
+    null" rather than "this must not be empty". The witness goes out too: for a
+    network rule it is the clearest statement of what is being looked for, and
+    a customer can compare it against what they have.
+    """
+    payload: dict = {
+        "field": state.field,
+        "comparison": state.comparison.value,
+        "describes": state.describes,
+    }
+    if state.comparison is Comparison.EQUALS:
+        payload["equals"] = state.equals
+        payload["also_accepts"] = list(state.also_accepts)
+    if state.example is not None:
+        payload["example"] = state.example
+    return payload
+
+
 def remediation_detail(rule_id: str) -> dict | None:
     """What must become true, plus the artifacts generated from that.
 
@@ -334,15 +356,10 @@ def remediation_detail(rule_id: str) -> dict | None:
     spec = rule.remediation_spec
     policy = azure_policy(rule.rule_id, rule.name, spec)
     return {
-        "expected_state": [
-            {
-                "field": state.field,
-                "equals": state.equals,
-                "also_accepts": list(state.also_accepts),
-                "describes": state.describes,
-            }
-            for state in spec.expected
-        ],
+        "expected_state": [_state_json(state) for state in spec.expected],
+        # Who the expectation is about, where it is not everyone. A rule that
+        # returns NOT_APPLICABLE for every ordinary account is not passing them.
+        "applies_when": spec.applies_when,
         "cli": list(spec.cli),
         "terraform": terraform_hints(spec),
         # Present where a policy can genuinely refuse this misconfiguration,

@@ -3,6 +3,7 @@ from typing import ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, RuleScope, Severity
 from app.domain.resource import CloudResource
+from app.remediation import RemediationSpec
 from app.rules.azure.identity.mfa import _is_privileged
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
@@ -46,6 +47,30 @@ class AzurePrivilegedUserRule(SecurityRule):
         "Privileged Identity Management so administrators activate the role only when they "
         "need it. Aim for a small number of permanent Global Administrators (Microsoft "
         "recommends fewer than five) plus one break-glass account."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        # Empty on purpose, and the emptiness is the statement. This rule judges
+        # a *ratio across the tenant* -- how many enabled accounts hold
+        # privileged roles -- so there is no asset whose settings can be made to
+        # satisfy it. Inventing a per-asset expectation would tell a customer to
+        # change something about one account when the finding is about the shape
+        # of their directory.
+        #
+        # Declared rather than left absent so the two answers stay apart: an
+        # absent declaration is work not done, and this is a fact about the
+        # check.
+        expected=(),
+        cli=(
+            "az ad directory-role member list --role <role> -o table",
+            "az role assignment list --all --assignee <upn> -o table",
+        ),
+        notes=(
+            "Fixed by removing standing access rather than by changing a "
+            "setting: move the accounts that need privilege occasionally onto "
+            "eligible assignments in Privileged Identity Management, so the "
+            "role is held for the length of a task rather than permanently. No "
+            "policy can express a ratio, and no expected state can either."
+        ),
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["1.21"],

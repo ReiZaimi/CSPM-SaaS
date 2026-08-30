@@ -8,6 +8,7 @@ from that one statement.
 """
 
 from app.remediation.spec import (
+    Comparison,
     ExpectedState,
     RemediationSpec,
     azure_policy,
@@ -15,6 +16,7 @@ from app.remediation.spec import (
 )
 
 __all__ = [
+    "Comparison",
     "ExpectedState",
     "RemediationSpec",
     "azure_policy",

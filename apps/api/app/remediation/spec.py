@@ -29,13 +29,39 @@ looks plausible and is not real fails the customer's deployment rather than
 producing a warning.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Final
 
 # Distinguishes "Terraform spells this the same way" from "Terraform spells it
 # ``false``". ``None`` cannot serve, because a Terraform argument genuinely set
 # to null is a thing somebody might mean.
 UNSET: Final = object()
+
+
+class Comparison(StrEnum):
+    """How an expected state is checked.
+
+    Three, and no more, on purpose. Most of what the remaining rules expect is
+    not "this setting equals that value" but a statement about a *collection* --
+    no inbound rule admits 3389 from anywhere, this resource sends its logs
+    somewhere, this administrator has a second factor. Saying those needs more
+    than an equality and much less than a query language, and the line between
+    the two is where this stops.
+
+    Anything a rule checks that these cannot express stays undeclared rather
+    than half-declared. A remediation that describes most of a check is worse
+    than one that describes none of it: a customer satisfies what they were
+    shown and the finding stays open.
+    """
+
+    # The field holds exactly this value.
+    EQUALS = "equals"
+    # The collection holds nothing shaped like ``example``. This is what a
+    # network rule expects: not a value, the absence of one.
+    NONE_MATCHING = "none_matching"
+    # The collection holds at least one entry. ``example`` is a satisfying one.
+    NOT_EMPTY = "not_empty"
 
 
 @dataclass(frozen=True)
@@ -64,6 +90,20 @@ class ExpectedState:
     # report. A floor is expressed here rather than discovered after
     # deployment.
     also_accepts: tuple[Any, ...] = ()
+    # How ``equals`` is applied. The default is the scalar case, which is what
+    # a setting usually is.
+    comparison: Comparison = Comparison.EQUALS
+    # A concrete element, for the two collection comparisons -- and it earns its
+    # place twice over. For NONE_MATCHING it is the thing that must not be
+    # there, which is what a test needs to build an asset the rule should fail;
+    # for NOT_EMPTY it is an entry that satisfies. A declaration carrying its
+    # own witness is one a test can check in both directions rather than take on
+    # trust.
+    #
+    # Whatever the normalizer puts in that collection, which is not always a
+    # mapping: a security rule is a dict and a registered authentication method
+    # is a string.
+    example: Any = None
     # The alias an Azure Policy condition matches on. ``None`` where no alias
     # exists, which is not a gap to fill in later with a guess: an alias that is
     # not real fails the customer's policy deployment outright.
@@ -105,6 +145,12 @@ class RemediationSpec:
     # creation. Audit where refusing it would break a deployment that has other
     # legitimate reasons to set it.
     policy_effect: str = "Deny"
+    # What has to be true of an asset for this expectation to apply at all.
+    # AZ-ID-001 expects a second factor *of a privileged account*, and a rule
+    # that returns NOT_APPLICABLE for everything else is not failing -- it is
+    # out of scope. Stated so a test builds an asset the rule will actually
+    # judge, and so the customer is told who the expectation is about.
+    applies_when: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
     @property
@@ -114,11 +160,22 @@ class RemediationSpec:
         Requires an alias for *every* expected state, not any of them. A policy
         covering one of two conditions would pass an asset that still fails the
         rule, and a customer who deployed it would believe the class was closed.
+
+        Collection comparisons are excluded outright. Azure Policy can express
+        some of them, through ``count`` expressions over an alias with ``[*]``
+        -- and none of those aliases or expressions has been verified against a
+        real deployment from here. ``rbac.py`` records what that costs: a string
+        that looks plausible and is not real fails the whole definition
+        atomically, and the customer sees "Deployment Failed" rather than a note
+        about one condition. So the generator declines rather than guesses.
         """
         return bool(
             self.policy_resource_type
             and self.expected
-            and all(state.arm_alias for state in self.expected)
+            and all(
+                state.arm_alias and state.comparison is Comparison.EQUALS
+                for state in self.expected
+            )
         )
 
 

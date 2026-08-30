@@ -282,10 +282,13 @@ def _expected_state(rule_id: str) -> list[dict]:
     rule = get_rule(rule_id)
     if rule is None or rule.remediation_spec is None:
         return []
+    # The sentence and the terms it is stated in. Deliberately the same shape
+    # the rules API sends, so a customer reading "what CloudGuard will look for"
+    # on a claim and on the rule sees the same words.
     return [
         {
             "field": state.field,
-            "equals": state.equals,
+            "comparison": state.comparison.value,
             "describes": state.describes,
         }
         for state in rule.remediation_spec.expected

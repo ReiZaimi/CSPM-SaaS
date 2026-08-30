@@ -3,6 +3,7 @@ from typing import ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
+from app.remediation import Comparison, ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
 
@@ -43,6 +44,40 @@ class AzureLoggingRule(SecurityRule):
         "    --logs '[{\"categoryGroup\":\"audit\",\"enabled\":true}]'\n\n"
         "Apply this at scale with an Azure Policy 'DeployIfNotExists' assignment rather than "
         "resource by resource."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="diagnostic_settings",
+                comparison=Comparison.NOT_EMPTY,
+                equals=None,
+                describes=(
+                    "At least one diagnostic setting sends this resource's logs "
+                    "to a workspace, storage account or event hub"
+                ),
+                # A setting with no destination is not a setting for this
+                # purpose, which is why the witness carries one: the rule reads
+                # past the count to where the logs actually go.
+                example={
+                    "name": "<setting>",
+                    "workspace_id": "<log analytics workspace resource id>",
+                },
+            ),
+        ),
+        cli=(
+            "az monitor diagnostic-settings create --name send-to-la "
+            "--resource <resource id> --workspace <workspace id> "
+            '--logs \'[{"categoryGroup":"allLogs","enabled":true}]\'',
+        ),
+        notes=(
+            "No policy is generated here, and the reason is different from the "
+            "network rules': a diagnostic setting is created rather than "
+            "configured, so the artifact would be a DeployIfNotExists policy "
+            "with a remediation task and a managed identity behind it. That is "
+            "a deployment CloudGuard would be asking a customer to trust, not a "
+            "condition -- and it is worth building deliberately rather than "
+            "generating from a one-line declaration."
+        ),
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["5.1.1", "5.3"],

@@ -539,6 +539,22 @@ The generator negates the expected state, because a policy matches what it
 refuses. Doing that by hand per rule is how one ends up denying every compliant
 resource, which is why it is computed in one place.
 
+**The vocabulary is three comparisons, and stops there.** `EQUALS` for a
+setting, `NONE_MATCHING` and `NOT_EMPTY` for the collections most rules actually
+judge. That covers eight of the ten rules; anything beyond it stays undeclared
+rather than half-declared, because a remediation that describes most of a check
+is worse than one that describes none — the customer satisfies what they were
+shown and the finding stays open. A collection expectation carries a witness,
+which is both the clearest way to say what is being looked for and what lets a
+test build the asset a rule must fail.
+
+**An empty expectation has to say why.** Two rules genuinely have none: one
+judges a ratio across the directory, the other a relationship between a machine
+and the security groups governing it. But an empty declaration is also what a
+rule looks like when nobody could be bothered, and those must not be
+indistinguishable — so a test requires an empty one to carry a reason and
+something the customer can still run.
+
 ---
 
 ## Open items carried forward
