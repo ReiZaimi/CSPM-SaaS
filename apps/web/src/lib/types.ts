@@ -270,6 +270,62 @@ export interface DiscoveredSubscription {
   is_scannable: boolean;
 }
 
+/**
+ * A route from somewhere an attacker could start to something worth taking.
+ *
+ * The findings list answers "what is wrong". This answers "what is wrong
+ * *together*", which is a different question with a different first action:
+ * five findings across a jump box, an identity and a storage account rank by
+ * severity and get worked top-down, while the same five as one path rank by how
+ * few hops separate the internet from customer data.
+ */
+export interface AttackPath {
+  entry: {
+    id: string;
+    name: string;
+    resource_type: string;
+    public_exposure: string;
+  };
+  target: {
+    id: string;
+    name: string;
+    resource_type: string;
+    data_sensitivity: string;
+  };
+  hops: number;
+  steps: AttackPathStep[];
+  /**
+   * Where to cut it. Always a capability hop — containment cannot be removed,
+   * since a storage account has to live somewhere.
+   */
+  cheapest_break: {
+    description: string;
+    relationship: string;
+    source_id: string;
+    target_id: string;
+  } | null;
+}
+
+export interface AttackPathStep {
+  source: string;
+  source_id: string;
+  relationship: string;
+  target: string;
+  target_id: string;
+  description: string;
+}
+
+/**
+ * Both counts are the honest denominator for an empty answer: no paths because
+ * nothing is exposed is a different thing from no paths because nothing was
+ * classified as sensitive.
+ */
+export interface AttackPathMeta {
+  total: number;
+  entry_points: number;
+  sensitive_targets: number;
+}
+
 export interface RevocationStep {
   title: string;
   detail: string;

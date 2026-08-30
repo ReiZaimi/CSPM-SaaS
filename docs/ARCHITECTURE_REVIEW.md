@@ -818,6 +818,16 @@ on the reaper.
     could describe a route the customer has already closed. What that costs is
     history — "did a new path appear this week" needs an `attack_paths` table,
     worth building once paths are being acted on rather than looked at.
+
+    The page at `/attack-paths` leads with the route rather than its endpoints,
+    and marks the severable hop in the route itself as well as calling it out
+    below — reading the two separately makes the customer hold both in their
+    head to see which link the fix refers to. Its empty state distinguishes
+    three different nothings, because they call for three different actions and
+    a single "no attack paths" would read as reassurance in all of them. The
+    one that matters: no sensitive targets means CloudGuard does not know what
+    would cost the customer anything, which is a gap in what it was told rather
+    than a clean environment.
 15. Correlation, starting with three hand-written scenario templates:
     internet-to-data, privilege escalation chain, unmonitored critical asset.
 16. Scenario risk and risk history. (§9)

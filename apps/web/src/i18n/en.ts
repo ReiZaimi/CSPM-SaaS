@@ -16,6 +16,7 @@ export const en = {
     assets: "Assets",
     findings: "Findings",
     risks: "Risks",
+    attackPaths: "Attack paths",
     remediation: "Remediation",
     scans: "Scans",
     rules: "Rules",
@@ -276,6 +277,37 @@ export const en = {
   },
   assets: { title: "Assets", empty: "No assets discovered yet.", openFindings: "Open findings" },
   risks: { title: "Risks", empty: "No risks recorded yet." },
+  attackPaths: {
+    title: "Attack paths",
+    intro:
+      "The findings list says what is wrong. This says what is wrong \u2014 together. A jump box, an over-privileged identity and a storage account are three findings; the route between them is one problem, and it has one cheapest fix.",
+    // The empty state has to distinguish three different nothings, because
+    // they call for three different actions.
+    emptyNoPaths: "Nothing exposed can reach anything sensitive",
+    emptyNoPathsDetail:
+      "CloudGuard found assets reachable from the internet and assets holding sensitive data, and no route between them.",
+    emptyNoEntry: "Nothing is reachable from the internet",
+    emptyNoEntryDetail:
+      "A route has to start somewhere. No asset in this environment is exposed enough to be an entry point, so there is nothing for a path to begin from.",
+    emptyNoTargets: "Nothing has been classified as sensitive",
+    emptyNoTargetsDetail:
+      "A route has to end somewhere worth reaching. Tag your storage and databases with a data classification, or set asset criticality, so CloudGuard knows what would actually cost you.",
+    emptyNoScan: "No scan has run yet",
+    emptyNoScanDetail:
+      "Attack paths are built from what a scan found. Run one, and any route from an exposed asset to a sensitive one appears here.",
+    hops: "hops",
+    oneHop: "hop",
+    from: "From",
+    to: "To",
+    route: "The route",
+    cutHere: "Cut it here",
+    cutHereDetail:
+      "Removing this one link severs the route. Containment cannot be removed \u2014 a storage account has to live somewhere \u2014 so the fix is always an identity or a role.",
+    entryPoints: "exposed assets",
+    sensitiveTargets: "sensitive assets",
+    exposure: "Exposure",
+    sensitivity: "Sensitivity",
+  },
   scans: {
     title: "Scans",
     runScan: "Run scan",
