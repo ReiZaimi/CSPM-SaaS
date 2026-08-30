@@ -226,6 +226,11 @@ export const en = {
     title: "Security posture",
     score: "Security score",
     outOf: "out of 100",
+    trendTitle: "Score over time",
+    trendTooShort:
+      "One scan so far. A second one gives CloudGuard something to compare against, and this becomes a line.",
+    scoreWorse: "since last scan",
+    noPreviousScan: "No previous scan to compare against",
     sinceLastScan: "since last scan",
     critical: "Critical",
     high: "High",

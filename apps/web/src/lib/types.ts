@@ -139,9 +139,26 @@ export interface Scan {
   duration_seconds?: number | null;
 }
 
+/** What the posture was, one scan at a time. */
+export interface PostureReading {
+  observed_at: string;
+  security_score: number;
+  open_finding_count: number;
+  findings_by_severity: Record<string, number>;
+  risk_bands: Record<string, number>;
+  attack_path_count: number;
+}
+
 export interface Dashboard {
   security_score: number;
+  /**
+   * Movement since the previous reading. Measured, so it can be negative —
+   * the estimate it replaced added back every fix ever verified and could only
+   * ever be positive. `null` means there is no previous reading to compare
+   * against, which is not the same as no change.
+   */
   score_delta: number | null;
+  history: PostureReading[];
   findings_by_severity: Record<string, number>;
   findings_by_status: Record<string, number>;
   risk_bands: Record<string, number>;

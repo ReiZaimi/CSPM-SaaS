@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.enums import FindingStatus, Level, RiskKind, ScanStatus
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
-from app.models.risk import Risk, RiskFinding
+from app.models.risk import Risk, RiskFinding, RiskHistory
 from app.models.scan import Scan, ScanRuleResult
 from app.risk.scorer import default_scorer
 
@@ -120,6 +120,10 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
     return {
         "security_score": security_score,
         "score_delta": await _score_delta(session, organization_id, security_score),
+        # The line behind the number. A delta says something moved; the series
+        # says whether that is a trend or a wobble, which is the difference
+        # between a customer acting on it and ignoring it.
+        "history": await posture_history(session, organization_id),
         "findings_by_severity": severity_counts,
         "findings_by_status": status_counts,
         "risk_bands": {level.value: count for level, count in band_counts.items()},
@@ -166,44 +170,71 @@ async def _score_delta(
     session: AsyncSession, organization_id: UUID, current: int
 ) -> int | None:
     """Movement since the previous scan -- the number that tells a user whether
-    what they did last week worked."""
+    what they did last week worked.
+
+    Measured now rather than estimated. This used to reconstruct a prior score
+    by adding back the deduction for every finding ever verified fixed, which
+    answers "how much better than when we started" while being labelled
+    "movement since the last scan" -- two numbers that diverge on the second fix
+    and never reconverge. It also double-counted the moment a finding could
+    belong to two risks, because it counted deductions through the junction and
+    a member of a scenario is joined twice.
+
+    ``None`` where there is no previous reading, which is honest: a first scan
+    has nothing to have moved from, and showing 0 would read as "no change"
+    rather than "no comparison".
+    """
     previous = (
         await session.execute(
-            select(Finding.resolved_by_scan_id, func.count())
-            .where(
-                Finding.organization_id == organization_id,
-                Finding.status == FindingStatus.RESOLVED,
-                Finding.resolved_by_scan_id.isnot(None),
-            )
-            .group_by(Finding.resolved_by_scan_id)
+            select(RiskHistory.security_score)
+            .where(RiskHistory.organization_id == organization_id)
+            .order_by(RiskHistory.observed_at.desc())
+            # Two, because the newest entry is this scan's own: the pipeline
+            # records posture before anything reads the dashboard, so comparing
+            # against the first row would compare a scan with itself and report
+            # no movement, always.
+            .limit(2)
         )
-    ).all()
-    if not previous:
+    ).scalars().all()
+
+    if len(previous) < 2:
         return None
+    return current - int(previous[1])
 
-    # Each verified fix gave back its band's deduction; approximate the prior
-    # score by adding those back.
-    resolved_risks = (
-        await session.execute(
-            select(Risk.risk_level, func.count())
-            .join(RiskFinding, RiskFinding.risk_id == Risk.id)
-            .join(Finding, Finding.id == RiskFinding.finding_id)
-            .where(
-                Risk.organization_id == organization_id,
-                Finding.status == FindingStatus.RESOLVED,
+
+async def posture_history(
+    session: AsyncSession, organization_id: UUID, limit: int = 30
+) -> list[dict]:
+    """The posture, each time CloudGuard looked. Oldest first, for plotting.
+
+    Read straight off the stored rows without joining anything. That is the
+    point of keeping them: these counts are what was true at each moment, and
+    recomputing them from today's findings would answer a different question
+    every time somebody reclassifies one.
+    """
+    rows = list(
+        (
+            await session.execute(
+                select(RiskHistory)
+                .where(RiskHistory.organization_id == organization_id)
+                .order_by(RiskHistory.observed_at.desc())
+                .limit(limit)
             )
-            .group_by(Risk.risk_level)
         )
-    ).all()
-
-    recovered = sum(
-        default_scorer.config.score_deductions.get(Level(level), 0) * int(count)
-        for level, count in resolved_risks
+        .scalars()
+        .all()
     )
-    if not recovered:
-        return None
-    prior = max(0, current - recovered)
-    return current - prior
+    return [
+        {
+            "observed_at": entry.observed_at.isoformat(),
+            "security_score": entry.security_score,
+            "open_finding_count": entry.open_finding_count,
+            "findings_by_severity": entry.findings_by_severity,
+            "risk_bands": entry.risk_bands,
+            "attack_path_count": entry.attack_path_count,
+        }
+        for entry in reversed(rows)
+    ]
 
 
 async def _coverage(

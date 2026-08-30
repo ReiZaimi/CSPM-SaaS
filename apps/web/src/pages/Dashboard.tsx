@@ -4,6 +4,7 @@ import { ApiError, api, auth } from "@/lib/api";
 import { supabaseSignOut } from "@/lib/supabase";
 import type { CloudAccount, Dashboard } from "@/lib/types";
 import { useT } from "@/i18n";
+import { ScoreDelta, ScoreTrend } from "@/components/ScoreTrend";
 import { Badge, Button, Card, EmptyState, Spinner, StatusPill } from "@/components/ui";
 import { ScoreRing } from "@/components/ScoreRing";
 import { formatDateTime } from "@/lib/format";
@@ -75,14 +76,11 @@ export function DashboardPage() {
               {t.dashboard.score}
             </p>
 
-            {data.score_delta !== null && data.score_delta !== 0 ? (
-              <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-ok-bg px-2.5 py-1 text-xs font-medium text-ok">
-                <span aria-hidden="true">↑</span> {data.score_delta}{" "}
-                {t.dashboard.sinceLastScan}
-              </p>
-            ) : (
-              <p className="mt-1 text-xs text-stone-400">No change since last scan</p>
-            )}
+            <ScoreDelta delta={data.score_delta} />
+          </div>
+
+          <div className="mt-5 border-t border-stone-100 pt-4">
+            <ScoreTrend history={data.history ?? []} />
           </div>
 
           <dl className="mt-5 grid grid-cols-2 divide-x divide-stone-100 border-t border-stone-100 pt-4 text-center">

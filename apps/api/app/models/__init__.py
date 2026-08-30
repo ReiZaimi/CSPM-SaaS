@@ -36,6 +36,7 @@ __all__ = [
     "Risk",
     "RiskException",
     "RiskFinding",
+    "RiskHistory",
     "Rule",
     "Scan",
     "ScanEvaluationGap",

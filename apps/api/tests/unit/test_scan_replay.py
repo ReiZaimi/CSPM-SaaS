@@ -131,6 +131,7 @@ def pipeline(monkeypatch: pytest.MonkeyPatch) -> ScanPipeline:
     # Correlation is a persistence step like the others: it reads this
     # organization's open findings and writes the routes between them.
     monkeypatch.setattr(pipe, "_correlate_paths", recorder("correlate"))
+    monkeypatch.setattr(pipe, "_record_posture", recorder("posture"))
     monkeypatch.setattr(pipe, "_would_be_open_count", recorder("would_be_open", 2))
     return pipe
 

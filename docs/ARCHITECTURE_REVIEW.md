@@ -864,8 +864,25 @@ on the reaper.
     are inputs to the *finding* formula and were never used here. Showing them
     would be showing working that was never done.
 
-    Risk history — score over time, "did risk increase" — is still §2.10 and
-    still unbuilt.
+    **Risk history is now built.** Migration 0015 adds `risk_history`: one
+    denormalized row per observing scan, holding the score, the open counts and
+    the number of open routes as they stood. Denormalized because it is a time
+    series — recomputing last month's posture from today's findings answers a
+    different question every time somebody reclassifies one.
+
+    It replaced an estimate rather than filling a gap. `_score_delta`
+    reconstructed a prior score by adding back the deduction for every finding
+    ever verified fixed, which answers "how much better than when we started"
+    while being labelled "movement since the last scan" — and it double-counted
+    from the moment a finding could belong to two risks, since it counted
+    through the junction and a scenario member is joined twice.
+
+    The frontend consequence was a live bug: the estimate could only ever be
+    positive, so the dashboard hard-coded a green up-arrow. A measured delta can
+    fall, and a green ↑ over a worsening posture is a plain untruth. `ScoreDelta`
+    now has four states, keeping "no previous scan" separate from "no change" —
+    a comparison that could not be made is not a comparison that came out
+    level.
 
 ### Phase 4 — operations and proof
 

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -61,7 +61,7 @@ from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord, ResourceRelationship
-from app.models.risk import Risk, RiskFinding
+from app.models.risk import Risk, RiskFinding, RiskHistory
 from app.models.scan import (
     CloudSnapshot,
     Evidence,
@@ -1113,6 +1113,10 @@ class ScanPipeline:
             # a route assembled before its members would have nothing to stand
             # on.
             await self._correlate_paths(session, org_id, merged, id_map)
+            # Last, because it is a reading of everything above it: the
+            # findings this scan wrote, the risks they were scored into, and
+            # the routes correlation found between them.
+            await self._record_posture(session, org_id, scan, observed_at)
         else:
             # What today's rules would have raised against that capture,
             # reported as a number without being written down as fact --
@@ -1978,6 +1982,109 @@ class ScanPipeline:
             risk.resolved_at = None
 
         return risk
+
+    # ---------------------------------------------------------------- history
+    async def _record_posture(
+        self, session: AsyncSession, org_id: UUID, scan: Scan, observed_at: datetime
+    ) -> None:
+        """Write down what the posture was, so movement becomes measurable.
+
+        Only a scan that observed something reaches here -- a replay of a
+        superseded capture reports what today's rules would have found and
+        changes nothing, so recording an entry for it would make the line move
+        on a day nobody looked at the environment.
+
+        Stamped with when the provider was *read*. For a live scan that is now;
+        for a replay of the newest capture it is when that capture was taken,
+        and plotting either on write time would date the evidence wrongly.
+
+        One entry per scan, corrected rather than duplicated if ANALYZE runs
+        twice: a retried step is the same reading, and a second row would show
+        as real movement in posture.
+        """
+        counts = await self._posture_counts(session, org_id)
+        entry = (
+            await session.execute(
+                select(RiskHistory).where(RiskHistory.scan_id == scan.id)
+            )
+        ).scalar_one_or_none()
+
+        if entry is None:
+            entry = RiskHistory(organization_id=org_id, scan_id=scan.id)
+            session.add(entry)
+
+        entry.observed_at = observed_at
+        entry.security_score = counts["security_score"]
+        entry.open_finding_count = counts["open_finding_count"]
+        entry.findings_by_severity = counts["findings_by_severity"]
+        entry.risk_bands = counts["risk_bands"]
+        entry.attack_path_count = counts["attack_path_count"]
+        await session.commit()
+
+    async def _posture_counts(self, session: AsyncSession, org_id: UUID) -> dict:
+        """The numbers as they stand right now, for one organization.
+
+        Computed the same way the dashboard computes them, and stored rather
+        than recomputed later for the reason a time series exists at all: a
+        finding reclassified next month must not silently rewrite what last
+        month's posture was.
+        """
+        open_statuses = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
+
+        severity_rows = (
+            await session.execute(
+                select(Finding.severity, func.count())
+                .where(
+                    Finding.organization_id == org_id,
+                    Finding.status.in_(open_statuses),
+                )
+                .group_by(Finding.severity)
+            )
+        ).all()
+
+        # Finding risks only, exactly as the security score counts them: a
+        # scenario groups findings already counted here, and including it would
+        # charge the customer twice for one problem.
+        band_rows = (
+            await session.execute(
+                select(Risk.risk_level, func.count())
+                .join(RiskFinding, RiskFinding.risk_id == Risk.id)
+                .join(Finding, Finding.id == RiskFinding.finding_id)
+                .where(
+                    Risk.organization_id == org_id,
+                    Risk.kind == RiskKind.FINDING,
+                    Finding.status.in_(open_statuses),
+                )
+                .group_by(Risk.risk_level)
+            )
+        ).all()
+
+        paths = (
+            await session.execute(
+                select(func.count())
+                .select_from(Risk)
+                .where(
+                    Risk.organization_id == org_id,
+                    Risk.kind == RiskKind.ATTACK_PATH,
+                    Risk.status != RiskStatus.RESOLVED,
+                )
+            )
+        ).scalar_one()
+
+        bands = {Level(level): int(count) for level, count in band_rows}
+        open_levels: list[Level] = []
+        for level, count in bands.items():
+            open_levels.extend([level] * count)
+
+        return {
+            "security_score": default_scorer.security_score(open_levels),
+            "open_finding_count": sum(bands.values()),
+            "findings_by_severity": {
+                str(severity): int(count) for severity, count in severity_rows
+            },
+            "risk_bands": {level.value: count for level, count in bands.items()},
+            "attack_path_count": int(paths),
+        }
 
     # ------------------------------------------------------------ correlation
     async def _correlate_paths(

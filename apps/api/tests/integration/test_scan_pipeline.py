@@ -2370,3 +2370,127 @@ class TestScenarioRisk:
         scenarios = await self._risks(org_id, "ATTACK_PATH")
         assert scenarios, "the record of the closed route survives"
         assert all(row[3] == "RESOLVED" for row in scenarios)
+
+
+def _with_rdp_closed() -> dict:
+    """The recorded environment with its headline problem repaired.
+
+    The same edit the verification tests make, which is the point: a fix that
+    moves the history line has to be a fix the rules actually recognise, not a
+    different fixture that happens to score better.
+    """
+    fixed = load_raw()
+    for nsg in fixed["data"]["network_security_groups"]:
+        for rule in nsg["properties"]["securityRules"]:
+            if rule["name"] == "AllowRDP":
+                rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+    return fixed
+
+
+class TestRiskHistory:
+    """What the posture was, each time CloudGuard looked.
+
+    "Did my risk go up?" is the question a customer asks after doing the work,
+    and nothing recorded the answer — the dashboard showed an estimate that
+    reconstructed a prior score by adding back every fix ever verified, which
+    answers "how much better than when we started" while being labelled
+    "movement since the last scan".
+    """
+
+    async def _history(self, org_id: uuid.UUID) -> list:
+        return await fetch(
+            "SELECT security_score, open_finding_count, attack_path_count, "
+            "observed_at FROM risk_history WHERE organization_id = :o "
+            "ORDER BY observed_at",
+            {"o": org_id},
+        )
+
+    async def test_a_scan_records_the_posture_it_observed(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        entries = await self._history(org_id)
+        assert len(entries) == 1
+        assert entries[0][1] > 0, "the vulnerable fixture has open findings"
+
+    async def test_each_scan_adds_one_reading(
+        self, replay, connected_account
+    ) -> None:
+        """A series with two entries per scan would show movement that never
+        happened."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        assert len(await self._history(org_id)) == 2
+
+    async def test_a_fix_moves_the_line(self, replay, connected_account) -> None:
+        """The whole point. Two readings, and the second is better than the
+        first because something was actually fixed in between."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        replay["payload"] = _with_rdp_closed()
+        await run_scan(org_id, account_id)
+
+        entries = await self._history(org_id)
+        assert len(entries) == 2
+        assert entries[1][0] > entries[0][0], "the score should have improved"
+
+    async def test_the_delta_is_measured_not_estimated(
+        self, replay, connected_account
+    ) -> None:
+        """Against the previous reading, rather than against the sum of every
+        fix ever verified."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            first = await build_dashboard(session, org_id)
+        # Nothing to compare a first scan against, and saying 0 would read as
+        # "no change" rather than "no comparison".
+        assert first["score_delta"] is None
+
+        replay["payload"] = _with_rdp_closed()
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            second = await build_dashboard(session, org_id)
+
+        entries = await self._history(org_id)
+        assert second["score_delta"] == entries[1][0] - entries[0][0]
+
+    async def test_a_superseded_replay_records_nothing(
+        self, replay, connected_account
+    ) -> None:
+        """It reports what today's rules would have found and changes nothing,
+        so recording an entry would make the line move on a day nobody looked
+        at the environment."""
+        org_id, account_id = connected_account
+        first = await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)  # supersedes the first capture
+        before = len(await self._history(org_id))
+
+        await run_replay(org_id, account_id, first)
+
+        assert len(await self._history(org_id)) == before
+
+    async def test_the_series_survives_pruning_a_scan(
+        self, replay, connected_account
+    ) -> None:
+        """Deleting an execution log must not rewrite history, exactly as it
+        leaves the findings that scan raised alone."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            await session.delete(scan)
+            await session.commit()
+
+        entries = await self._history(org_id)
+        assert len(entries) == 1, "the reading outlives the run that took it"
