@@ -666,17 +666,31 @@ out of `cloud_snapshots.data` at 100 tenants is a background migration. At
 Correctness and durability before architecture: a platform that loses scans
 does not get to have an attack path engine.
 
-### Phase 0 — bugs
+### Phase 0 — bugs — **done**
 
-1. Tenant-scope directory collection: split the plan into tenant-scoped and
-   account-scoped tasks, collect identity once per scan. (§2.1)
-2. Leases and a reaper, minimum viable, so an abandoned scan stops blocking its
-   connection. (§2.2)
-3. An advisory lock on scan creation, keyed *(org_id, connection_id)*. (§2.3)
-4. Scope `_persist_findings`, `_persist_relationships` and
-   `_verify_remediations` by account or scan; batch the resolve path's N+1.
-   (§2.4)
-5. Move progress reporting off the pipeline's session. (§2.13)
+1. ~~Tenant-scope directory collection~~ (§2.1). `AzurePlanBuilder` now builds
+   an account plan and a directory plan; `CloudConnector` gained
+   `collect_directory`; migration 0008 makes an asset, a snapshot and a
+   coverage row belong to either a subscription or the tenant, with a CHECK
+   forbidding neither and partial unique indexes keying the tenant-scoped rows.
+2. ~~Leases and a reaper~~ (§2.2). Migration 0009 adds `scans.lease_until`,
+   extended by every phase change and every progress write; a beat task closes
+   scans whose lease expired or that were never claimed. The worker start
+   command gained `--beat`.
+3. ~~Advisory lock on scan creation~~ (§2.3). `lock_scan_target` wraps the
+   check-then-insert in all three routes that start a scan.
+4. ~~Scope the pipeline's reads~~ (§2.4). `_asset_scope` / `_finding_scope`
+   replace the organization-wide selects in `_persist_findings`,
+   `_persist_relationships` and `_verify_remediations`; the resolve path's N+1
+   is batched into two statements.
+5. ~~Move progress off the pipeline's session~~ (§2.13). `_ScanProgress` writes
+   through its own session and accumulates across phases instead of assuming
+   every phase is the size of the one currently reporting.
+
+Not verified locally: the integration suite needs the PostgreSQL that CI
+provisions, so migrations 0008 and 0009 and the tests added alongside them have
+been collected and type-checked but not executed. Run them in CI before relying
+on the reaper.
 
 ### Phase 1 — foundations
 
