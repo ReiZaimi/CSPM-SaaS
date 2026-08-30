@@ -38,6 +38,7 @@ from app.models.scan import Scan
 from app.services import scanner as scanner_module
 from app.services import scans as scans_service
 from app.services.scanner import ScanPipeline
+from app.services.scans import DIRECTORY_LABEL
 from tests.integration.conftest import create_org_as
 
 pytestmark = pytest.mark.integration
@@ -325,7 +326,7 @@ async def fetch(sql: str, params: dict) -> list:
 
 
 class TestFirstScan:
-    async def test_scan_completes_and_records_a_snapshot(
+    async def test_scan_completes_and_records_a_capture_per_scope(
         self, replay, connected_account
     ) -> None:
         org_id, account_id = connected_account
@@ -333,18 +334,23 @@ class TestFirstScan:
 
         async with service_session() as session:
             scan = await session.get(Scan, scan_id)
-            snapshot = (
-                await session.execute(
-                    text("SELECT id FROM cloud_snapshots WHERE scan_id = :s"),
-                    {"s": scan_id},
-                )
-            ).scalar_one_or_none()
 
         assert scan.status == ScanStatus.COMPLETED
         assert scan.resource_count > 0
         assert scan.rule_count == 10
-        # Every scan produces exactly one snapshot -- no exceptions.
-        assert snapshot is not None
+
+        # A capture per scope, not one per scan. This scan read one
+        # subscription and the tenant directory above it, and both are stored
+        # verbatim: merging them would lose the property a snapshot exists for,
+        # which is that it is what the provider actually said about one thing.
+        captures = await fetch(
+            "SELECT cloud_account_id FROM cloud_snapshots WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert len([c for c in captures if c[0] == account_id]) == 1
+        assert len([c for c in captures if c[0] is None]) == 1, (
+            "the tenant directory is captured once per scan"
+        )
 
     async def test_assets_are_discovered(self, replay, connected_account) -> None:
         org_id, account_id = connected_account
@@ -694,16 +700,28 @@ class TestSnapshotReplay:
     async def test_a_replay_writes_no_second_snapshot(
         self, replay, connected_account
     ) -> None:
-        """One snapshot per collection, not one per evaluation."""
+        """Snapshots come from collection, not from evaluation.
+
+        Counted before and after rather than against a fixed number: what the
+        test is about is that a replay adds none, and how many the collecting
+        scan wrote is a fact about its scope -- one subscription plus the tenant
+        directory today, more when it covers more.
+        """
         org_id, account_id = connected_account
         original_id = await run_scan(org_id, account_id)
-        await run_replay(org_id, account_id, original_id)
-
-        rows = await fetch(
+        collected = await fetch(
             "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o",
             {"o": org_id},
         )
-        assert rows[0][0] == 1
+        assert collected[0][0] > 0, "the scan should have captured something"
+
+        await run_replay(org_id, account_id, original_id)
+
+        after = await fetch(
+            "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert after == collected, "a replay collected nothing and must store nothing"
 
     async def test_a_replay_of_the_newest_snapshot_verifies_fixes(
         self, replay, connected_account
@@ -1164,7 +1182,16 @@ class TestCollectionStatus:
             status = await collection_status(session, scan)
 
         named = {t["subscription"] for t in status["tasks"]}
-        assert named == {"Subscription 1", "Subscription 2"}
+        # The directory is a reading like any other and appears beside them,
+        # named for what it is a reading *of*. Reporting it under a subscription
+        # would send someone to check one that is working, and leaving it out
+        # would hide the identity checks' coverage entirely.
+        assert named == {"Subscription 1", "Subscription 2", DIRECTORY_LABEL}
+
+        directory = [t for t in status["tasks"] if t["subscription"] == DIRECTORY_LABEL]
+        assert directory, "the tenant directory reading is missing"
+        assert all(t["cloud_account_id"] is None for t in directory)
+        assert {t["category"] for t in directory} == {"identity"}
 
     async def test_readings_are_kept_per_subscription_not_merged(
         self, replay, connected_tenant
