@@ -16,10 +16,6 @@ Two grants are required and they are genuinely separate:
    grant this; someone has to assign the role.
 """
 
-import base64
-import hashlib
-import hmac
-import json
 import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
@@ -160,10 +156,6 @@ class AccessToken:
         return time.time() < self.expires_at - 60
 
 
-class ConsentStateError(ValueError):
-    """The state token returned from Entra did not verify."""
-
-
 def build_consent_url(state: str, tenant_hint: str = "organizations") -> str:
     """The single link a customer's Global Administrator clicks.
 
@@ -209,40 +201,6 @@ def build_consent_url(state: str, tenant_hint: str = "organizations") -> str:
         f"https://login.microsoftonline.com/{tenant_hint}/v2.0/adminconsent?"
         + urlencode(params)
     )
-
-
-def sign_state(payload: dict) -> str:
-    """Sign the consent round-trip state.
-
-    The customer's browser carries this to Entra and back, so it must be
-    tamper-evident: without a signature, a returning callback could claim any
-    cloud_account_id and bind a stranger's tenant to it.
-    """
-    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    mac = hmac.new(
-        settings.azure_consent_state_secret.encode(), body.encode(), hashlib.sha256
-    ).hexdigest()[:32]
-    return f"{body}.{mac}"
-
-
-def verify_state(state: str, max_age_seconds: int = 1800) -> dict:
-    try:
-        body, mac = state.rsplit(".", 1)
-    except ValueError as exc:
-        raise ConsentStateError("Malformed state token") from exc
-
-    expected = hmac.new(
-        settings.azure_consent_state_secret.encode(), body.encode(), hashlib.sha256
-    ).hexdigest()[:32]
-    if not hmac.compare_digest(mac, expected):
-        raise ConsentStateError("State signature does not verify")
-
-    padding = "=" * (-len(body) % 4)
-    payload = json.loads(base64.urlsafe_b64decode(body + padding))
-
-    if time.time() - payload.get("issued_at", 0) > max_age_seconds:
-        raise ConsentStateError("Consent link has expired — please start again")
-    return payload
 
 
 class TokenProvider:

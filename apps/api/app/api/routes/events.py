@@ -22,9 +22,9 @@ from uuid import UUID
 from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import JSONResponse
 
-from app.connectors.azure.auth import ConsentStateError, verify_state
 from app.core.db import service_session
 from app.core.logging import get_logger
+from app.core.signing import SignedStateError, verify_state
 from app.services import change_events as service
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -103,7 +103,7 @@ async def azure_change_event(
 def _authorized(connection_id: UUID, token: str) -> bool:
     try:
         payload = verify_state(token, max_age_seconds=EVENT_TOKEN_TTL_SECONDS)
-    except ConsentStateError:
+    except SignedStateError:
         return False
     if payload.get("purpose") != "event_grid":
         # A token minted for the ARM template must not open the webhook. They

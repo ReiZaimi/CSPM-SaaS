@@ -18,6 +18,7 @@ meant to prevent, arriving from a different direction.
 
 from datetime import UTC, datetime, timedelta
 
+from app.connectors.azure import change_events as azure
 from app.services import change_events as service
 
 
@@ -37,7 +38,7 @@ class Connection:
 def test_the_validation_code_is_echoed_back() -> None:
     """Not optional politeness. Without it Event Grid activates nothing."""
     event = {
-        "eventType": service.VALIDATION_EVENT,
+        "eventType": azure.VALIDATION_EVENT,
         "data": {"validationCode": "512d38b6-c7b8-40c8-89fe-f46f9e9622b6"},
     }
 
@@ -49,7 +50,7 @@ def test_the_validation_code_is_echoed_back() -> None:
 
 def test_a_validation_event_with_no_code_is_not_answered() -> None:
     """Replying with an empty code would activate nothing and hide the reason."""
-    assert service.validation_response({"eventType": service.VALIDATION_EVENT, "data": {}}) is None
+    assert service.validation_response({"eventType": azure.VALIDATION_EVENT, "data": {}}) is None
 
 
 # -------------------------------------------------------------------- filter
@@ -160,5 +161,5 @@ def test_the_command_names_this_connection_and_nothing_else() -> None:
     # Filtered at the source as well as at the endpoint: traffic Azure drops
     # never leaves the customer's tenant.
     assert "--included-event-types" in command
-    for event_type in service.CHANGE_EVENT_TYPES:
+    for event_type in azure.CHANGE_EVENT_TYPES:
         assert event_type in command

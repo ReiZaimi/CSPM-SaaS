@@ -1166,7 +1166,20 @@ on the reaper.
     neither the aliases nor the expressions have been verified against a real
     deployment from here — which `rbac.py` records the cost of. The generator
     declines rather than guesses.
-21. A second provider, behind the existing `CloudConnector` seam. Only then
+21. **Prerequisite done; the connector itself needs an AWS account.** The seam
+    this item depends on was checked rather than assumed, and it leaked in three
+    places — the pipeline reaching into Azure's evidence keys, the permissions
+    endpoint answering for Azure whatever the provider, and the change-event
+    service spelling ARM operation names. All three went through the connector
+    or the registry, the signed-state helper moved to `app/core/signing.py`, and
+    a test now fails the build on the next leak (`MULTI_CLOUD.md` §8 step 0).
+
+    The connector itself is not startable from here. IAM action names, SigV4
+    signing, the STS assume-role round trip, the CloudFormation template and
+    which `Describe*` answers what are all strings that have to be verified
+    against a live account — and `rbac.py` records what an unverified one costs.
+    Written blind it would be a large body of code claiming to scan a cloud
+    nobody had scanned, with a seam that then looks finished. Only then
     generalize the permission-manifest pattern and migrate the scope
     vocabulary, in the order `MULTI_CLOUD.md` §8 already argues for.
 

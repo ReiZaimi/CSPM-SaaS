@@ -19,9 +19,10 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from app.connectors.azure import auth
-from app.connectors.azure.auth import GRAPH_SCOPE, build_consent_url, verify_state
+from app.connectors.azure.auth import GRAPH_SCOPE, build_consent_url
 from app.core.config import CONSENT_CALLBACK_PATH, Settings
 from app.core.errors import NotConfigured
+from app.core.signing import sign_state, verify_state
 
 REDIRECT_URI = f"https://api.example.com{CONSENT_CALLBACK_PATH}"
 
@@ -108,7 +109,7 @@ def test_a_misconfigured_deployment_refuses_to_build_a_url(
 def test_the_state_survives_the_round_trip(configured: Settings) -> None:
     """The state is what binds a returning callback to one connection, so it
     has to come back out of the URL exactly as it went in."""
-    state = auth.sign_state({"cloud_connection_id": "abc", "issued_at": time.time()})
+    state = sign_state({"cloud_connection_id": "abc", "issued_at": time.time()})
     returned = query(build_consent_url(state))["state"]
     assert verify_state(returned, max_age_seconds=3600)["cloud_connection_id"] == "abc"
 

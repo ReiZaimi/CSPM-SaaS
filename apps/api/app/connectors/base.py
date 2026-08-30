@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.connectors.evidence import EvidenceKey
+from app.connectors.evidence import EvidenceCategory, EvidenceKey
 from app.connectors.planning import CollectionPlan
 from app.core.enums import CollectionScope, Provider, RelationshipType, TaskOutcome
 from app.domain.resource import CloudResource
@@ -173,6 +173,35 @@ class CloudConnector(ABC):
     @abstractmethod
     async def validate_connection(self) -> ConnectionCheck:
         """Prove read access works, by actually calling the provider."""
+
+    @staticmethod
+    def required_permissions() -> dict[str, Any]:
+        """What this provider is being asked for, in the form onboarding shows it.
+
+        Presented before anyone grants anything, because "what does this thing
+        get to see" is the first question anyone sensible asks
+        (``SECURITY.md`` §5). The shape differs by provider -- Azure has two
+        grants and AWS has one role with an external id -- so the answer belongs
+        to the connector rather than to a caller that would have to know which.
+        """
+        return {}
+
+    @staticmethod
+    def evidence_keys_in(category: EvidenceCategory) -> frozenset[EvidenceKey]:
+        """Every key this provider produces under one permission category.
+
+        A category-level fact -- a stale role granting nothing for storage, a
+        directory nobody could read -- has to reach the rules that lost their
+        verdict, and rules degrade one key at a time. Which keys belong to a
+        category is a provider's own answer: Azure reads its directory from
+        Graph under admin consent, and AWS has no directory category at all.
+
+        Behind the seam because the pipeline was importing Azure's key enum
+        directly to answer it. That worked, and quietly meant the
+        provider-neutral half of the scanner named one provider -- so a second
+        connector's categories would have degraded nothing.
+        """
+        return frozenset()
 
     @staticmethod
     def baseline_evidence() -> frozenset[EvidenceKey]:

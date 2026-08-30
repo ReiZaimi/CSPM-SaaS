@@ -12,6 +12,7 @@ Everything else is automatic: CloudGuard polls for the RBAC grant and
 discovers subscriptions once it detects access.
 """
 
+import json
 import time
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -20,7 +21,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.azure.auth import build_consent_url, sign_state
+from app.connectors.azure.auth import (
+    REQUIRED_GRAPH_PERMISSIONS,
+    app_registration_manifest,
+    build_consent_url,
+)
 from app.connectors.azure.client import ArmClient, AzureApiError, GraphClient
 from app.connectors.azure.rbac import (
     ARM_READ_ACTIONS,
@@ -44,6 +49,7 @@ from app.core.enums import (
 )
 from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
 from app.core.logging import get_logger
+from app.core.signing import sign_state
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import CloudConnectionCreate
@@ -1173,3 +1179,50 @@ async def _scannable_accounts(
         .all()
     )
     return [account for account in rows if account.is_scannable]
+
+
+def azure_app_registration() -> dict:
+    """What CloudGuard's own Entra app registration must declare.
+
+    Moved out of the route rather than left there, and the reason is the seam:
+    everything above the connector line is meant to be provider-neutral, and a
+    router importing Azure's Graph permissions made that false. This module is
+    already the one place the onboarding flow is Azure-shaped, and
+    ``MULTI_CLOUD.md`` §8 step 5 schedules splitting it for when a second
+    provider exists to split it *for*.
+
+    The content is unchanged. It is the other half of the deployment -- the ARM
+    template grants subscription access in the customer's tenant, while
+    directory access comes from application permissions on CloudGuard's own
+    registration, which no template a customer runs can touch.
+    """
+    manifest = app_registration_manifest()
+    return {
+        "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
+        "required_resource_access": manifest,
+        # Shell-safe by construction. An angle-bracket placeholder reads as a
+        # placeholder and parses as input redirection, so a copied command fails
+        # with "No such file or directory" and names the placeholder as the
+        # missing file -- an error that says nothing about what went wrong.
+        "lookup_command": (
+            'APP_ID=$(az ad app list --display-name CloudGuard '
+            '--query "[0].appId" -o tsv)'
+        ),
+        "apply_command": (
+            'az ad app update --id "$APP_ID" '
+            f"--required-resource-accesses '{json.dumps(manifest)}'"
+        ),
+        "verify_command": (
+            'az ad app show --id "$APP_ID" '
+            '--query "requiredResourceAccess[].resourceAccess[].id" -o tsv'
+        ),
+        "grant_command": (
+            "# Then, in each customer tenant, a Global Administrator "
+            "re-runs the consent link from this page."
+        ),
+        "note": (
+            "Consent grants what the registration declares at the moment it is "
+            "granted. Adding a permission afterwards does not extend an existing "
+            "grant -- every already-connected tenant must consent again."
+        ),
+    }

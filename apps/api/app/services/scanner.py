@@ -37,7 +37,6 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.connectors.azure.evidence import keys_in
 from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.evidence import EvidenceCategory
 from app.connectors.planning import CollectionPlan
@@ -49,6 +48,7 @@ from app.core.enums import (
     FindingEvent,
     FindingStatus,
     Level,
+    Provider,
     RelationshipType,
     RiskKind,
     RiskStatus,
@@ -1133,9 +1133,35 @@ class ScanPipeline:
                 f"identity check could reach a verdict. ({step.error or 'unknown error'})"
             )
 
-        for key in keys_in(EvidenceCategory.IDENTITY):
+        # Asked of the connector rather than of Azure's key enum directly. The
+        # pipeline is the provider-neutral half of this system, and a second
+        # connector whose categories it could not ask would degrade nothing.
+        provider = await self._provider_of(session, scan)
+        for key in get_connector(provider).evidence_keys_in(EvidenceCategory.IDENTITY):
             state.merged.collection_errors[key.value] = reason
         return {EvidenceCategory.IDENTITY.value: reason}
+
+    async def _provider_of(self, session: AsyncSession, scan: Scan) -> Provider:
+        """Which cloud this scan is reading.
+
+        Off the connection or the subscription, because a scan is scoped to one
+        or the other and both name their provider. Not stored on the scan: it
+        would be a third place the same fact lives, and the one most likely to
+        disagree after a row is edited.
+        """
+        if scan.connection_id is not None:
+            connection = await session.get(CloudConnection, scan.connection_id)
+            if connection is not None:
+                return connection.provider
+        if scan.cloud_account_id is not None:
+            account = await session.get(CloudAccount, scan.cloud_account_id)
+            if account is not None:
+                return account.provider
+        # A scan scoped to neither cannot have collected anything, so nothing
+        # downstream of this will be asked for a key. Azure is the fallback
+        # rather than an error because raising here would turn "this scan had
+        # no scope" into an exception in the code that explains gaps.
+        return Provider.AZURE
 
     # --------------------------------------------------------------- evaluate
     async def _evaluate(
@@ -1559,7 +1585,7 @@ class ScanPipeline:
             # sentence on the banner and a bare "Forbidden" against the check
             # that actually lost its verdict -- which is the one they clicked
             # into to find out why.
-            for key in keys_in(category):
+            for key in get_connector(account.provider).evidence_keys_in(category):
                 if key.value in snapshot.gaps:
                     snapshot.gaps[key.value] = (
                         f"{explanation} (underlying error: {snapshot.gaps[key.value]})"

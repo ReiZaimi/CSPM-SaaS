@@ -536,7 +536,7 @@ class TestChangeEventWebhook:
     """
 
     def _token(self, connection_id: str, purpose: str = "event_grid") -> str:
-        from app.connectors.azure.auth import sign_state
+        from app.core.signing import sign_state
 
         return sign_state(
             {

@@ -12,10 +12,10 @@ from app.connectors.azure.auth import (
 )
 from app.connectors.azure.client import ArmClient, GraphClient, ResourceGraphClient
 from app.connectors.azure.collector import AzureCollector
-from app.connectors.azure.evidence import BASELINE_EVIDENCE
+from app.connectors.azure.evidence import BASELINE_EVIDENCE, keys_in
 from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import CloudConnector, ConnectionCheck, NormalizedState, RawSnapshot
-from app.connectors.evidence import EvidenceKey
+from app.connectors.evidence import EvidenceCategory, EvidenceKey
 from app.connectors.planning import CollectionPlan
 from app.core.enums import Provider
 from app.core.logging import get_logger
@@ -186,6 +186,10 @@ class AzureConnector(CloudConnector):
             else "; ".join(check.problems)
         )
         return check
+
+    @staticmethod
+    def evidence_keys_in(category: EvidenceCategory) -> frozenset[EvidenceKey]:
+        return frozenset(keys_in(category))
 
     @staticmethod
     def baseline_evidence() -> frozenset[EvidenceKey]:

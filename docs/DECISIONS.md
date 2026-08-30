@@ -599,6 +599,45 @@ deleted anything in Azure — their subscription keeps delivering to an endpoint
 that now refuses it. That is the right way round: a switch that appears to stop
 something and does not is worse than one that leaves a tidy-up to do.
 
+## 23. The provider seam is tested, not asserted
+
+**Spec:** `MULTI_CLOUD.md` §8, and the claim in `ARCHITECTURE.md` §6 that
+everything above `CloudConnector` is provider-neutral.
+
+That claim was false in three places, and each was invisible to every test of
+behaviour because with one provider they all give the right answer:
+
+* the scan pipeline imported Azure's evidence-key enum to ask which keys a
+  permission category holds, so a second connector's categories would have
+  degraded no rules at all;
+* the permissions endpoint returned Azure's grants for every provider, so the
+  first AWS customer would have been told CloudGuard wanted Entra admin consent;
+* the change-event service hard-coded ARM operation names and the `az` command.
+
+All three now ask the connector or the registry. `get_connector_class` answers
+the questions that are properties of a *provider* rather than of a connection to
+one, so nothing needs credentials to ask what permissions a cloud wants.
+`get_change_feed` does the same for change events, which arrive before any
+connection has been resolved.
+
+**`sign_state` moved to `app/core/signing.py`.** Nothing in it was ever Azure —
+it signs a dictionary — and it lived under `connectors/azure/auth.py` only
+because that is where the consent round trip needed it first. Three unrelated
+flows now use it, and the next provider's onboarding would have imported Azure's
+package to get a HMAC.
+
+**One exception is scheduled rather than accidental.**
+`services/cloud_connections.py` still imports Azure's auth, client and RBAC
+modules, and `MULTI_CLOUD.md` §8 step 5 deliberately puts that split *after* a
+second connector exists: it is a refactor whose right shape is knowable from two
+examples and guessable from one. It is named in the test, so it stays one known
+exception rather than becoming a habit — a new leak appears in the failure
+message beside it.
+
+**The test looks at imports, not text.** A docstring naming Azure is fine and
+unavoidable; an import is what makes neutral code depend on one cloud, and what
+a second connector would have to break.
+
 ---
 
 ## Open items carried forward
