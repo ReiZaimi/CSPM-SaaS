@@ -15,13 +15,18 @@ import asyncio
 from uuid import UUID
 
 from app.core.db import dispose_engines, service_session
-from app.core.enums import ScanStatus
+from app.core.enums import ScanStatus, ScanStepKind
 from app.core.logging import configure_logging, get_logger
 from app.models.scan import Scan
 from app.services import orchestrator
 from app.services import scans as scans_service
 from app.services.scanner import ScanPipeline
-from app.workers.celery_app import celery_app
+from app.workers.celery_app import (
+    ANALYZE_QUEUE,
+    COLLECT_QUEUE,
+    DEFAULT_QUEUE,
+    celery_app,
+)
 
 log = get_logger(__name__)
 
@@ -55,8 +60,14 @@ def advance_scan(self: object, scan_id: str) -> dict:
     """
     configure_logging()
     claimed = asyncio.run(_advance(UUID(scan_id)))
-    for step_id in claimed:
-        run_scan_step.delay(scan_id, str(step_id))
+    for step_id, kind in claimed:
+        # Routed by what the step costs rather than by what it is called.
+        # Collection waits on Azure and wants many in flight; analysis holds a
+        # whole tenant in memory and wants few, and one pool sized for either
+        # is sized wrongly for the other.
+        run_scan_step.apply_async(
+            args=[scan_id, str(step_id)], queue=queue_for(kind)
+        )
     return {"scan_id": scan_id, "claimed": len(claimed)}
 
 
@@ -138,7 +149,21 @@ async def _start(scan_id: UUID) -> None:
     advance_scan.delay(str(scan_id))
 
 
-async def _advance(scan_id: UUID) -> list[UUID]:
+def queue_for(kind: ScanStepKind) -> str:
+    """Which pool should run this step.
+
+    PLAN sits on the default queue with the other short database-only tasks:
+    it resolves a scope and writes a few rows, and giving it a pool of its own
+    would be a queue for work that never queues.
+    """
+    if kind == ScanStepKind.COLLECT:
+        return COLLECT_QUEUE
+    if kind == ScanStepKind.ANALYZE:
+        return ANALYZE_QUEUE
+    return DEFAULT_QUEUE
+
+
+async def _advance(scan_id: UUID) -> list[tuple[UUID, ScanStepKind]]:
     try:
         async with service_session() as session:
             scan = await session.get(Scan, scan_id)

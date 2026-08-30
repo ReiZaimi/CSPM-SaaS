@@ -157,7 +157,7 @@ Node installed on your machine.
    section:
 
    ```
-   celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --loglevel=INFO --concurrency=2
+   celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --queues=celery,collect,analyze --loglevel=INFO --concurrency=2
    ```
 
    > **Keep `--beat`.** It runs Celery's scheduler inside the worker, and one
@@ -170,6 +170,17 @@ Node installed on your machine.
    >
    > Safe with more than one worker replica: the reaper is idempotent, so two
    > schedulers firing it merely means one of them finds nothing left to close.
+
+   > **Keep all three queues.** A scan runs as steps, and each is routed by what
+   > it costs: `collect` waits on Azure, `analyze` holds a whole tenant in
+   > memory, and `celery` carries the short database-only tasks that move a scan
+   > between them. A queue no worker consumes is a scan that queues into a void
+   > — it never starts, and nothing says why.
+   >
+   > Splitting them later is two services rather than one: narrow this to
+   > `--queues=celery,collect` and add a second with
+   > `--queues=analyze --concurrency=1`. Worth doing when analysis of a large
+   > tenant starts occupying slots collection could have used; not before.
 
    > **Not Custom Build Command.** They sit near each other in Railway's
    > settings and the mistake is silent: a build command runs at build time,
@@ -442,7 +453,7 @@ service, built from the same image but started with
 `infrastructure/railway/worker.json`:
 
 ```
-celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --loglevel=INFO --concurrency=2
+celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --queues=celery,collect,analyze --loglevel=INFO --concurrency=2
 ```
 
 Check, in order:

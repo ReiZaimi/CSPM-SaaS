@@ -5,7 +5,7 @@
     "dockerfilePath": "infrastructure/docker/api.Dockerfile"
   },
   "deploy": {
-    "startCommand": "celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --loglevel=INFO --concurrency=2",
+    "startCommand": "celery -A app.workers.celery_app.celery_app worker --beat --schedule=/tmp/celerybeat-schedule --queues=celery,collect,analyze --loglevel=INFO --concurrency=2",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }

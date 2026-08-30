@@ -299,7 +299,7 @@ async def drive(scan_id: uuid.UUID, *, max_rounds: int = 20) -> uuid.UUID:
             claimed = await orchestrator.claim(session, [s.id for s in ready])
         if not claimed:
             break
-        for step_id in claimed:
+        for step_id, _kind in claimed:
             await ScanPipeline(scan_id).run_step(step_id)
     else:  # pragma: no cover - a dependency that never settles
         raise AssertionError(f"scan {scan_id} did not settle in {max_rounds} rounds")

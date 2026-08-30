@@ -9,6 +9,24 @@ from celery import Celery
 
 from app.core.config import settings
 
+# The queues a step is routed to, by what the step actually costs.
+#
+# Collection is IO-bound: it waits on Azure, holds little memory, and wants as
+# many in flight as the provider's throttling allows. Analysis is the opposite
+# -- it holds a whole tenant's resources and relationship index in memory while
+# the rules run, and wants few. Sharing one pool means an analysis of a large
+# tenant occupies a slot a collection could have used, and sizing the pool for
+# one profile is sizing it wrongly for the other.
+#
+# One worker consuming all three is the default and needs no deployment change.
+# Splitting them is then a second service with ``-Q analyze --concurrency=1``
+# and the first narrowed to ``-Q celery,collect``.
+COLLECT_QUEUE = "collect"
+ANALYZE_QUEUE = "analyze"
+# Everything else: starting a scan, advancing it, reaping, replay. All short,
+# all database-only.
+DEFAULT_QUEUE = "celery"
+
 celery_app = Celery(
     "cloudguard",
     broker=settings.redis_url,
@@ -28,6 +46,7 @@ celery_app.conf.beat_schedule = {
 }
 
 celery_app.conf.update(
+    task_default_queue=DEFAULT_QUEUE,
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],

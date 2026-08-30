@@ -148,7 +148,7 @@ async def drive_scan(scan_id) -> None:
             )
         if not claimed:
             break
-        for step_id in claimed:
+        for step_id, _kind in claimed:
             await ScanPipeline(scan_id).run_step(step_id)
 
     async with service_session() as session:

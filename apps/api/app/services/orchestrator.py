@@ -190,7 +190,9 @@ def runnable(steps: Sequence[ScanStep]) -> list[ScanStep]:
     ]
 
 
-async def claim(session: AsyncSession, step_ids: Sequence[UUID]) -> list[UUID]:
+async def claim(
+    session: AsyncSession, step_ids: Sequence[UUID]
+) -> list[tuple[UUID, ScanStepKind]]:
     """Take ownership of these steps, and report which were actually won.
 
     The whole concurrency story is this statement. ``status = 'PENDING'`` in the
@@ -219,11 +221,14 @@ async def claim(session: AsyncSession, step_ids: Sequence[UUID]) -> list[UUID]:
                 # thing.
                 started_at=func.coalesce(ScanStep.started_at, now),
             )
-            .returning(ScanStep.id)
+            # The kind comes back with the id because the caller routes on it:
+            # collection and analysis have opposite resource profiles and go to
+            # different queues.
+            .returning(ScanStep.id, ScanStep.kind)
         )
-    ).scalars().all()
+    ).all()
     await session.commit()
-    return list(claimed)
+    return [(row.id, ScanStepKind(row.kind)) for row in claimed]
 
 
 async def renew(session: AsyncSession, step_id: UUID) -> None:
