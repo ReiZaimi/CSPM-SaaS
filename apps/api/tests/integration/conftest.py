@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from app.core.db import get_app_engine, get_owner_engine, rls_session, service_session
+from app.core.db import dispose_engines, rls_session, service_session
 from app.services.rule_sync import sync_rules_to_database
 
 
@@ -46,10 +46,17 @@ async def _reset_connection_pools() -> AsyncIterator[None]:
     The engines are module-level singletons, but pytest-asyncio gives each test
     its own event loop. A pooled asyncpg connection created under one loop
     explodes when reused under the next, so the pool is drained after every test.
+
+    ``dispose_engines`` rather than an enumerated list, and that is the point of
+    the change: this fixture used to name the app and owner engines by hand, so
+    adding a third -- the worker connection, whose row-level security holds a
+    scan to one organization -- left its pool undrained and turned fifty-odd
+    integration tests into "got Future attached to a different loop". The
+    application already has one function that knows the whole set, and it is the
+    same function the Celery worker calls for the same reason.
     """
     yield
-    await get_app_engine().dispose()
-    await get_owner_engine().dispose()
+    await dispose_engines()
 
 
 @pytest_asyncio.fixture

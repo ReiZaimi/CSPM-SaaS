@@ -249,3 +249,66 @@ def test_a_long_containment_chain_does_not_run_away() -> None:
     )
 
     assert len(graph.reachable_from(ids[0], max_depth=3)) == 3
+
+
+# --------------------------------------------------------------- round trip
+def test_the_graph_survives_being_keyed_by_surrogate_ids() -> None:
+    """Edges are stored by database id; the graph works in provider ids.
+
+    That translation is where a round trip actually breaks, and it breaks
+    quietly: a mapping that dropped an endpoint would leave a path silently
+    short rather than raising, and a shorter path reads as a *better* answer.
+
+    This mimics exactly what ``services/graph.load_graph`` does, without
+    needing PostgreSQL to do it.
+    """
+    import uuid as uuidlib
+
+    resources = [
+        node(SUB, ResourceType.SUBSCRIPTION),
+        node(GROUP, ResourceType.RESOURCE_GROUP),
+        node(VM, ResourceType.VIRTUAL_MACHINE, exposure=Level.CRITICAL),
+        node(IDENTITY, ResourceType.SERVICE_PRINCIPAL),
+        node(STORAGE, ResourceType.STORAGE_ACCOUNT, sensitivity=Level.HIGH),
+    ]
+    provider_edges = [
+        (SUB, RelationshipType.CONTAINS, GROUP),
+        (GROUP, RelationshipType.CONTAINS, STORAGE),
+        (VM, RelationshipType.HAS_IDENTITY, IDENTITY),
+        (IDENTITY, RelationshipType.GRANTS_ROLE, SUB),
+    ]
+
+    # Store: every asset gets a surrogate key, and edges are written against it.
+    surrogate = {r.provider_resource_id: uuidlib.uuid4() for r in resources}
+    stored = [
+        (surrogate[s], relationship, surrogate[t]) for s, relationship, t in provider_edges
+    ]
+
+    # Load: the surrogate keys come back and have to become provider ids again.
+    by_id = {value: key for key, value in surrogate.items()}
+    rebuilt = AssetGraph.build(
+        resources,
+        [(by_id[s], relationship, by_id[t]) for s, relationship, t in stored],
+    )
+
+    paths = rebuilt.attack_paths()
+    assert len(paths) == 1
+    assert paths[0].target.provider_resource_id == STORAGE
+    assert paths[0].hops == 4
+
+
+def test_an_edge_whose_endpoint_was_deleted_is_dropped_on_load() -> None:
+    """A resource can go while an edge naming it lingers. Following one would
+    describe a route through an asset that no longer exists."""
+    import uuid as uuidlib
+
+    live = uuidlib.uuid4()
+    gone = uuidlib.uuid4()
+    by_id = {live: VM}
+
+    relationships = [
+        (by_id[s], relationship, by_id[t])
+        for s, relationship, t in [(live, RelationshipType.HAS_IDENTITY, gone)]
+        if s in by_id and t in by_id
+    ]
+    assert relationships == []

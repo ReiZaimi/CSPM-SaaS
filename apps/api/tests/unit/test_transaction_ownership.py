@@ -67,9 +67,14 @@ def test_a_scan_runs_on_the_worker_connection_when_one_is_configured() -> None:
     """
     from app.core.config import Settings
 
+    # Explicitly empty rather than merely omitted. ``Settings`` reads the
+    # environment, and CI sets DATABASE_WORKER_URL so the integration suite
+    # exercises the constrained path -- so an omitted field here inherits the
+    # real deployment's value and the test asserts the opposite of what it says.
     unset = Settings(
         database_url="postgresql+asyncpg://app@h/db",
         database_owner_url="postgresql+asyncpg://owner@h/db",
+        database_worker_url="",
     )
     assert not unset.worker_is_constrained
     assert unset.scan_database_url == unset.database_owner_url
