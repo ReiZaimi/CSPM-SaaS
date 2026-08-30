@@ -6,6 +6,7 @@ dependency chain -- token verification, membership resolution, and an
 RLS-constrained session.
 """
 
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -523,3 +524,138 @@ class TestChangeFeed:
 
     async def test_a_change_feed_needs_a_token(self, client) -> None:
         assert (await client.get("/api/v1/changes")).status_code == 401
+
+
+class TestChangeEventWebhook:
+    """The endpoint Azure calls, which means the endpoint anyone can call.
+
+    No session authenticates it -- Event Grid delivers from Microsoft's
+    infrastructure and carries no CloudGuard user -- so the signed token is the
+    whole of the guard, and these are the cases where getting it wrong hands a
+    stranger the ability to make a tenant scan itself on demand.
+    """
+
+    def _token(self, connection_id: str, purpose: str = "event_grid") -> str:
+        from app.connectors.azure.auth import sign_state
+
+        return sign_state(
+            {
+                "cloud_connection_id": connection_id,
+                "purpose": purpose,
+                "issued_at": time.time(),
+            }
+        )
+
+    async def test_no_token_is_refused(self, client) -> None:
+        response = await client.post(f"/api/v1/events/azure/{uuid.uuid4()}", json=[])
+        assert response.status_code == 400
+
+    async def test_a_forged_token_is_refused(self, client) -> None:
+        response = await client.post(
+            f"/api/v1/events/azure/{uuid.uuid4()}?token=forged.deadbeef", json=[]
+        )
+        assert response.status_code == 400
+
+    async def test_a_template_token_does_not_open_the_webhook(self, client) -> None:
+        """Both are signed with the same secret. The purpose is what separates
+        them, which is why the webhook checks it rather than trusting the
+        signature to mean what it hopes."""
+        connection_id = str(uuid.uuid4())
+        response = await client.post(
+            f"/api/v1/events/azure/{connection_id}"
+            f"?token={self._token(connection_id, purpose='template')}",
+            json=[],
+        )
+        assert response.status_code == 400
+
+    async def test_a_token_for_another_connection_is_refused(self, client) -> None:
+        response = await client.post(
+            f"/api/v1/events/azure/{uuid.uuid4()}"
+            f"?token={self._token(str(uuid.uuid4()))}",
+            json=[],
+        )
+        assert response.status_code == 400
+
+    async def test_the_validation_handshake_is_answered(self, client) -> None:
+        """Answered before any database work, and for a connection that need not
+        exist yet: Event Grid validates the endpoint when the subscription is
+        created, which is the moment the customer is watching."""
+        connection_id = str(uuid.uuid4())
+        response = await client.post(
+            f"/api/v1/events/azure/{connection_id}?token={self._token(connection_id)}",
+            json=[
+                {
+                    "eventType": "Microsoft.EventGrid.SubscriptionValidationEvent",
+                    "data": {"validationCode": "code-123"},
+                }
+            ],
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"validationResponse": "code-123"}
+
+    async def test_an_irrelevant_event_is_accepted_and_dropped(self, client) -> None:
+        """200, not an error. Event Grid retries a non-2xx for hours, and
+        redelivering something CloudGuard has decided it cannot act on is load
+        with no possible outcome."""
+        connection_id = str(uuid.uuid4())
+        response = await client.post(
+            f"/api/v1/events/azure/{connection_id}?token={self._token(connection_id)}",
+            json=[
+                {
+                    "eventType": "Microsoft.Resources.ResourceWriteSuccess",
+                    "data": {"operationName": "Microsoft.Web/sites/write"},
+                }
+            ],
+        )
+
+        assert response.status_code == 200
+        assert response.json()["relevant"] == 0
+
+    async def test_an_event_for_a_connection_that_never_opted_in_is_dropped(
+        self, client, cleanup_orgs
+    ) -> None:
+        """A connection with the feature off is treated exactly as one that does
+        not exist -- otherwise turning it off would leave a webhook that keeps
+        accepting, and quietly resumes when somebody turns it back on."""
+        user = uuid.uuid4()
+        org_id = await make_org(client, user, "No Events Ltd")
+        cleanup_orgs.append(uuid.UUID(org_id))
+
+        created = await client.post(
+            "/api/v1/cloud-connections",
+            json={"name": "Prod", "scope_type": "TENANT_ROOT"},
+            headers=auth_header(user),
+        )
+        connection_id = created.json()["data"]["id"]
+
+        response = await client.post(
+            f"/api/v1/events/azure/{connection_id}?token={self._token(connection_id)}",
+            json=[
+                {
+                    "eventType": "Microsoft.Resources.ResourceWriteSuccess",
+                    "data": {
+                        "operationName": "Microsoft.Network/networkSecurityGroups/write"
+                    },
+                }
+            ],
+        )
+
+        assert response.status_code == 200
+        rows = await _connection_change_state(uuid.UUID(connection_id))
+        assert rows[0] is None, "an event was recorded against a connection that is off"
+
+
+async def _connection_change_state(connection_id: uuid.UUID) -> tuple:
+    from app.core.db import service_session
+
+    async with service_session() as session:
+        return (
+            await session.execute(
+                text(
+                    "SELECT change_pending_since, last_change_event_at "
+                    "FROM cloud_connections WHERE id = :id"
+                ),
+                {"id": connection_id},
+            )
+        ).one()

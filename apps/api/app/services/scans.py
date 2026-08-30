@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
-from app.core.enums import FindingStatus, ScanStatus, ScanStepStatus, TaskOutcome
+from app.core.enums import FindingStatus, ScanStatus, ScanStepStatus, ScanTrigger, TaskOutcome
 from app.core.errors import ScanNotFound
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
@@ -104,6 +104,37 @@ async def scan_in_flight(
     return running is not None
 
 
+async def scanned_since(
+    session: AsyncSession,
+    organization_id: UUID,
+    connection_id: UUID,
+    *,
+    since: datetime,
+    trigger: ScanTrigger | None = None,
+) -> bool:
+    """Whether this connection has been scanned recently, optionally for a reason.
+
+    The floor under change-triggered scanning. A quiet period stops one
+    deployment becoming forty scans; this stops an afternoon of deployments
+    becoming an afternoon of scans, which is the same storm arriving more
+    slowly.
+
+    Filtered by trigger because the two clocks are separate: a scheduled
+    overnight scan should not suppress the reading a customer earned by
+    changing something at nine in the morning.
+    """
+    conditions = [
+        Scan.organization_id == organization_id,
+        Scan.connection_id == connection_id,
+        Scan.created_at >= since,
+    ]
+    if trigger is not None:
+        conditions.append(Scan.trigger == trigger)
+
+    found = (
+        await session.execute(select(Scan).where(*conditions).limit(1))
+    ).scalar_one_or_none()
+    return found is not None
 
 
 ABANDONED_MESSAGE = (

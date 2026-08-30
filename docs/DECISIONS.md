@@ -555,6 +555,50 @@ rule looks like when nobody could be bothered, and those must not be
 indistinguishable — so a test requires an empty one to carry a reason and
 something the customer can still run.
 
+## 22. The customer wires up change events, because CloudGuard cannot
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §12 item 19 — "change-triggered scans via
+Azure Event Grid".
+
+The whole design falls out of one refusal. Creating an Event Grid subscription
+is a **write** in the customer's tenant. CloudGuard holds no write permission
+anywhere, that is the strongest security claim it makes, and it is not one to
+spend on saving a customer a copy-paste. So CloudGuard generates the command —
+one per subscription, because that is how Event Grid is scoped — and the
+customer runs it, exactly as they deploy the scanner role.
+
+**The webhook is reachable by anyone**, so the signed token is the whole guard.
+It is the same HMAC scheme the ARM template endpoint uses and is separated from
+it by `purpose` alone, which is why the webhook checks that field rather than
+treating a valid signature as proof of intent. Every rejection returns the same
+400 whether the token is malformed, expired, or signed for another connection:
+distinguishing them would let a caller enumerate connection ids.
+
+**It answers 200 to what it drops.** Event Grid retries a non-2xx for hours, and
+redelivering an event CloudGuard has already decided it cannot act on is load
+with no possible outcome. The validation handshake is answered before any
+database work and for a connection that need not exist yet, because that
+exchange happens at the moment the customer is watching their `az eventgrid`
+command.
+
+**Three things stand between an event and a scan**, and without them the feature
+is a denial of service against the customer's own API limits, paid for by them.
+Events outside the resource providers a rule reads are dropped. A burst marks
+the connection and the scan waits for quiet, so one deployment is one reading
+rather than forty. And a connection is not scanned for a change more often than
+a floor, so an afternoon of deployments is not an afternoon of scans — the same
+storm arriving more slowly.
+
+**The webhook only records.** Event Grid times the response; starting a scan
+behind it would put a queue, a database write and a provider call between Azure
+and its acknowledgement. The sweep that acts on a settled burst is a beat task,
+using the same advisory lock and in-flight check every other scan trigger uses.
+
+Turning the feature off closes the webhook immediately, before the customer has
+deleted anything in Azure — their subscription keeps delivering to an endpoint
+that now refuses it. That is the right way round: a switch that appears to stop
+something and does not is worse than one that leaves a tidy-up to do.
+
 ---
 
 ## Open items carried forward

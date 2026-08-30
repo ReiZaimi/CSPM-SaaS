@@ -12,6 +12,7 @@ frame.
 """
 
 import asyncio
+from datetime import UTC, datetime
 from functools import lru_cache
 from uuid import UUID
 
@@ -23,7 +24,9 @@ from app.core.db import dispose_engines, service_session
 from app.core.enums import ScanStatus, ScanStepKind, ScanTrigger
 from app.core.logging import configure_logging, get_logger, log_context
 from app.models.cloud_account import CloudAccount
+from app.models.cloud_connection import CloudConnection
 from app.models.scan import Scan
+from app.services import change_events as change_service
 from app.services import orchestrator
 from app.services import scans as scans_service
 from app.services import verification as verification_service
@@ -164,6 +167,25 @@ def reap_abandoned_scans(self: object) -> dict:
     return {"reclaimed": len(reclaimed), "closed": len(closed)}
 
 
+@celery_app.task(name="cloudguard.scan_changed_environments", bind=True, max_retries=0)
+def scan_changed_environments(self: object) -> dict:
+    """Read the environments that have just told us they changed.
+
+    The other half of the Event Grid path, and the half that decides whether it
+    is useful or a denial of service. The webhook records that something moved
+    and returns; this starts one scan once the movement has stopped, so a
+    template deployment emitting forty events becomes one reading rather than
+    forty.
+    """
+    configure_logging()
+    started = asyncio.run(_start_changed())
+    if started:
+        log.info("scan.change_triggered_starts", count=len(started))
+    for scan_id in started:
+        run_scan.delay(str(scan_id))
+    return {"started": len(started)}
+
+
 @celery_app.task(name="cloudguard.verify_due_remediations", bind=True, max_retries=0)
 def verify_due_remediations(self: object) -> dict:
     """Look again at the fixes customers have reported.
@@ -270,6 +292,61 @@ async def _run_step(scan_id: UUID, step_id: UUID) -> str:
     """
     try:
         return (await ScanPipeline(scan_id).run_step(step_id)).value
+    finally:
+        await dispose_engines()
+
+
+async def _start_changed() -> list[UUID]:
+    """Queue a scan for each connection whose burst of changes has settled.
+
+    Locked and checked per connection, exactly as the scheduled sweep is: a
+    connection already being read is skipped rather than waited for, and the
+    pending marker is cleared either way. Clearing it on a skip is deliberate --
+    the scan already running will see the change, and leaving the marker would
+    start a second scan for a change the first one covered.
+    """
+    started: list[UUID] = []
+    try:
+        async with service_session() as session:
+            ready = await change_service.connections_ready(session)
+            targets = [(c.organization_id, c.id) for c in ready]
+
+        for org_id, connection_id in targets:
+            async with service_session() as session:
+                connection = await session.get(CloudConnection, connection_id)
+                if connection is None:
+                    continue
+
+                await scans_service.lock_scan_target(session, org_id, connection_id, None)
+                in_flight = await scans_service.scan_in_flight(
+                    session, org_id, connection_id, None
+                )
+                recent = await scans_service.scanned_since(
+                    session,
+                    org_id,
+                    connection_id,
+                    since=datetime.now(UTC) - change_service.MIN_INTERVAL,
+                    trigger=ScanTrigger.CHANGE,
+                )
+                if in_flight or recent:
+                    # Either it is being read now, or it was read for a change
+                    # very recently. A team deploying all afternoon gets a scan
+                    # on a floor rather than one every quiet period.
+                    change_service.clear_pending(connection)
+                    await session.commit()
+                    continue
+
+                scan = Scan(
+                    organization_id=org_id,
+                    connection_id=connection_id,
+                    status=ScanStatus.QUEUED,
+                    trigger=ScanTrigger.CHANGE,
+                )
+                session.add(scan)
+                change_service.clear_pending(connection)
+                await session.commit()
+                started.append(scan.id)
+        return started
     finally:
         await dispose_engines()
 

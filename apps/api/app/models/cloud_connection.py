@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import (
@@ -92,6 +92,28 @@ class CloudConnection(Base, UUIDPrimaryKey, TenantOwned, Timestamps):
     # its slot; an interval says the only thing a scanner can actually promise,
     # which is that the environment is read at least this often.
     scan_interval_hours: Mapped[int | None] = mapped_column(Integer)
+
+    # Whether the customer has wired their environment to tell CloudGuard when
+    # it changes. Off by default and enabled by the customer, because CloudGuard
+    # cannot switch it on itself: creating an Event Grid subscription is a
+    # *write* in their tenant, and holding no write permission at all is the
+    # strongest security claim this product makes. What CloudGuard can do is
+    # generate the command, exactly as it does for the scanner role.
+    change_events_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    # When the current burst of changes started, and when the last one arrived.
+    # Two columns rather than one because they answer different halves of the
+    # debounce: a deployment emits dozens of events in a minute and must produce
+    # one scan, so the trigger waits for quiet -- and without the first column a
+    # scan started after the quiet period would have no idea how long the
+    # environment had been drifting.
+    change_pending_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_change_event_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     # What the UI offers, and what the API accepts. Bounded at both ends for
     # different reasons: below an hour a scan would still be running when the

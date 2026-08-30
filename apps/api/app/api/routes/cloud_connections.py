@@ -18,6 +18,7 @@ from app.core.errors import CloudAccountNotFound, envelope
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import (
+    ChangeEventsUpdate,
     CloudConnectionCreate,
     CloudConnectionOut,
     DiscoveredSubscription,
@@ -316,6 +317,40 @@ async def set_schedule(
         session, tenant, connection_id, payload.scan_interval_hours
     )
     return envelope(_serialize(connection))
+
+
+@router.get("/{connection_id}/change-events")
+async def get_change_events(
+    connection_id: UUID, session: DbSession, tenant: Tenant
+) -> dict:
+    """Whether this connection reacts to change, and how to wire it up.
+
+    The commands are the deliverable. CloudGuard cannot create the Event Grid
+    subscription itself -- that is a write in the customer's tenant, and holding
+    no write permission anywhere is the strongest security claim this product
+    makes -- so it generates what the customer runs, one per subscription,
+    because that is how Event Grid is scoped.
+    """
+    connection = await service.get_connection(session, tenant, connection_id)
+    return envelope(await service.change_event_setup(session, connection))
+
+
+@router.patch("/{connection_id}/change-events")
+async def set_change_events(
+    connection_id: UUID, payload: ChangeEventsUpdate, session: DbSession, tenant: Tenant
+) -> dict:
+    """Open or close the webhook for this connection.
+
+    Opening it wires nothing up on its own; closing it takes effect at once,
+    before the customer has deleted anything in Azure. That is the right way
+    round -- a switch that appears to stop something and does not is worse than
+    one that leaves a subscription delivering to an endpoint now refusing it.
+    """
+    tenant.require_write()
+    connection = await service.set_change_events(
+        session, tenant, connection_id, payload.enabled
+    )
+    return envelope(await service.change_event_setup(session, connection))
 
 
 @router.post("/{connection_id}/cancel")

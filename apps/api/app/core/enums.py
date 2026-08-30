@@ -193,6 +193,10 @@ class ScanTrigger(StrEnum):
 
     MANUAL = "MANUAL"
     SCHEDULED = "SCHEDULED"
+    # Something changed in the environment and Azure said so. Distinct from
+    # SCHEDULED because it is not a clock: an interval is a promise about how
+    # stale the picture may get, while this is the picture being wrong *now*.
+    CHANGE = "CHANGE"
     # CloudGuard checking whether a fix the customer reported actually took.
     # Distinct from SCHEDULED because it answers a question somebody asked, and
     # from MANUAL because they asked it by marking work done rather than by

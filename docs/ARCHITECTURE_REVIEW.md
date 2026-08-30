@@ -1074,7 +1074,35 @@ on the reaper.
     button rather than beside it: the first scan is the thing to do now, and
     the schedule is what stops there being a next time somebody forgets.
 
-    Still to do: change-triggered scans via Azure Event Grid.
+    **Change-triggered scans are now built too.** A schedule promises how stale
+    the picture may get; it does not promise the picture is right, and a
+    subscription read nightly is wrong from the moment somebody opens a security
+    group at nine in the morning until three the next.
+
+    The shape is decided by one constraint: **CloudGuard cannot create the Event
+    Grid subscription.** Creating one is a write in the customer's tenant, and
+    holding no write permission anywhere is the strongest security claim this
+    product makes -- not one to spend on a convenience. So the customer creates
+    it, from a command CloudGuard generates per subscription, exactly as they
+    deploy the scanner role.
+
+    `POST /events/azure/{connection_id}` is guarded by the same HMAC-signed
+    token the ARM template endpoint uses, separated from it by `purpose` alone
+    -- which is why the webhook checks that field rather than trusting a valid
+    signature to mean what it hopes. It answers the validation handshake (an
+    unanswered one leaves the customer's `az eventgrid` command apparently
+    successful and delivering nothing), and answers 200 to everything it
+    deliberately drops, because Event Grid retries a non-2xx for hours and
+    redelivering a decision is load with no outcome.
+
+    Two filters and a floor stand between an event and a scan. Events outside
+    the resource providers a rule actually reads are dropped; a burst marks the
+    connection and the scan waits for `QUIET_PERIOD` of quiet, so a template
+    deployment emitting forty events becomes one reading; and a connection is
+    not scanned for a change more often than `MIN_INTERVAL`, so an afternoon of
+    deployments is not an afternoon of scans. The webhook itself only records --
+    Event Grid times the response, and putting a queue and a provider call
+    behind the acknowledgement would be work in the wrong place.
 20. **Done for the pattern; declared on three rules so far.**
     `app/remediation/` holds `ExpectedState` and `RemediationSpec`: what has to
     be true for a finding to close, carrying three names for one setting --

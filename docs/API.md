@@ -12,6 +12,8 @@ POST   /api/v1/cloud-connections/{id}/consent-url
 GET    /api/v1/cloud-connections/{id}/artifacts
 POST   /api/v1/cloud-connections/{id}/validate
 POST   /api/v1/cloud-connections/{id}/discover
+GET    /api/v1/cloud-connections/{id}/change-events
+PATCH  /api/v1/cloud-connections/{id}/change-events
 GET    /api/v1/cloud-connections/{id}/subscriptions
 PATCH  /api/v1/cloud-connections/{id}/subscriptions
 DELETE /api/v1/cloud-connections/{id}
@@ -64,10 +66,22 @@ capture supported but never lower it, so the worst a mistaken declaration can
 do is over-rank something. `GET /assets/{id}` returns a `context` block giving
 each value's source and confidence alongside it.
 
-Two endpoints are unauthenticated by necessity, both protected by an HMAC-signed
-token rather than a session: `/cloud-connections/azure/consent/callback`, which
-Entra's redirect reaches from the customer's browser, and
-`/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches.
+Three endpoints are unauthenticated by necessity, all protected by an
+HMAC-signed token rather than a session: `/cloud-connections/azure/consent/callback`,
+which Entra's redirect reaches from the customer's browser;
+`/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches;
+and `/events/azure/{connection_id}`, which Azure Event Grid delivers to when
+their environment changes. The last is separated from the template token by the
+`purpose` claim, not by the signature — both are signed with the same secret, so
+the webhook checks the claim rather than treating a valid signature as proof of
+intent.
+
+`/cloud-connections/{id}/change-events` returns the commands the customer runs
+to wire their subscriptions up. CloudGuard cannot create the Event Grid
+subscription itself: that is a write in their tenant, and it holds no write
+permission anywhere. An event does not start a scan directly — a burst marks the
+connection, the scan waits for the environment to go quiet, and a floor stops an
+afternoon of deployments becoming an afternoon of scans.
 
 `/rules/{rule_id}` and `/findings/{id}` carry `remediation_spec` beside the
 remediation prose: the settings that must be true for the finding to close, the
