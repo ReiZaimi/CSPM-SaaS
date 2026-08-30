@@ -1957,3 +1957,51 @@ class TestOrchestration:
         qualified = [key for key in scan.collection_errors if key.endswith(": storage")]
         assert len(qualified) == 2, scan.collection_errors
         assert {"Subscription 1: storage", "Subscription 2: storage"} == set(qualified)
+
+    async def test_a_finished_scan_can_say_where_its_time_went(
+        self, replay, connected_tenant
+    ) -> None:
+        """"Why was this scan slow?" had no answer.
+
+        A scan was one task with one start and one end, so a slow subscription
+        and a slow evaluation looked identical. Steps record when each stage was
+        claimed and when it settled as a side effect of being durable, so the
+        question is answerable from rows already being written.
+        """
+        from app.services.scans import scan_stages
+
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            stages = await scan_stages(session, scan)
+
+        assert {s["stage"] for s in stages} == {"PLAN", "COLLECT", "ANALYZE"}
+        assert all(s["duration_seconds"] is not None for s in stages), (
+            "a settled stage knows how long it took"
+        )
+        assert all(s["status"] == "SUCCEEDED" for s in stages)
+
+        # Named for the scope, not the row: a customer wants to know which
+        # subscription was slow, not which UUID.
+        collect_scopes = {s["scope"] for s in stages if s["stage"] == "COLLECT"}
+        assert collect_scopes == {"Subscription 1", "Subscription 2", DIRECTORY_LABEL}
+
+    async def test_a_stage_reports_the_attempt_it_took(
+        self, replay, connected_account
+    ) -> None:
+        """A step on its second attempt is a step that was interrupted, which is
+        the first thing to know about a scan that took twice as long as usual."""
+        from app.services.scans import scan_stages
+
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            stages = await scan_stages(session, scan)
+
+        assert all(s["attempt"] == 1 for s in stages), (
+            "an uninterrupted scan took one attempt per stage"
+        )

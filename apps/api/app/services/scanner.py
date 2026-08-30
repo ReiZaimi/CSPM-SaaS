@@ -219,6 +219,29 @@ class ScanPipeline:
 
         return await self._settle(step_id, None, retryable=False)
 
+    def _log_step(self, step: ScanStep, outcome: ScanStepStatus) -> None:
+        """One line per stage, carrying what it cost.
+
+        The scan-level log said a scan finished and how many findings it held,
+        which cannot distinguish a slow subscription from a slow evaluation.
+        A stage names the scope it read and the seconds it took, which is the
+        first thing anyone asks about a scan that took twice as long as usual.
+        """
+        started = step.started_at
+        log.info(
+            "scan.step_finished",
+            scan_id=str(self.scan_id),
+            stage=step.kind.value,
+            scope=step.describe(),
+            outcome=outcome.value,
+            attempt=step.attempt,
+            seconds=(
+                round((datetime.now(UTC) - started).total_seconds(), 1)
+                if started
+                else None
+            ),
+        )
+
     async def _settle(
         self, step_id: UUID, error: str | None, *, retryable: bool
     ) -> ScanStepStatus:
@@ -228,13 +251,17 @@ class ScanPipeline:
                 return ScanStepStatus.FAILED
             if error is None:
                 await orchestrator.finish(session, step, ScanStepStatus.SUCCEEDED)
+                self._log_step(step, ScanStepStatus.SUCCEEDED)
                 return ScanStepStatus.SUCCEEDED
             if not retryable:
                 await orchestrator.finish(
                     session, step, ScanStepStatus.FAILED, error
                 )
+                self._log_step(step, ScanStepStatus.FAILED)
                 return ScanStepStatus.FAILED
-            return await orchestrator.fail_or_retry(session, step, error)
+            outcome = await orchestrator.fail_or_retry(session, step, error)
+            self._log_step(step, outcome)
+            return outcome
 
     async def plan(self) -> list[CloudAccount]:
         """Resolve what this scan covers and create a step per scope.

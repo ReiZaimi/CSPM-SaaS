@@ -251,10 +251,11 @@ async def worker_status(tenant: Tenant) -> dict:
 
 @router.get("/{scan_id}/detail")
 async def get_scan_detail(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
-    """One scan, with its scope, identity and severity breakdown."""
+    """One scan, with its scope, identity, stages and severity breakdown."""
     scan = await scans_service.get_scan(session, tenant, scan_id)
     data = ScanDetailOut.model_validate(scan).model_dump(mode="json")
     data["scope"] = await scans_service.scan_context(session, scan)
+    data["stages"] = await scans_service.scan_stages(session, scan)
     data["findings_by_severity"] = await scans_service.severity_breakdown(session, scan)
     data["purgeable_finding_count"] = await scans_service.findings_attributable_to(
         session, scan

@@ -214,6 +214,60 @@ async def get_scan(session: AsyncSession, tenant: TenantContext, scan_id: UUID) 
     return scan
 
 
+async def scan_stages(session: AsyncSession, scan: Scan) -> list[dict]:
+    """What each stage of this scan did, and how long it took.
+
+    "Why is this scan slow?" had no answer: a scan was one task, and the only
+    timings recorded were its own start and end. Steps changed that as a side
+    effect of being durable -- every stage already records when it was claimed
+    and when it settled -- so the question is answerable from rows that are
+    being written anyway.
+
+    Named for the scope rather than the row: a customer reading this wants to
+    know which subscription was slow, not which UUID.
+    """
+    rows = list(
+        (
+            await session.execute(
+                select(ScanStep, CloudAccount.display_name)
+                .outerjoin(CloudAccount, CloudAccount.id == ScanStep.cloud_account_id)
+                .where(
+                    ScanStep.scan_id == scan.id,
+                    ScanStep.organization_id == scan.organization_id,
+                )
+                .order_by(ScanStep.kind, ScanStep.created_at)
+            )
+        ).all()
+    )
+
+    stages = []
+    for step, account_name in rows:
+        # Elapsed rather than stored: a step that is still running has a
+        # duration too, and it is the one somebody watching a slow scan
+        # actually wants.
+        end = step.finished_at or (datetime.now(UTC) if step.started_at else None)
+        seconds = (
+            max(0.0, (end - step.started_at).total_seconds())
+            if step.started_at and end
+            else None
+        )
+        stages.append(
+            {
+                "stage": step.kind.value,
+                "scope": account_name
+                or (DIRECTORY_LABEL if step.is_directory else None),
+                "status": step.status.value,
+                # A step on its second attempt is a step that was interrupted,
+                # which is the first thing to know about a scan that took twice
+                # as long as usual.
+                "attempt": step.attempt,
+                "duration_seconds": round(seconds, 1) if seconds is not None else None,
+                "error": step.error,
+            }
+        )
+    return stages
+
+
 async def scan_context(session: AsyncSession, scan: Scan) -> dict:
     """What this scan pointed at, and which identity read it.
 

@@ -710,11 +710,32 @@ on the reaper.
    fifty subscriptions is fifty retryable units, and one unreadable
    subscription no longer withholds the other forty-nine.
 
-   Still to do: split queues (`collect` is IO-bound and high-concurrency,
-   `analyze` is memory-bound and low), and moving the request ceiling from a
-   per-run `RequestLimiter` to a Redis token bucket keyed *(tenant, service)* —
-   which matters more now that a tenant's subscriptions genuinely collect in
-   parallel.
+   Split queues are done too: `collect`, `analyze` and the default queue for
+   the short database-only tasks, with a test that fails if a step is routed to
+   a queue the deployment does not consume.
+
+   **The shared rate budget is deliberately not built**, and the reasoning is
+   worth keeping. §6 called for moving the ceiling from a per-run
+   `RequestLimiter` to a Redis token bucket keyed *(tenant, service)*, on the
+   grounds that parallel subscriptions would contend for one budget. Checked
+   against how the surfaces actually meter:
+
+   * **ARM** meters per subscription, and a COLLECT step reads exactly one — so
+     parallel steps draw on different budgets and the per-step ceiling of 16 is
+     already the right ceiling.
+   * **Microsoft Graph** meters per tenant, and the directory is read by exactly
+     one step per scan. That is what the directory split bought, and it bought
+     this as well.
+   * **Resource Graph** meters per tenant and *is* in the per-subscription plan,
+     so N subscriptions now issue N concurrent queries against one budget. This
+     is real new exposure — and it is one query per subscription, on the single
+     collection task no rule reads, degrading through the existing Retry-After
+     path to a PARTIAL on inventory.
+
+   A distributed token bucket would therefore be new infrastructure protecting
+   the least consequential task in the plan. The trigger to build it is a
+   tenant-metered surface that a *rule* depends on becoming parallel per
+   subscription — not the parallelism on its own.
 8. **Partly done** — the evidence model. (§7, §2.5, §2.6) Migration 0010
    renames `scan_collection_results` to `evidence` and gives a reading the
    provenance it lacked: the provider, when it was collected, the permissions
@@ -761,8 +782,16 @@ on the reaper.
 
 ### Phase 4 — operations and proof
 
-17. Observability: traces spanning scan → step → task, per-stage duration
-    metrics, evidence-freshness and coverage gauges.
+17. **Started** — observability. Per-stage durations are the half the steps
+    made free: every stage records when it was claimed and when it settled, so
+    `GET /scans/{id}/detail` now returns what each stage did, which scope it
+    read, how long it took and which attempt it was on, and each step logs the
+    same on completion. "Why was this scan slow" was previously unanswerable —
+    a scan was one task with one start and one end, so a slow subscription and
+    a slow evaluation looked identical.
+
+    Still to do: traces spanning scan → step → task, and
+    evidence-freshness and coverage gauges.
 18. The temporal model: `asset_change_events`, `finding_events`,
     `risk_history`. (§2.10)
 19. Scheduling and continuous monitoring, eventually change-triggered targeted

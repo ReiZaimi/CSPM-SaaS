@@ -54,6 +54,10 @@ class ScanDetailOut(ScanOut):
 
     scope: dict = Field(default_factory=dict)
     findings_by_severity: dict = Field(default_factory=dict)
+    # What each stage did and how long it took. Answers "why was this scan
+    # slow", which had no answer while a scan was one task with one start and
+    # one end time.
+    stages: list[dict] = Field(default_factory=list)
     # How many unresolved findings a purge would take with it, so the
     # confirmation can state a number rather than a category.
     purgeable_finding_count: int = 0
