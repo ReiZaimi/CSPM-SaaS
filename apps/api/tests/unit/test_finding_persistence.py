@@ -102,6 +102,11 @@ async def persist(times: int) -> tuple[FakeSession, int]:
         report_naming(target, times),
         {target.provider_resource_id: uuid.uuid4()},
         datetime.now(UTC),
+        # The fake session answers every query with the same list whatever is
+        # asked of it, so the scope is inert here. Passed because the signature
+        # requires it, and because a real scan always has one.
+        account_ids=[uuid.uuid4()],
+        connection_id=None,
     )
     return session, count
 
@@ -166,6 +171,8 @@ async def test_nothing_is_written_when_nothing_failed() -> None:
         EvaluationReport(rules_run=1),
         {},
         datetime.now(UTC),
+        account_ids=[uuid.uuid4()],
+        connection_id=None,
     )
 
     assert count == 0

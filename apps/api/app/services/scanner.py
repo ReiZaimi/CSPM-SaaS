@@ -635,6 +635,11 @@ class ScanPipeline:
         what the customer actually has.
         """
         org_id = scan.organization_id
+        # What this run is entitled to touch. Every query below that reaches
+        # for existing rows is scoped by it, so the cost of a scan tracks what
+        # it read rather than how large the customer has grown.
+        account_ids = [account.id for account, _ in account_state]
+        connection_id = directory[0].id if directory is not None else None
 
         # --- normalize ------------------------------------------------------
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
@@ -650,10 +655,7 @@ class ScanPipeline:
             # ``evaluation_only`` means the run changes nothing, and the asset
             # inventory is part of "nothing".
             id_map = await self._existing_resource_ids(
-                session,
-                org_id,
-                [account.id for account, _ in account_state],
-                connection_id=directory[0].id if directory is not None else None,
+                session, org_id, account_ids, connection_id=connection_id
             )
         scan.resource_count = len(merged.resources)
 
@@ -680,9 +682,24 @@ class ScanPipeline:
         await self._set_status(session, scan, ScanStatus.CALCULATING_RISK)
         if mutate_findings:
             finding_count = await self._persist_findings(
-                session, org_id, scan, report, id_map, observed_at
+                session,
+                org_id,
+                scan,
+                report,
+                id_map,
+                observed_at,
+                account_ids=account_ids,
+                connection_id=connection_id,
             )
-            await self._verify_remediations(session, org_id, scan, report, id_map)
+            await self._verify_remediations(
+                session,
+                org_id,
+                scan,
+                report,
+                id_map,
+                account_ids=account_ids,
+                connection_id=connection_id,
+            )
         else:
             # What today's rules would have raised against that capture,
             # reported as a number without being written down as fact --
@@ -729,27 +746,15 @@ class ScanPipeline:
         connection in the same statement: they have no account, so an
         account-only filter would leave every identity gap unattributed.
         """
-        scopes: list[ColumnElement[bool]] = []
-        if account_ids:
-            scopes.append(ResourceRecord.cloud_account_id.in_(account_ids))
-        if connection_id is not None:
-            scopes.append(
-                and_(
-                    ResourceRecord.cloud_account_id.is_(None),
-                    ResourceRecord.connection_id == connection_id,
-                )
-            )
-        if not scopes:
+        scope = self._asset_scope(account_ids, connection_id)
+        if scope is None:
             return {}
         rows = (
             (
                 await session.execute(
                     select(
                         ResourceRecord.provider_resource_id, ResourceRecord.id
-                    ).where(
-                        ResourceRecord.organization_id == org_id,
-                        or_(*scopes),
-                    )
+                    ).where(ResourceRecord.organization_id == org_id, scope)
                 )
             )
             .tuples()
@@ -989,6 +994,56 @@ class ScanPipeline:
         scan.lease_until = None
         await session.commit()
 
+    # ------------------------------------------------------------------ scope
+    def _asset_scope(
+        self, account_ids: list[UUID], connection_id: UUID | None
+    ) -> ColumnElement[bool] | None:
+        """Which assets this scan is entitled to read and write.
+
+        The one predicate every hot-path query in the pipeline shares, and the
+        reason it exists is that they used to share the *organization* instead.
+        ``_persist_findings`` read every finding in the tenant, its risk links
+        read every link, and ``_persist_relationships`` read the whole edge
+        table -- on every scan, including a single-subscription rescan of one
+        finding in a tenant of fifty. All three grew with the customer rather
+        than with the work, which is the shape that fails first and fails as a
+        timeout inside a task with no retry.
+
+        Two scopes, because assets have two. A subscription's assets are keyed
+        by account; the tenant's directory assets have no account and are keyed
+        by connection. ``None`` when a scan covers neither, which is a scan with
+        nothing to do.
+        """
+        scopes: list[ColumnElement[bool]] = []
+        if account_ids:
+            scopes.append(ResourceRecord.cloud_account_id.in_(account_ids))
+        if connection_id is not None:
+            scopes.append(
+                and_(
+                    ResourceRecord.cloud_account_id.is_(None),
+                    ResourceRecord.connection_id == connection_id,
+                )
+            )
+        if not scopes:
+            return None
+        return or_(*scopes)
+
+    def _finding_scope(
+        self, account_ids: list[UUID], connection_id: UUID | None
+    ) -> ColumnElement[bool]:
+        """The same scope, expressed over findings.
+
+        Used with an outer join to ``cloud_resources``. The third arm is not
+        decoration: an AGGREGATE rule's finding is about the tenant and carries
+        no resource at all, so a scope built only from asset columns would leave
+        those findings invisible to the scan that is meant to re-detect or
+        resolve them -- and an invisible open finding is one that gets inserted
+        again, against a unique index that will not have it.
+        """
+        assets = self._asset_scope(account_ids, connection_id)
+        aggregate = Finding.resource_id.is_(None)
+        return aggregate if assets is None else or_(assets, aggregate)
+
     # -------------------------------------------------------------- resources
     async def _persist_resources(
         self,
@@ -1025,30 +1080,18 @@ class ScanPipeline:
         """
         now = observed_at
         account_ids = [account.id for account, _ in account_state]
-        if not account_ids and directory is None:
+        scope = self._asset_scope(
+            account_ids, directory[0].id if directory is not None else None
+        )
+        if scope is None:
             return {}
-
-        # Both scopes read in one statement. The directory rows carry a NULL
-        # account, so an ``in_(account_ids)`` filter alone would not see them
-        # and every user would be inserted afresh on every scan.
-        scopes: list[ColumnElement[bool]] = []
-        if account_ids:
-            scopes.append(ResourceRecord.cloud_account_id.in_(account_ids))
-        if directory is not None:
-            scopes.append(
-                and_(
-                    ResourceRecord.cloud_account_id.is_(None),
-                    ResourceRecord.connection_id == directory[0].id,
-                )
-            )
 
         existing = {
             (row.cloud_account_id, row.provider_resource_id): row
             for row in (
                 await session.execute(
                     select(ResourceRecord).where(
-                        ResourceRecord.organization_id == org_id,
-                        or_(*scopes),
+                        ResourceRecord.organization_id == org_id, scope
                     )
                 )
             )
@@ -1148,12 +1191,19 @@ class ScanPipeline:
         if not wanted:
             return
 
+        # Only the edges that could collide with the ones being written. This
+        # used to read the organization's entire relationship table on every
+        # scan, so the cost of writing one subscription's edges grew with every
+        # other subscription the customer owned -- and a rescan of a single
+        # finding paid the whole tenant's bill.
+        sources = {source for source, _rel, _target in wanted}
         existing = {
             (r.source_resource_id, RelationshipType(r.relationship_type), r.target_resource_id)
             for r in (
                 await session.execute(
                     select(ResourceRelationship).where(
-                        ResourceRelationship.organization_id == org_id
+                        ResourceRelationship.organization_id == org_id,
+                        ResourceRelationship.source_resource_id.in_(sources),
                     )
                 )
             )
@@ -1231,6 +1281,9 @@ class ScanPipeline:
         report: EvaluationReport,
         id_map: dict[str, UUID],
         observed_at: datetime,
+        *,
+        account_ids: list[UUID],
+        connection_id: UUID | None,
     ) -> int:
         """Write this scan's failures as findings, and score each one.
 
@@ -1240,25 +1293,40 @@ class ScanPipeline:
         failing check, which a tenant-wide scan multiplies by every subscription
         it covers. The reads are two queries whatever the size of the tenant,
         and the writes flush twice.
+
+        Two queries, but no longer two queries over the whole tenant. They
+        selected every finding and every risk link the organization had, so the
+        cost of writing one subscription's findings rose with every other
+        subscription the customer owned. Scoped to what this scan covers, they
+        grow with the work instead.
         """
         now = observed_at
+        scope = self._finding_scope(account_ids, connection_id)
 
         # Identity is (organization, rule, resource), so that is the key.
+        # Outer-joined rather than filtered on ``Finding``: the scope is
+        # expressed over the asset a finding is about, and an AGGREGATE finding
+        # has no asset -- it needs to be in hand all the same, or the scan would
+        # insert a second row for a key the unique index already holds.
+        in_scope = (
+            select(Finding)
+            .outerjoin(ResourceRecord, ResourceRecord.id == Finding.resource_id)
+            .where(Finding.organization_id == org_id, scope)
+        )
         existing_findings = {
             (f.rule_id, f.resource_id): f
-            for f in (
-                await session.execute(
-                    select(Finding).where(Finding.organization_id == org_id)
-                )
-            )
-            .scalars()
-            .all()
+            for f in (await session.execute(in_scope)).scalars().all()
         }
         risk_by_finding = {
             link.finding_id: link.risk_id
             for link in (
                 await session.execute(
-                    select(RiskFinding).where(RiskFinding.organization_id == org_id)
+                    select(RiskFinding).where(
+                        RiskFinding.organization_id == org_id,
+                        RiskFinding.finding_id.in_(
+                            [f.id for f in existing_findings.values()]
+                        ),
+                    )
                 )
             )
             .scalars()
@@ -1444,12 +1512,21 @@ class ScanPipeline:
         scan: Scan,
         report: EvaluationReport,
         id_map: dict[str, UUID],
+        *,
+        account_ids: list[UUID],
+        connection_id: UUID | None,
     ) -> None:
         """Auto-resolve findings this scan proved fixed.
 
         The scan result *is* the verification. A finding resolves only on an
         explicit PASS -- an UNKNOWN this time round leaves it open, because
         failing to look is not the same as looking and finding nothing.
+
+        Scoped to what this scan actually read, which is a correctness point as
+        much as a cost one. Unscoped, a rescan of one subscription loaded every
+        open finding in the tenant and compared them against its own passes --
+        harmless only because a key from another subscription could not match.
+        The scope says the intent instead of relying on that.
         """
         passed: set[tuple[str, UUID | None]] = {
             (rule_id, id_map.get(provider_id) if provider_id else None)
@@ -1462,11 +1539,14 @@ class ScanPipeline:
         open_findings = (
             (
                 await session.execute(
-                    select(Finding).where(
+                    select(Finding)
+                    .outerjoin(ResourceRecord, ResourceRecord.id == Finding.resource_id)
+                    .where(
                         Finding.organization_id == org_id,
                         Finding.status.in_(
                             [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
                         ),
+                        self._finding_scope(account_ids, connection_id),
                     )
                 )
             )
@@ -1474,31 +1554,56 @@ class ScanPipeline:
             .all()
         )
 
-        for finding in open_findings:
-            if (finding.rule_id, finding.resource_id) not in passed:
-                continue
+        resolved = [
+            finding
+            for finding in open_findings
+            if (finding.rule_id, finding.resource_id) in passed
+        ]
+        if not resolved:
+            return
 
+        # Both lookups batched. They ran inside the loop -- one statement for the
+        # risk link and another for the risk -- so proving twenty fixes cost
+        # forty round trips, on the one path the product is sold on.
+        links = (
+            (
+                await session.execute(
+                    select(RiskFinding).where(
+                        RiskFinding.organization_id == org_id,
+                        RiskFinding.finding_id.in_([f.id for f in resolved]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        risks = {
+            risk.id: risk
+            for risk in (
+                await session.execute(
+                    select(Risk).where(Risk.id.in_([link.risk_id for link in links]))
+                )
+            )
+            .scalars()
+            .all()
+        } if links else {}
+
+        for finding in resolved:
             finding.status = FindingStatus.RESOLVED
             finding.resolved_at = now
             finding.resolved_by_scan_id = scan.id
-
-            link = (
-                await session.execute(
-                    select(RiskFinding).where(RiskFinding.finding_id == finding.id)
-                )
-            ).scalar_one_or_none()
-            if link:
-                risk = await session.get(Risk, link.risk_id)
-                if risk:
-                    risk.status = RiskStatus.RESOLVED
-                    risk.resolved_at = now
-
             log.info(
                 "finding.auto_resolved",
                 finding_id=str(finding.id),
                 rule_id=finding.rule_id,
                 verified_by_scan=str(scan.id),
             )
+
+        for link in links:
+            risk = risks.get(link.risk_id)
+            if risk is not None:
+                risk.status = RiskStatus.RESOLVED
+                risk.resolved_at = now
 
         await session.commit()
 

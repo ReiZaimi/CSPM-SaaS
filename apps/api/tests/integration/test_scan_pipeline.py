@@ -1338,3 +1338,69 @@ class TestAbandonedScans:
 
         assert scan.status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL)
         assert scan.lease_until is None
+
+
+class TestScanScope:
+    """A scan reads what it covers, not what the tenant owns.
+
+    ``_persist_findings`` used to select every finding in the organization,
+    its risk links every link, and ``_persist_relationships`` the whole edge
+    table -- on every scan, including a rescan of one finding in a tenant of
+    fifty subscriptions. The scope predicate replaced all three, and the arm
+    that needed the most care is the one for findings with no resource at all.
+    """
+
+    async def test_an_aggregate_finding_is_not_duplicated_by_a_second_scan(
+        self, replay, connected_account
+    ) -> None:
+        """AZ-ID-002 is AGGREGATE, so its finding carries no resource.
+
+        The scope is expressed over the asset a finding is about, so a finding
+        without one has to be admitted explicitly. Miss that and the second
+        scan cannot see the first scan's row -- it inserts a rival for a key the
+        unique index already holds, and the scan fails with an IntegrityError
+        reported to the customer as nothing in particular.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        first = await fetch(
+            "SELECT count(*) FROM findings "
+            "WHERE organization_id = :o AND resource_id IS NULL",
+            {"o": org_id},
+        )
+
+        await run_scan(org_id, account_id)
+        second = await fetch(
+            "SELECT count(*) FROM findings "
+            "WHERE organization_id = :o AND resource_id IS NULL",
+            {"o": org_id},
+        )
+
+        assert first[0][0] == second[0][0], (
+            "a re-detected aggregate finding updates its row rather than adding one"
+        )
+
+    async def test_a_scan_leaves_another_connection_alone(
+        self, replay, connected_account, connected_tenant
+    ) -> None:
+        """Two connections in two organizations, one scanned.
+
+        The scope is what states the intent; before it, isolation rested on the
+        accident that a resource id from one tenant could not match a key from
+        another.
+        """
+        other_org, connection_id = connected_tenant
+        await run_connection_scan(other_org, connection_id)
+        before = await fetch(
+            "SELECT count(*) FROM findings WHERE organization_id = :o",
+            {"o": other_org},
+        )
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        after = await fetch(
+            "SELECT count(*) FROM findings WHERE organization_id = :o",
+            {"o": other_org},
+        )
+        assert before == after
