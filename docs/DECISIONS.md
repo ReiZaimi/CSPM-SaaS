@@ -190,6 +190,124 @@ tradeoff is that a whole class of "worked locally, insecure in production" bug
 is now unrepresentable — which for a security product is the right side to
 err on.
 
+
+## 14. Resource Graph reads inventory; ARM reads everything a rule judges
+
+**Spec:** `AZURE_INTEGRATION.md` collected inventory with the ARM resource
+listing, one paged call per subscription.
+
+Inventory is the one collection task that asks for every provider's resources
+at once, and it is the one that scales worst as a tenant grows. Azure Resource
+Graph answers it in a single KQL query per subscription, and — the part that
+decides it — states `totalRecords` for the query, so a short read is caught by
+comparing two numbers the service supplied. ARM paging could only ever infer
+completeness from whether the page cap was reached, which is a guess about the
+tail of a list nobody saw.
+
+The split is deliberate and narrow:
+
+* **Resource Graph collects inventory only.** Its rows are a projection of
+  ARM's own state and can be minutes stale — fine for "what exists here",
+  wrong for the configuration a rule passes or fails on. Every listing a rule
+  reads stays on ARM, where the snapshot keeps the provider's JSON verbatim
+  (§3), so replay is unaffected.
+* **`ResourceGraphClient` is a separate class,** not more methods on
+  `ArmClient`. Same host and same retry behaviour; different paging
+  (`$skipToken` rather than `nextLink`), different quota (per principal rather
+  than per subscription), different error surface. One class would put two
+  paging models behind one name and leave a reader unable to tell which one a
+  call is subject to.
+* **The projection excludes `properties`.** Inventory answers what exists;
+  carrying configuration here would hold a second, staler copy of data no rule
+  reads in every snapshot.
+
+**Cost:** the custom role gains `Microsoft.ResourceGraph/resources/read` and
+`ROLE_VERSION` moves to `v2`. The action string was verified against the
+published RBAC operations reference on 2026-08-30 — it is real, and described
+as "Submits a query on resources within specified subscriptions, management
+groups or tenant scope", so the template deploys. Whether Resource Graph
+actually *checks* it is not established: the service documents its requirement
+as read access to the resources being queried, and its only documented 403 is a
+subscription list the caller cannot read. Granting it is the cheaper side of
+that uncertainty, and the connection probe (§14, validation) will settle it —
+a `v1` connection whose Resource Graph probe succeeds proves the action
+redundant, and the role can then be narrowed. Connections deployed on `v1` lose inventory —
+and only inventory — until the customer redeploys, which the role-drift
+machinery already tells them to do. Falling back to the ARM listing when the
+query is denied would hide that, and leave the customer on a role that will not
+serve the next thing built on Resource Graph either.
+
+## 15. Concurrency is capped over requests, not over tasks
+
+**Spec:** none. The plan capped fan-out per task (`DETAIL_CONCURRENCY`) and the
+executor ran a whole wave at once.
+
+Those two limits multiply, and nothing owned the product. A wave of nine tasks
+with eight detail calls apiece is seventy-odd requests against one
+subscription, and the number moves every time a task joins the plan. Azure
+answers that with 429s, which the retry path turns into wall-clock time and,
+past the retry budget, into recorded gaps: a scan that collects *less* because
+it asked for more at once.
+
+`RequestLimiter` caps what Azure actually meters. One limiter per scan is
+shared by every client the plan builds, a permit covers a single HTTP attempt,
+and it is released before any `Retry-After` sleep — a throttled call must not
+hold a slot while it is deliberately not using the network. The per-task limits
+stay as fairness between tasks inside a wave; this is the protection for the
+subscription.
+
+It also makes the cost visible: `azure.collection_finished` now carries the
+request count, the peak in flight and the time spent queued behind the ceiling,
+because a scan that never waits and one that waits a minute are otherwise
+indistinguishable — and only the second is evidence the number wants changing.
+
+## 16. A scan's collection plan is derived; carrying evidence forward is opt-in per key
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §7 and §12 item 10 — "the evidence planner:
+rule-set union minus fresh evidence".
+
+Two halves, and only the first came out the way the review assumed.
+
+**Derived, not written down.** What a scan collects is now the union of every
+enabled rule's `requires_evidence` plus the connector's `baseline_evidence`,
+and the provider's plan is filtered through it. Three Azure keys are named by
+no rule — inventory, role assignments, role definitions — and they are the
+reason the baseline exists rather than an oversight to be tidied away: the
+first is what the customer's asset list is made of, and the other two are what
+the graph's identity edges are built from. A rule-derived plan without a
+declared baseline would have dropped all three while every check carried on
+passing.
+
+Today the union equals the plan exactly, so nothing is dropped and no request
+is saved. What the derivation buys is that the equality is now checked: a
+listing whose last reader was deleted fails a test instead of being collected
+at the customer's expense for ever, and a rule added with a new dependency
+starts being collected for.
+
+**Reuse is off unless a key earns it.** Evidence has carried provenance and a
+content hash since migration 0010, so a complete reading from an earlier scan
+can stand in for a new one. Almost none of it should. The strongest claim this
+product makes is "verified fixed", and it survives exactly as long as nothing
+verifies a fix against evidence collected before the fix: a customer who
+corrects a storage account and asks CloudGuard to check must be answered from
+the storage account as it is now, or the word means nothing.
+
+So `EvidenceKey.reuse_window` defaults to `None` — read it again — and a window
+is granted per key, by the provider that produces it, only where a stale reading
+cannot change a verdict. Being expensive to collect or slow to change are
+reasons to *want* a window; they are not reasons one is safe. Exactly one Azure
+key qualifies today: `role_definitions`, the catalogue of what each role
+permits, several hundred near-static rows per subscription that no rule reads.
+Role assignments are deliberately excluded on the same reasoning inverted —
+they change constantly and every privilege path is drawn from them. A test
+fails the build if any key some rule reads is ever given a window.
+
+A carried reading is recorded COMPLETE, because that is what it was: age is not
+incompleteness, and degrading it to PARTIAL would tell every rule reading it to
+return UNKNOWN. Its evidence row keeps the *original* `collected_at`, so the
+next scan's freshness question is asked about the read rather than about the
+last scan that reused it — otherwise one reading renews itself for ever.
+
 ---
 
 ## Open items carried forward

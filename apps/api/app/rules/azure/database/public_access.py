@@ -1,5 +1,6 @@
 from typing import ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.rules.base import RuleContext, RuleResult, SecurityRule
@@ -20,7 +21,14 @@ class AzurePublicDatabaseRule(SecurityRule):
         ResourceType.SQL_SERVER,
         ResourceType.POSTGRESQL_SERVER,
     ]
-    requires_collection: ClassVar[list[str]] = ["database"]
+    # Both database listings, because the rule judges servers of both
+    # kinds. Named individually rather than as a category so that a
+    # future third database service failing does not silently cost this
+    # rule a verdict it could still have reached.
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.SQL_SERVERS,
+        AzureEvidence.POSTGRESQL_SERVERS,
+    )
     estimated_effort_minutes = 30
     rationale = (
         "A database exposed to the internet is a direct route to your data. Credential "
@@ -59,7 +67,7 @@ class AzurePublicDatabaseRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Database configuration unavailable: {failure}")
 

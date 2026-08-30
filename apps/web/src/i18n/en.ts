@@ -16,6 +16,7 @@ export const en = {
     assets: "Assets",
     findings: "Findings",
     risks: "Risks",
+    attackPaths: "Attack paths",
     remediation: "Remediation",
     scans: "Scans",
     rules: "Rules",
@@ -125,6 +126,35 @@ export const en = {
     resumeSetup: "Resume setup",
     setupCancelled: "Setup cancelled",
     readyToScan: "Ready to scan",
+
+    // Scheduling. Off by default, and the copy says why rather than leaving a
+    // dropdown to explain itself: a customer choosing an interval is choosing
+    // a recurring cost on their own Azure bill.
+    scheduleTitle: "Automatic scanning",
+    scheduleHelp:
+      "A security report ages the moment it is written \u2014 cloud environments change daily, and a scan from last month describes an environment that has moved on. Choose how often CloudGuard should re-read this one.",
+    scheduleLabel: "Re-read this environment",
+    scheduleManual: "Only when I ask",
+    scheduleEvery6Hours: "Every 6 hours",
+    scheduleDaily: "Every day",
+    scheduleEvery3Days: "Every 3 days",
+    scheduleWeekly: "Every week",
+    scheduleSaving: "Saving\u2026",
+    scheduleSaved: "Saved",
+    scheduleOn: "Scanning automatically",
+    scheduleOff: "Manual scanning only",
+    scheduleFirstRunNote:
+      "The first automatic scan starts within a few minutes; after that it runs on the interval you chose.",
+    scheduleNotReady:
+      "This connection cannot scan yet, so there is nothing to schedule. Finish the two grants above first.",
+    scheduleFloorNote:
+      "An interval rather than a time of day: CloudGuard promises to read this environment at least this often, not to start at a particular minute.",
+
+    noSubscriptionsTitle: "No subscriptions found yet",
+    noSubscriptionsBody:
+      "Both grants are working, but CloudGuard cannot see any subscription to scan. A role assigned moments ago can take a few minutes to show up, and a role deployed to the wrong scope will never show up at all.",
+    lookAgain: "Look for subscriptions again",
+    lookingAgain: "Looking…",
     runFirstScan: "Run a scan",
     noSubscriptionsYet: "No subscriptions discovered yet",
     noSubscriptionsYetHelp:
@@ -196,6 +226,11 @@ export const en = {
     title: "Security posture",
     score: "Security score",
     outOf: "out of 100",
+    trendTitle: "Score over time",
+    trendTooShort:
+      "One scan so far. A second one gives CloudGuard something to compare against, and this becomes a line.",
+    scoreWorse: "since last scan",
+    noPreviousScan: "No previous scan to compare against",
     sinceLastScan: "since last scan",
     critical: "Critical",
     high: "High",
@@ -246,7 +281,54 @@ export const en = {
     compliance: "Related controls",
   },
   assets: { title: "Assets", empty: "No assets discovered yet.", openFindings: "Open findings" },
-  risks: { title: "Risks", empty: "No risks recorded yet." },
+  risks: {
+    title: "Risks",
+    empty: "No risks recorded yet.",
+    // A scenario is not a louder finding. It is several of them seen as one
+    // thing, and the label has to carry that or it reads as duplication.
+    scenarioBadge: "Attack path",
+    scenarioIntro: "Several findings, seen as one route",
+    routeLabel: "The route",
+    cutLabel: "Severing it",
+    // The scoring, said in the terms the breakdown actually stores. A customer
+    // asking "why is this above the finding inside it" gets an answer rather
+    // than a number.
+    worstMember: "Worst finding on the route",
+    amplifier: "Added for the route itself",
+    cappedNote: "Capped at 100.",
+    memberCount: "findings on this route",
+  },
+  attackPaths: {
+    title: "Attack paths",
+    intro:
+      "The findings list says what is wrong. This says what is wrong \u2014 together. A jump box, an over-privileged identity and a storage account are three findings; the route between them is one problem, and it has one cheapest fix.",
+    // The empty state has to distinguish three different nothings, because
+    // they call for three different actions.
+    emptyNoPaths: "Nothing exposed can reach anything sensitive",
+    emptyNoPathsDetail:
+      "CloudGuard found assets reachable from the internet and assets holding sensitive data, and no route between them.",
+    emptyNoEntry: "Nothing is reachable from the internet",
+    emptyNoEntryDetail:
+      "A route has to start somewhere. No asset in this environment is exposed enough to be an entry point, so there is nothing for a path to begin from.",
+    emptyNoTargets: "Nothing has been classified as sensitive",
+    emptyNoTargetsDetail:
+      "A route has to end somewhere worth reaching. Tag your storage and databases with a data classification, or set asset criticality, so CloudGuard knows what would actually cost you.",
+    emptyNoScan: "No scan has run yet",
+    emptyNoScanDetail:
+      "Attack paths are built from what a scan found. Run one, and any route from an exposed asset to a sensitive one appears here.",
+    hops: "hops",
+    oneHop: "hop",
+    from: "From",
+    to: "To",
+    route: "The route",
+    cutHere: "Cut it here",
+    cutHereDetail:
+      "Removing this one link severs the route. Containment cannot be removed \u2014 a storage account has to live somewhere \u2014 so the fix is always an identity or a role.",
+    entryPoints: "exposed assets",
+    sensitiveTargets: "sensitive assets",
+    exposure: "Exposure",
+    sensitivity: "Sensitivity",
+  },
   scans: {
     title: "Scans",
     runScan: "Run scan",
@@ -264,6 +346,10 @@ export const en = {
     identity: "Identity used",
     initiator: "Started by",
     scheduled: "Scheduled",
+    // A manual scan whose user record is gone. Distinct from
+    // "Scheduled": somebody did ask for this one, and we no longer
+    // know who.
+    manualUnknownUser: "Started by hand",
     breakdown: "Open findings from this scan",
     deleteScan: "Delete",
     deleting: "Deleting\u2026",
@@ -278,6 +364,24 @@ export const en = {
     stuckTitle: "Nothing has picked this scan up",
     stuckDetail:
       "A scan is collected by CloudGuard's worker within seconds of being queued. Minutes of silence means no worker is running \u2014 check that the Celery worker service is deployed and can reach Redis.",
+    nothingFound: "No resources were found in this subscription",
+    nothingFoundHelp:
+      "Every resource category CloudGuard reads returned successfully and was empty, so there is nothing here to assess. If that is unexpected, check in Details which subscription this scan covered \u2014 a connection discovers every subscription it can see, including empty ones.",
+    nothingFoundPartial:
+      "Nothing was assessed, and some categories could not be read at all \u2014 see the gaps below. A category that failed is not the same as a category that was empty.",
+    collectionTitle: "What was read",
+    collectionSummary: "read completely",
+    collectionPartial: "partial",
+    collectionFailed: "failed",
+    collectionSkipped: "skipped",
+    collectionAllComplete: "Every listing was read in full.",
+    collectionAffects: "Affected checks",
+    outcomeComplete: "Read in full",
+    outcomePartial: "Incomplete",
+    outcomeFailed: "Could not read",
+    outcomeSkipped: "Not attempted",
+    partialHint:
+      "An incomplete listing cannot support a pass, so the checks that needed it report unknown rather than clean.",
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
   rules: { title: "Rule library", empty: "No rules loaded." },

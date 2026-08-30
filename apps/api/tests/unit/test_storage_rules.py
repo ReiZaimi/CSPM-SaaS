@@ -1,5 +1,6 @@
 """AZ-STO-001 / AZ-STO-002."""
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import RuleState
 from app.rules.azure.storage.public_access import (
     AzurePublicStorageRule,
@@ -39,7 +40,10 @@ class TestPublicStorage:
 
     def test_unknown_when_storage_collection_failed(self) -> None:
         storage = resource_from("vulnerable", "storage_public")
-        ctx = make_context(storage, collection_errors={"storage": "API timeout"})
+        ctx = make_context(
+            storage,
+            collection_errors={AzureEvidence.STORAGE_ACCOUNTS: "API timeout"},
+        )
         assert self.rule.evaluate(storage, ctx).state == RuleState.UNKNOWN
 
 

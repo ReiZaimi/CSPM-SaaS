@@ -2,6 +2,7 @@
 
 from typing import ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, RuleScope, Severity
 from app.domain.resource import CloudResource
 from app.rules.base import RuleContext, RuleResult, SecurityRule
@@ -46,7 +47,14 @@ class AzureMfaRule(SecurityRule):
     exploitability = 4
     scope = RuleScope.PER_RESOURCE
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.USER]
-    requires_collection: ClassVar[list[str]] = ["identity"]
+    # Every one of them: a user without their role map cannot be judged
+    # privileged, and one without authentication methods cannot be judged
+    # at all. ``user_role_map`` is the task that reads both.
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.USERS,
+        AzureEvidence.DIRECTORY_ROLES,
+        AzureEvidence.USER_ROLE_MAP,
+    )
     estimated_effort_minutes = 30
     rationale = (
         "Privileged accounts are the highest-value target in any tenant. Without a second "
@@ -76,7 +84,7 @@ class AzureMfaRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error("identity", "mfa")
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Identity data unavailable: {failure}")
 

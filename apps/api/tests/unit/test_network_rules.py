@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import RuleState
 from app.rules.azure.network.exposure import (
     AzureOpenNsgRule,
@@ -36,7 +37,12 @@ class TestPublicRdp:
 
     def test_unknown_when_network_collection_failed(self) -> None:
         nsg = resource_from("vulnerable", "nsg_public_rdp")
-        ctx = make_context(nsg, collection_errors={"network": "Azure API timeout"})
+        ctx = make_context(
+            nsg,
+            collection_errors={
+                AzureEvidence.NETWORK_SECURITY_GROUPS: "Azure API timeout"
+            },
+        )
         result = self.rule.evaluate(nsg, ctx)
         assert result.state == RuleState.UNKNOWN
         assert "timeout" in result.message

@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import FindingStatus, Level, Priority, RemediationStatus, Severity
+from app.core.enums import FindingStatus, Level, Priority, RemediationStatus, RiskKind, Severity
 
 
 class ResourceSummary(BaseModel):
@@ -43,6 +43,13 @@ class RiskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    # Whether this is one observation scored for its asset, or several of them
+    # seen as a route. The two rank against each other in the same list, so the
+    # list has to say which is which.
+    kind: RiskKind = RiskKind.FINDING
+    # The route, hop by hop. Empty for a finding risk, which is about one asset
+    # and has no route to describe.
+    path: list = Field(default_factory=list)
     title: str
     description: str
     risk_score: float

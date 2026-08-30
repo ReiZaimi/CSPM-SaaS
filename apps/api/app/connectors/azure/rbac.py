@@ -32,10 +32,11 @@ rather than silently collecting UNKNOWN results.
 import json
 from dataclasses import dataclass
 
+from app.connectors.evidence import EvidenceCategory
 from app.core.enums import ConnectionScope
 
 # Bump when the action list changes.
-ROLE_VERSION = "v1"
+ROLE_VERSION = "v2"
 
 ROLE_NAME = "CloudGuard Security Scanner"
 
@@ -45,6 +46,27 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     # Subscriptions & resources
     "Microsoft.Resources/subscriptions/read",
     "Microsoft.Resources/subscriptions/resources/read",
+    # Inventory, read through Resource Graph rather than per provider. Granted
+    # in addition to the resource read above, not instead of it: Resource Graph
+    # returns what the caller can already read, so the resource read is what
+    # makes a query answer with anything.
+    #
+    # Verified 2026-08-30 against the published operations reference, which is
+    # what this file's rule about unverified strings asks for: the action is
+    # real, described as "Submits a query on resources within specified
+    # subscriptions, management groups or tenant scope", so the role definition
+    # deploys rather than failing atomically the way
+    # ``autoProvisioningSettings`` did.
+    #
+    # What is *not* established is whether Resource Graph checks it. The
+    # service documents its requirement as read access to the resources being
+    # queried and nothing more, and its only documented 403 is a subscription
+    # list the caller cannot read. So this may be redundant with the resource
+    # read above. It is granted anyway, in the direction this module already
+    # prefers: an unnecessary read action costs a redeploy prompt, while a
+    # missing one costs every v1 customer a PARTIAL scan whose cause is one
+    # denied query several minutes in.
+    "Microsoft.ResourceGraph/resources/read",
     # Networking
     "Microsoft.Network/networkSecurityGroups/read",
     "Microsoft.Network/networkInterfaces/read",
@@ -74,6 +96,14 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
 CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_subscriptions": ("Microsoft.Resources/subscriptions/read",),
     "list_resources": ("Microsoft.Resources/subscriptions/resources/read",),
+    "list_inventory": (
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+    ),
+    "probe_inventory": (
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+    ),
     "list_network_security_groups": ("Microsoft.Network/networkSecurityGroups/read",),
     "list_network_interfaces": ("Microsoft.Network/networkInterfaces/read",),
     "list_public_ips": ("Microsoft.Network/publicIPAddresses/read",),
@@ -87,6 +117,125 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_role_assignments_at_scope": ("Microsoft.Authorization/roleAssignments/read",),
     "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
 }
+
+# Which collection category each ARM action serves, for the categories the
+# collector actually gathers. Identity is Graph-only and has no ARM action.
+#
+# The Authorization reads were listed above as verification-only until the
+# graph started using them: knowing which principals hold which roles is what
+# turns a list of misconfigurations into "this internet-facing VM runs as an
+# identity that can act across the whole subscription". Both actions were
+# already in v1 of the role, so no customer has to redeploy anything for it.
+#
+# This exists so a 403 can be explained rather than merely reported. When a
+# customer's deployed role predates a check, the resulting failure is not
+# "Forbidden" -- it is "redeploy the role", which is a thing they can act on.
+COLLECTION_ACTIONS: dict[EvidenceCategory, tuple[str, ...]] = {
+    EvidenceCategory.RESOURCES: (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+    ),
+    EvidenceCategory.NETWORK: (
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+    ),
+    EvidenceCategory.COMPUTE: ("Microsoft.Compute/virtualMachines/read",),
+    EvidenceCategory.STORAGE: ("Microsoft.Storage/storageAccounts/read",),
+    EvidenceCategory.DATABASE: (
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+    ),
+    EvidenceCategory.LOGGING: ("Microsoft.Insights/diagnosticSettings/read",),
+    EvidenceCategory.AUTHORIZATION: (
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    ),
+}
+
+# What each published role version granted. Frozen once shipped: a customer's
+# deployed role is whatever it was on the day they deployed it, and the only
+# way to know which checks their role cannot serve is to have kept the record.
+#
+# Bumping ROLE_VERSION means adding an entry here, never editing an old one.
+#
+# Every version is written out literally, and that repetition is the point.
+# Writing ``"v1": ARM_READ_ACTIONS`` reads as the same thing and is not: it
+# binds the *name*, so the next person to append an action for v2 would silently
+# redefine what v1 granted as well. v1 and v2 would then hold identical action
+# sets, ``actions_missing_from("v1")`` would return nothing, and no customer
+# would ever be told to redeploy -- the exact silence this module exists to
+# break, reintroduced by an edit that looks like housekeeping.
+ROLE_HISTORY: dict[str, tuple[str, ...]] = {
+    "v1": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    ),
+    # v2 adds Resource Graph, which inventory now reads instead of ARM's
+    # per-subscription resource listing. A v1 role keeps every other category
+    # working and loses only inventory, which is why the drift prompt is worth
+    # more than a fallback would be: falling back to the ARM listing would hide
+    # the gap and leave the customer on a role that will not serve the next
+    # thing built on Resource Graph either.
+    "v2": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    ),
+}
+
+
+def actions_missing_from(role_version: str) -> tuple[str, ...]:
+    """Actions the current role requires that ``role_version`` never granted.
+
+    An unrecognised version is treated as granting nothing. That is the safe
+    direction: a role CloudGuard has no record of is one whose contents it
+    cannot vouch for, and over-reporting a gap costs a redeploy prompt while
+    under-reporting one costs silent UNKNOWNs.
+    """
+    granted = frozenset(ROLE_HISTORY.get(role_version, ()))
+    return tuple(a for a in ARM_READ_ACTIONS if a not in granted)
+
+
+def categories_behind(role_version: str) -> frozenset[EvidenceCategory]:
+    """Collection categories ``role_version`` cannot fully serve."""
+    missing = frozenset(actions_missing_from(role_version))
+    if not missing:
+        return frozenset()
+    return frozenset(
+        category
+        for category, actions in COLLECTION_ACTIONS.items()
+        if missing.intersection(actions)
+    )
+
+
+def role_is_current(role_version: str) -> bool:
+    return not actions_missing_from(role_version)
+
 
 # Anything granted that no collector call reaches. Expected to be empty: the
 # role is trimmed to what the scanner proves it needs. Derived rather than

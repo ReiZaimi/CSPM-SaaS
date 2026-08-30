@@ -37,5 +37,41 @@ async def get_cloud_account(
     return account
 
 
+async def first_scannable_account(
+    session: AsyncSession, tenant: TenantContext, connection_id: UUID | None
+) -> CloudAccount | None:
+    """Any subscription under this connection that a scan could run against.
+
+    Needed because some assets have no subscription at all. A directory user
+    belongs to the tenant, so verifying a finding about one means running a scan
+    *through* the connection -- and a scan is still scoped to a subscription,
+    which resolves the connection back and reads the directory once.
+
+    Ordered by name only so the choice is stable between calls; any scannable
+    subscription reads the same directory.
+
+    ``is_scannable`` is a property over four columns rather than a column, so
+    it is applied here rather than in the query -- the same way the scan
+    pipeline resolves its own scope.
+    """
+    if connection_id is None:
+        return None
+    rows = (
+        (
+            await session.execute(
+                select(CloudAccount)
+                .where(
+                    CloudAccount.organization_id == tenant.organization_id,
+                    CloudAccount.connection_id == connection_id,
+                )
+                .order_by(CloudAccount.display_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return next((account for account in rows if account.is_scannable), None)
+
+
 def required_permissions() -> dict:
     return AzureConnector.required_permissions()

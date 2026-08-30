@@ -28,20 +28,26 @@ from app.connectors.azure.rbac import (
     ROLE_VERSION,
     TemplateContext,
     arm_template,
+    categories_behind,
+    role_is_current,
 )
 from app.connectors.base import ConnectionCheck
+from app.connectors.evidence import EvidenceCategory
 from app.core.config import settings
+from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
 from app.core.enums import (
     CloudAccountStatus,
     ConnectionScope,
     ConsentStatus,
+    Provider,
 )
 from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
 from app.core.logging import get_logger
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import CloudConnectionCreate
+from app.services import findings as findings_service
 
 log = get_logger(__name__)
 
@@ -217,6 +223,68 @@ async def _list_subscriptions(
 
 READY_TO_DEPLOY = "Admin consent granted. Deploy the scanner role next."
 
+# Marks a status detail as being about the directory grant rather than the
+# subscription one. Checked as a prefix so a later step can tell the two apart
+# without a schema change: everything else on this connection may be healthy
+# while this is not, and the message must not be replaced by a cheerful one.
+GRANT_INCOMPLETE_PREFIX = "Admin consent did not grant"
+
+
+async def graph_grant_problem(connection: CloudConnection) -> str | None:
+    """What consent failed to grant, named, or None when it granted everything.
+
+    Consent resolves ``/.default`` to whatever CloudGuard's app registration
+    declares at the moment it is clicked, so a registration whose permissions
+    are missing -- or declared as delegated rather than application -- produces
+    a consent screen that looks entirely successful and a token carrying no
+    directory permissions at all. Nothing downstream could tell: the callback
+    recorded GRANTED on Entra's redirect alone, and the first evidence anyone
+    saw was the identity category failing mid-scan with "Insufficient
+    privileges to complete the operation", a sentence naming neither the
+    permission nor who can grant it.
+
+    The token answers it before any call is made. Read for diagnosis only --
+    Microsoft stays the enforcer (see ``granted_permissions``).
+    """
+    from app.connectors.azure.auth import (
+        REQUIRED_GRAPH_PERMISSIONS,
+        TokenProvider,
+        missing_permissions,
+    )
+
+    if not connection.tenant_id:
+        return None
+
+    try:
+        tokens = TokenProvider(connection.tenant_id)
+        absent = missing_permissions(tokens.graph_token())
+    except Exception as exc:
+        # Not evidence of a missing grant. A tenant that cannot issue a token
+        # has a different problem, and the probes report that one.
+        log.warning(
+            "azure.grant_check_failed",
+            connection_id=str(connection.id),
+            error=str(exc),
+        )
+        return None
+
+    if not absent:
+        return None
+
+    total = len(REQUIRED_GRAPH_PERMISSIONS)
+    if len(absent) == total:
+        scale = f"any of the {total} directory permissions CloudGuard needs"
+    else:
+        scale = f"{len(absent)} of the {total} directory permissions CloudGuard needs"
+    return (
+        f"{GRANT_INCOMPLETE_PREFIX} {scale}: {', '.join(absent)}. Subscription "
+        "scanning is unaffected; the identity checks cannot run until this is "
+        "granted. Add these to CloudGuard's app registration as *application* "
+        "permissions -- delegated ones do not appear in a service token -- then "
+        "re-run admin consent for this tenant, because consent covers only what "
+        "the registration declared at the moment it was granted."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Consent callback
@@ -245,7 +313,16 @@ async def record_consent(
         if problem and not connection.service_principal_object_id:
             connection.status_detail = problem
 
-    await session.commit()
+        # Checked here because here is where the answer first exists, and
+        # because the alternative is a customer discovering it several minutes
+        # into a scan. It does not change ``consent_status``: consent did
+        # happen, and the subscription half of the connection is unaffected --
+        # what is missing is what the registration offered to grant.
+        gap = await graph_grant_problem(connection)
+        if gap:
+            connection.status_detail = gap
+
+    await commit_unless_externally_managed(session)
     return connection
 
 
@@ -271,8 +348,15 @@ async def ensure_service_principal(
 
     problem = await _resolve_service_principal(connection)
     if connection.service_principal_object_id:
-        connection.status_detail = READY_TO_DEPLOY
-        await session.commit()
+        # A resolved principal does not mean the directory grant is whole, and
+        # overwriting the message that says so would hide it behind a
+        # reassurance. Re-checked only while that message stands, so the happy
+        # path costs nothing and a re-consent still clears it.
+        detail = READY_TO_DEPLOY
+        if (connection.status_detail or "").startswith(GRANT_INCOMPLETE_PREFIX):
+            detail = await graph_grant_problem(connection) or READY_TO_DEPLOY
+        connection.status_detail = detail
+        await commit_unless_externally_managed(session)
         return True
 
     # Committed so it survives the request and reaches the card. Without this
@@ -280,7 +364,7 @@ async def ensure_service_principal(
     # under a spinner, while the thing that would let anyone deploy had failed.
     if problem:
         connection.status_detail = problem
-        await session.commit()
+        await commit_unless_externally_managed(session)
     return False
 
 
@@ -415,6 +499,83 @@ def render_template(connection: CloudConnection) -> str:
     return arm_template(context)
 
 
+def role_upgrade_available(connection: CloudConnection) -> bool:
+    """Whether this connection's deployed role is older than the one CloudGuard
+    now needs.
+
+    ``CloudConnection.role_version`` has been stamped at creation since
+    connections existed, and until now nothing ever read it back. That made the
+    version a label rather than a mechanism: bumping ``ROLE_VERSION`` to ship a
+    check needing a new ARM action would leave every existing customer silently
+    collecting UNKNOWN for it, with no prompt and no explanation.
+    """
+    return connection.provider == Provider.AZURE and not role_is_current(
+        connection.role_version
+    )
+
+
+def degraded_categories(connection: CloudConnection) -> dict[EvidenceCategory, str]:
+    """Collection categories this connection's role cannot fully serve.
+
+    Returns category -> the sentence to show the customer. Empty when the role
+    is current, and empty for any provider that has no such notion, so the
+    scanner can call it without knowing which cloud it is looking at.
+    """
+    if not role_upgrade_available(connection):
+        return {}
+
+    explanation = (
+        f"CloudGuard's scanner role was updated to {ROLE_VERSION} and this "
+        f"connection still has {connection.role_version}, which does not grant "
+        "the permissions these checks need. Redeploy the role from the "
+        "connection page to enable them."
+    )
+    return {
+        category: explanation
+        for category in categories_behind(connection.role_version)
+    }
+
+
+async def set_scan_schedule(
+    session: AsyncSession,
+    tenant: TenantContext,
+    connection_id: UUID,
+    interval_hours: int | None,
+) -> CloudConnection:
+    """Turn recurring scanning on, off, or to a different cadence.
+
+    Refused on a connection that cannot scan yet: scheduling one would queue a
+    scan every interval that fails for the same reason each time, which reads
+    to the customer as a broken product rather than as consent they have not
+    granted.
+
+    Takes effect on the next tick rather than immediately -- with one
+    exception that falls out of the query rather than being special-cased. A
+    connection that has never been scanned is overdue by definition, so
+    switching scheduling on for a fresh connection starts a scan within
+    minutes, which is what somebody who just enabled it expects.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if interval_hours is not None and not connection.is_verified:
+        raise ValidationFailed(
+            "This connection is not ready to scan yet, so there is nothing to "
+            "schedule. Grant admin consent and assign the Reader role first."
+        )
+
+    connection.scan_interval_hours = interval_hours
+    await findings_service.record_audit(
+        session,
+        tenant,
+        action="connection.schedule_changed",
+        resource_type="cloud_connection",
+        resource_id=connection.id,
+        metadata={"scan_interval_hours": interval_hours},
+    )
+    await commit_unless_externally_managed(session)
+    return connection
+
+
 def deploy_to_azure_url(connection: CloudConnection) -> str | None:
     """The Deploy to Azure button URL, or None if the template isn't ready."""
     tpl_url = template_url(connection)
@@ -496,14 +657,14 @@ async def try_auto_validate(
             connection.status = CloudAccountStatus.ACTIVE
             connection.rbac_verified_at = datetime.now(UTC)
             connection.status_detail = "Connection verified."
-            await session.commit()
+            await commit_unless_externally_managed(session)
         elif deploy_stalled(connection):
             # Committed so the message survives the request. Status is left
             # alone: nothing here is known to be broken, and marking a
             # connection ERROR because a colleague is slow would be a lie.
             if connection.status_detail != DEPLOY_STALLED_DETAIL:
                 connection.status_detail = DEPLOY_STALLED_DETAIL
-                await session.commit()
+                await commit_unless_externally_managed(session)
 
     # Auto-discover subscriptions once validated
     if connection.rbac_verified_at and not connection.last_discovery_at:
@@ -618,9 +779,58 @@ async def _auto_discover(
             account.status = CloudAccountStatus.DISABLED
             account.status_detail = "No longer visible to this connection"
 
-    connection.last_discovery_at = now
-    await session.commit()
+    # Only stamped when something was actually found. ``try_auto_validate``
+    # treats this column as "discovery is done", so latching it on an empty
+    # result freezes the connection with no subscriptions for good. An empty
+    # listing right after a role deployment is not an answer -- ARM's
+    # subscription list is eventually consistent and takes minutes to catch up
+    # with a fresh assignment.
+    if accounts:
+        connection.last_discovery_at = now
+    else:
+        log.warning(
+            "azure.discovery_found_nothing",
+            connection_id=str(connection.id),
+            tenant_id=connection.tenant_id,
+        )
+    await commit_unless_externally_managed(session)
     return accounts
+
+
+async def rediscover_subscriptions(
+    session: AsyncSession, tenant: TenantContext, connection_id: UUID
+) -> tuple[CloudConnection, list[CloudAccount]]:
+    """Run discovery again on demand, ignoring whether it has run before.
+
+    The escape hatch that was missing. Discovery otherwise happens only inside
+    ``try_auto_validate``, which runs only while the connections page is
+    polling -- and the page stops polling the moment a connection reports
+    itself verified. Verification and discovery are two ARM calls, so a single
+    transient failure on the second one left a connection permanently verified
+    with nothing beneath it and no way back short of editing the database.
+
+    Safe to call repeatedly: discovery matches on subscription id, so an
+    existing row is updated rather than duplicated, and a subscription the
+    customer excluded stays excluded.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if not connection.is_verified:
+        raise ValidationFailed(
+            "This connection is not verified yet, so there is nothing to "
+            "discover with. Grant admin consent and deploy the scanner role "
+            "first."
+        )
+
+    accounts = await _auto_discover(session, connection)
+    if not accounts:
+        raise ValidationFailed(
+            "CloudGuard could not see any subscriptions with this connection. "
+            "Check that the scanner role is assigned at the scope you deployed "
+            "it to, and that the subscriptions sit beneath it. A role assigned "
+            "moments ago can take a few minutes to appear."
+        )
+    return connection, accounts
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +861,7 @@ async def set_subscription_scope(
                 else CloudAccountStatus.DISABLED
             )
 
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return accounts
 
 
@@ -712,7 +922,7 @@ async def set_setup_cancelled(
             else "Grant admin consent to continue."
         )
 
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return connection
 
 

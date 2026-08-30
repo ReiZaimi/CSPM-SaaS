@@ -50,6 +50,14 @@ export interface Asset extends ResourceSummary {
 
 export interface Risk {
   id: string;
+  /**
+   * Whether this is one observation scored for its asset, or several of them
+   * seen as a route. Both rank in the same list — a combination outranking its
+   * parts is only visible where they are listed together.
+   */
+  kind: "FINDING" | "ATTACK_PATH";
+  /** The route, hop by hop. Empty for a finding risk, which has none. */
+  path: AttackPathStep[];
   title: string;
   description: string;
   risk_score: number;
@@ -61,7 +69,17 @@ export interface Risk {
   exploitability: number;
   business_impact: number;
   score_breakdown: {
+    /** Present on a finding risk: the six weighted components. */
     components?: Record<string, { value: number; weight: number; contribution: number }>;
+    /**
+     * Present on a scenario risk instead. The floor is the worst member's
+     * score, so the number is visibly built on evidence rather than decided.
+     * `uncapped` exists so a score of 100 can explain why it is not 101.
+     */
+    worst_member?: number;
+    amplifier?: number;
+    hops?: number;
+    uncapped?: number;
     total?: number;
   };
 }
@@ -109,15 +127,38 @@ export interface Scan {
   /** Queued long enough that no worker is likely running. */
   stuck_in_queue?: boolean;
   triggered_by_user_id?: string | null;
+  /**
+   * Why this scan ran. Read this rather than inferring it from a missing user:
+   * an old manual scan whose user record has gone also has no
+   * `triggered_by_user_id`, and calling that one "Scheduled" is simply wrong.
+   */
+  trigger?: "MANUAL" | "SCHEDULED";
   progress_done?: number;
   progress_total?: number;
   /** Live while running, fixed once finished. */
   duration_seconds?: number | null;
 }
 
+/** What the posture was, one scan at a time. */
+export interface PostureReading {
+  observed_at: string;
+  security_score: number;
+  open_finding_count: number;
+  findings_by_severity: Record<string, number>;
+  risk_bands: Record<string, number>;
+  attack_path_count: number;
+}
+
 export interface Dashboard {
   security_score: number;
+  /**
+   * Movement since the previous reading. Measured, so it can be negative —
+   * the estimate it replaced added back every fix ever verified and could only
+   * ever be positive. `null` means there is no previous reading to compare
+   * against, which is not the same as no change.
+   */
   score_delta: number | null;
+  history: PostureReading[];
   findings_by_severity: Record<string, number>;
   findings_by_status: Record<string, number>;
   risk_bands: Record<string, number>;
@@ -236,8 +277,15 @@ export interface CloudConnection {
   status: "PENDING" | "ACTIVE" | "ERROR" | "DISABLED";
   status_detail: string | null;
   last_discovery_at: string | null;
+  /**
+   * How often this environment is re-read, in hours. `null` means manual only,
+   * which is where every connection starts: scheduling a customer's cloud
+   * without being asked is a recurring cost on their Azure bill.
+   */
+  scan_interval_hours: number | null;
   created_at: string;
   is_verified: boolean;
+  is_ready_to_scan: boolean;
   subscription_count: number;
   subscriptions: DiscoveredSubscription[];
   consent_url: string | null;
@@ -255,6 +303,62 @@ export interface DiscoveredSubscription {
   discovered_at: string | null;
   last_scan_at: string | null;
   is_scannable: boolean;
+}
+
+/**
+ * A route from somewhere an attacker could start to something worth taking.
+ *
+ * The findings list answers "what is wrong". This answers "what is wrong
+ * *together*", which is a different question with a different first action:
+ * five findings across a jump box, an identity and a storage account rank by
+ * severity and get worked top-down, while the same five as one path rank by how
+ * few hops separate the internet from customer data.
+ */
+export interface AttackPath {
+  entry: {
+    id: string;
+    name: string;
+    resource_type: string;
+    public_exposure: string;
+  };
+  target: {
+    id: string;
+    name: string;
+    resource_type: string;
+    data_sensitivity: string;
+  };
+  hops: number;
+  steps: AttackPathStep[];
+  /**
+   * Where to cut it. Always a capability hop — containment cannot be removed,
+   * since a storage account has to live somewhere.
+   */
+  cheapest_break: {
+    description: string;
+    relationship: string;
+    source_id: string;
+    target_id: string;
+  } | null;
+}
+
+export interface AttackPathStep {
+  source: string;
+  source_id: string;
+  relationship: string;
+  target: string;
+  target_id: string;
+  description: string;
+}
+
+/**
+ * Both counts are the honest denominator for an empty answer: no paths because
+ * nothing is exposed is a different thing from no paths because nothing was
+ * classified as sensitive.
+ */
+export interface AttackPathMeta {
+  total: number;
+  entry_points: number;
+  sensitive_targets: number;
 }
 
 export interface RevocationStep {
@@ -302,4 +406,35 @@ export interface WorkerStatus {
   /** False when the broker itself could not be reached. */
   reachable: boolean;
   detail: string;
+}
+
+/**
+ * What a scan managed to read, per subscription and per collection task.
+ *
+ * Separate from rule coverage, which reports what the checks concluded. This
+ * reports whether they were entitled to conclude anything — and in particular
+ * distinguishes a category that failed outright from one that came back
+ * truncated. An outage and a tenant larger than one scan reads used to arrive
+ * as the same sentence.
+ */
+export type CollectionOutcome = "COMPLETE" | "PARTIAL" | "FAILED" | "SKIPPED";
+
+export interface CollectionReading {
+  subscription: string | null;
+  cloud_account_id: string;
+  task: string;
+  category: string;
+  outcome: CollectionOutcome;
+  detail: string | null;
+  item_count: number;
+}
+
+export interface CollectionStatus {
+  tasks: CollectionReading[];
+  total: number;
+  complete: number;
+  partial: number;
+  failed: number;
+  skipped: number;
+  degraded_categories: string[];
 }

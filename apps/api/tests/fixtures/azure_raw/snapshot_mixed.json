@@ -111,6 +111,11 @@
               }
             ]
           }
+        },
+        "identity": {
+          "type": "SystemAssigned",
+          "principalId": "11111111-2222-3333-4444-555555555555",
+          "tenantId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         }
       }
     ],
@@ -205,6 +210,119 @@
           "@odata.type": "#microsoft.graph.passwordAuthenticationMethod"
         }
       ]
+    },
+    "role_assignments": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/providers/Microsoft.Authorization/roleAssignments/aaaa",
+        "name": "aaaa",
+        "type": "Microsoft.Authorization/roleAssignments",
+        "properties": {
+          "roleDefinitionId": "/subscriptions/00000000-0000-0000-0000-000000000001/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c",
+          "principalId": "11111111-2222-3333-4444-555555555555",
+          "principalType": "ServicePrincipal",
+          "scope": "/subscriptions/00000000-0000-0000-0000-000000000001"
+        }
+      }
+    ],
+    "role_definitions": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000001/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c",
+        "name": "b24988ac-6180-42a0-ab88-20f7382dd24c",
+        "properties": {
+          "roleName": "Contributor",
+          "type": "BuiltInRole",
+          "permissions": [
+            {
+              "actions": [
+                "*"
+              ],
+              "notActions": []
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "coverage": {
+    "network_security_groups": {
+      "category": "network",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "network_interfaces": {
+      "category": "network",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "public_ip_addresses": {
+      "category": "network",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "virtual_machines": {
+      "category": "compute",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "storage_accounts": {
+      "category": "storage",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "sql_servers": {
+      "category": "database",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "postgresql_servers": {
+      "category": "database",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 0
+    },
+    "diagnostic_settings": {
+      "category": "logging",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 2
+    },
+    "users": {
+      "category": "identity",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 2
+    },
+    "directory_roles": {
+      "category": "identity",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1
+    },
+    "user_role_map": {
+      "category": "identity",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 2
+    },
+    "role_assignments": {
+      "category": "authorization",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1,
+      "permissions": []
+    },
+    "role_definitions": {
+      "category": "authorization",
+      "outcome": "COMPLETE",
+      "detail": "",
+      "item_count": 1,
+      "permissions": []
     }
   }
 }

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import RuleState
 from app.rules.azure.database.public_access import AzurePublicDatabaseRule
 from tests.conftest import make_context, resource_from
@@ -44,5 +45,5 @@ class TestPublicDatabase:
 
     def test_unknown_when_database_collection_failed(self) -> None:
         server = resource_from("vulnerable", "sql_server_public")
-        ctx = make_context(server, collection_errors={"database": "403 Forbidden"})
+        ctx = make_context(server, collection_errors={AzureEvidence.SQL_SERVERS: "403 Forbidden"})
         assert self.rule.evaluate(server, ctx).state == RuleState.UNKNOWN

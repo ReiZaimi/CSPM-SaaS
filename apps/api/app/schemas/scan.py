@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import ScanStatus
+from app.core.enums import ScanStatus, ScanTrigger
 
 
 class ScanCreate(BaseModel):
@@ -14,7 +14,10 @@ class ScanOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    cloud_account_id: UUID
+    # One of these says what the scan covered. ``connection_id`` is the
+    # tenant-wide form; ``cloud_account_id`` is a single subscription.
+    cloud_account_id: UUID | None = None
+    connection_id: UUID | None = None
     status: ScanStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -29,6 +32,16 @@ class ScanOut(BaseModel):
     stuck_in_queue: bool = False
 
     triggered_by_user_id: UUID | None = None
+    # Why it ran. A NULL user stopped being able to carry this once scans could
+    # start themselves: an old manual scan whose user record had gone looked
+    # exactly like a scheduled one.
+    trigger: ScanTrigger = ScanTrigger.MANUAL
+    # Set when this run re-evaluated an earlier scan's snapshot rather than
+    # collecting. ``evaluation_only`` says it re-evaluated a capture that is no
+    # longer current, so its counts describe what the rules would have found and
+    # no finding was created, resolved or reopened.
+    replay_of_scan_id: UUID | None = None
+    evaluation_only: bool = False
     progress_done: int = 0
     progress_total: int = 0
     # Live while running, fixed once finished.
@@ -45,6 +58,10 @@ class ScanDetailOut(ScanOut):
 
     scope: dict = Field(default_factory=dict)
     findings_by_severity: dict = Field(default_factory=dict)
+    # What each stage did and how long it took. Answers "why was this scan
+    # slow", which had no answer while a scan was one task with one start and
+    # one end time.
+    stages: list[dict] = Field(default_factory=list)
     # How many unresolved findings a purge would take with it, so the
     # confirmation can state a number rather than a category.
     purgeable_finding_count: int = 0

@@ -44,6 +44,7 @@ export function Shell() {
     { to: "/assets", label: t.nav.assets },
     { to: "/findings", label: t.nav.findings },
     { to: "/risks", label: t.nav.risks },
+    { to: "/attack-paths", label: t.nav.attackPaths },
     { to: "/remediation", label: t.nav.remediation },
     { to: "/scans", label: t.nav.scans },
     { to: "/rules", label: t.nav.rules },

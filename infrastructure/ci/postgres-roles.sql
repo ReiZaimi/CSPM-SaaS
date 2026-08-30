@@ -20,3 +20,21 @@ GRANT authenticated TO cloudguard_app;
 GRANT anon TO cloudguard_app;
 
 GRANT CONNECT ON DATABASE cloudguard TO cloudguard_app;
+
+-- The worker's role. Migration 0012 creates it NOLOGIN so its policies have
+-- something to name; giving it a password is the operator's decision, and in
+-- CI the operator is this file. Without it the integration tests would prove
+-- the worker's isolation against the owner connection, which bypasses RLS and
+-- would therefore pass while proving nothing -- the same trap the comment
+-- above describes for cloudguard_app.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'cloudguard_worker') THEN
+    CREATE ROLE cloudguard_worker LOGIN PASSWORD 'cloudguard_worker'
+      NOSUPERUSER NOCREATEDB NOCREATEROLE;
+  ELSE
+    ALTER ROLE cloudguard_worker LOGIN PASSWORD 'cloudguard_worker';
+  END IF;
+END $$;
+
+GRANT CONNECT ON DATABASE cloudguard TO cloudguard_worker;

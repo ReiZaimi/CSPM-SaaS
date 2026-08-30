@@ -9,6 +9,7 @@ from app.core.enums import (
     ConsentStatus,
     Provider,
 )
+from app.models.cloud_connection import CloudConnection
 
 
 class CloudConnectionCreate(BaseModel):
@@ -46,6 +47,8 @@ class CloudConnectionOut(BaseModel):
     status: CloudAccountStatus
     status_detail: str | None = None
     last_discovery_at: datetime | None = None
+    # How often this environment is re-read. NULL means manual only.
+    scan_interval_hours: int | None = None
     created_at: datetime
     is_verified: bool = False
     subscription_count: int = 0
@@ -55,6 +58,15 @@ class CloudConnectionOut(BaseModel):
     # True once the deployment has been outstanding long enough that "still in
     # progress" no longer explains it.
     deploy_stalled: bool = False
+    # True when CloudGuard's scanner role has moved on since this connection
+    # deployed it. Checks needing the newer permissions cannot be evaluated
+    # until the customer redeploys, so this drives a prompt rather than leaving
+    # them to wonder why a rule reports UNKNOWN.
+    role_upgrade_available: bool = False
+    # Verified *and* holding at least one subscription that can be scanned.
+    # ``is_verified`` alone says both grants work, which is true of a connection
+    # with nothing beneath it.
+    is_ready_to_scan: bool = False
 
 
 class DiscoveredSubscription(BaseModel):
@@ -68,6 +80,25 @@ class DiscoveredSubscription(BaseModel):
     discovered_at: datetime | None = None
     last_scan_at: datetime | None = None
     is_scannable: bool = False
+
+
+class ScheduleUpdate(BaseModel):
+    """How often this environment should be re-read.
+
+    ``None`` turns scheduling off and leaves the connection scannable by hand,
+    which is where every connection starts: turning a customer's cloud into a
+    recurring API cost without being asked would be a surprise on their bill.
+    """
+
+    scan_interval_hours: int | None = Field(
+        default=None,
+        ge=CloudConnection.MIN_INTERVAL_HOURS,
+        le=CloudConnection.MAX_INTERVAL_HOURS,
+        description=(
+            "Read this environment at least this often. Omit or send null for "
+            "manual scanning only."
+        ),
+    )
 
 
 class ScopeSelection(BaseModel):

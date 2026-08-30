@@ -1,5 +1,6 @@
 from typing import ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.rules.base import RuleContext, RuleResult, SecurityRule
@@ -22,7 +23,9 @@ class AzureLoggingRule(SecurityRule):
         ResourceType.POSTGRESQL_SERVER,
         ResourceType.NETWORK_SECURITY_GROUP,
     ]
-    requires_collection: ClassVar[list[str]] = ["logging"]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.DIAGNOSTIC_SETTINGS,
+    )
     estimated_effort_minutes = 120
     rationale = (
         "Logging does not prevent an incident, but without it you cannot detect one, scope "
@@ -54,7 +57,7 @@ class AzureLoggingRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Diagnostic settings unavailable: {failure}")
 

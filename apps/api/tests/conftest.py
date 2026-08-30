@@ -66,7 +66,10 @@ def make_context(
     return RuleContext(
         resources=list(resources),
         relationships=relationships or {},
-        collection_errors=collection_errors or {},
+        # Keyed by evidence key, as the pipeline keys them.
+        collection_errors={
+            str(key): reason for key, reason in (collection_errors or {}).items()
+        },
     )
 
 

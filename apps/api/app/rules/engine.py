@@ -14,7 +14,7 @@ Two invariants live here, and both matter more than they look:
 
 from dataclasses import dataclass, field
 
-from app.core.enums import RuleScope, RuleState
+from app.core.enums import Provider, RuleScope, RuleState
 from app.domain.resource import CloudResource
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 from app.rules.registry import enabled_rules
@@ -79,15 +79,23 @@ class RuleEngine:
 
     def evaluate(self, context: RuleContext) -> EvaluationReport:
         report = EvaluationReport(rules_run=len(self.rules))
+        # Narrowed once per provider rather than once per rule: rebuilding the
+        # id and relationship indexes is the expensive part, and a scan holds
+        # at most a handful of providers against a great many rules.
+        scoped: dict[Provider, RuleContext] = {}
 
         for rule in self.rules:
             coverage = RuleCoverage(rule_id=rule.rule_id)
             report.coverage[rule.rule_id] = coverage
 
+            if rule.provider not in scoped:
+                scoped[rule.provider] = context.for_provider(rule.provider)
+            rule_context = scoped[rule.provider]
+
             if rule.scope == RuleScope.AGGREGATE:
-                self._run_aggregate(rule, context, report, coverage)
+                self._run_aggregate(rule, rule_context, report, coverage)
             else:
-                self._run_per_resource(rule, context, report, coverage)
+                self._run_per_resource(rule, rule_context, report, coverage)
 
         return report
 

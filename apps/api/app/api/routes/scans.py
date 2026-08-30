@@ -13,12 +13,11 @@ from app.schemas.scan import CoverageOut, ScanCreate, ScanDetailOut, ScanOut
 from app.services import cloud_accounts as accounts_service
 from app.services import scans as scans_service
 from app.workers.celery_app import celery_app
-from app.workers.scan_tasks import run_scan
+from app.workers.scan_tasks import replay_scan, run_scan
 
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/scans", tags=["scans"])
-
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -> dict:
@@ -33,28 +32,25 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
             "Reader role, then validate the connection."
         )
 
-    running = (
-        await session.execute(
-            select(Scan).where(
-                Scan.cloud_account_id == account.id,
-                Scan.status.in_(
-                    [
-                        ScanStatus.QUEUED,
-                        ScanStatus.DISCOVERING,
-                        ScanStatus.NORMALIZING,
-                        ScanStatus.EVALUATING,
-                        ScanStatus.CALCULATING_RISK,
-                    ]
-                ),
-            )
-        )
-    ).scalar_one_or_none()
-    if running is not None:
+    # Taken before the check, released when this request's transaction ends.
+    # Without it two clicks a millisecond apart both read "nothing running" and
+    # both queue a scan over the same subscriptions.
+    await scans_service.lock_scan_target(
+        session, tenant.organization_id, account.connection_id, account.id
+    )
+    if await scans_service.scan_in_flight(
+        session, tenant.organization_id, account.connection_id, account.id
+    ):
         raise ConflictError("A scan is already running for this connection")
 
     scan = Scan(
         organization_id=tenant.organization_id,
-        cloud_account_id=account.id,
+        # Scoped to the whole connection when there is one: its subscriptions
+        # are resolved in the worker, so one discovered between queueing and
+        # running is still picked up. Falls back to the single subscription for
+        # an account that predates connections.
+        connection_id=account.connection_id,
+        cloud_account_id=None if account.connection_id else account.id,
         status=ScanStatus.QUEUED,
         # Recorded from the authenticated user, never from the request body.
         triggered_by_user_id=tenant.user.id,
@@ -74,6 +70,77 @@ async def create_scan(payload: ScanCreate, session: DbSession, tenant: Tenant) -
         scan.status = ScanStatus.FAILED
         scan.error_message = (
             "CloudGuard could not put this scan on the queue. The task broker "
+            f"is unreachable: {exc}"
+        )
+        await session.commit()
+
+    return envelope(ScanOut.model_validate(scan).model_dump(mode="json"))
+
+
+@router.post("/{scan_id}/replay", status_code=status.HTTP_202_ACCEPTED)
+async def replay_scan_endpoint(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Re-evaluate a finished scan's stored snapshot against today's rules.
+
+    Costs nothing in the customer's cloud: no Azure call, no consent, no
+    throttle budget. Every scan already stored the provider's own JSON before
+    interpreting it, so a rule shipped after that scan ran can still be applied
+    to it.
+
+    Whether the result may change anything is decided in the pipeline, not
+    here, and it turns on one question: is that snapshot still the newest one
+    for the account? If it is, the replay behaves as a scan that skipped
+    collection. If it is not, it reports what the rules would have found and
+    writes no findings -- a capture from last month is evidence about last
+    month, and resolving a finding on the strength of it would put "verified
+    fixed" against something nobody looked at.
+    """
+    tenant.require_write()
+    source = await scans_service.get_scan(session, tenant, scan_id)
+
+    # Replaying a replay resolves to the capture underneath it. Only a scan
+    # that collected owns a snapshot, so pointing at a replay would queue a run
+    # guaranteed to fail with "no stored snapshot" -- which reads as data loss
+    # rather than as the harmless thing it is. One hop always reaches a
+    # collecting scan, because this is the only code that sets the column and
+    # it never sets it to another replay.
+    if source.replay_of_scan_id is not None:
+        origin = await scans_service.get_scan(
+            session, tenant, source.replay_of_scan_id
+        )
+        source = origin
+
+    if not source.status.is_terminal:
+        raise ConflictError(
+            "That scan has not finished yet. Wait for it to complete before "
+            "replaying its snapshot."
+        )
+
+    await scans_service.lock_scan_target(
+        session, tenant.organization_id, source.connection_id, source.cloud_account_id
+    )
+    if await scans_service.scan_in_flight(
+        session, tenant.organization_id, source.connection_id, source.cloud_account_id
+    ):
+        raise ConflictError("A scan is already running for this connection")
+
+    scan = Scan(
+        organization_id=tenant.organization_id,
+        connection_id=source.connection_id,
+        cloud_account_id=source.cloud_account_id,
+        status=ScanStatus.QUEUED,
+        triggered_by_user_id=tenant.user.id,
+        replay_of_scan_id=source.id,
+    )
+    session.add(scan)
+    await session.commit()
+
+    try:
+        replay_scan.delay(str(scan.id))
+    except Exception as exc:
+        log.warning("scan.replay_enqueue_failed", scan_id=str(scan.id), error=str(exc))
+        scan.status = ScanStatus.FAILED
+        scan.error_message = (
+            "CloudGuard could not put this replay on the queue. The task broker "
             f"is unreachable: {exc}"
         )
         await session.commit()
@@ -184,10 +251,11 @@ async def worker_status(tenant: Tenant) -> dict:
 
 @router.get("/{scan_id}/detail")
 async def get_scan_detail(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
-    """One scan, with its scope, identity and severity breakdown."""
+    """One scan, with its scope, identity, stages and severity breakdown."""
     scan = await scans_service.get_scan(session, tenant, scan_id)
     data = ScanDetailOut.model_validate(scan).model_dump(mode="json")
     data["scope"] = await scans_service.scan_context(session, scan)
+    data["stages"] = await scans_service.scan_stages(session, scan)
     data["findings_by_severity"] = await scans_service.severity_breakdown(session, scan)
     data["purgeable_finding_count"] = await scans_service.findings_attributable_to(
         session, scan
@@ -228,6 +296,19 @@ async def delete_scan(
         session, tenant, scan_id, purge_findings=purge_findings
     )
     return envelope(result)
+
+
+@router.get("/{scan_id}/collection")
+async def scan_collection(scan_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """What this scan could and could not read, per subscription and per task.
+
+    Separate from ``/coverage``, which reports what the rules concluded. The
+    two were one flat map of category to a sentence, which could say a category
+    was unreliable but not whether it had failed outright or merely come back
+    truncated -- an outage and a very large tenant, reported identically.
+    """
+    scan = await scans_service.get_scan(session, tenant, scan_id)
+    return envelope(await scans_service.collection_status(session, scan))
 
 
 @router.get("/{scan_id}/coverage")

@@ -4,7 +4,12 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.connectors.azure.auth import ConsentStateError, verify_state
+from app.connectors.azure.auth import (
+    REQUIRED_GRAPH_PERMISSIONS,
+    ConsentStateError,
+    app_registration_manifest,
+    verify_state,
+)
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.deps import DbSession, Tenant
@@ -16,6 +21,7 @@ from app.schemas.cloud_connection import (
     CloudConnectionCreate,
     CloudConnectionOut,
     DiscoveredSubscription,
+    ScheduleUpdate,
     ScopeSelection,
 )
 from app.services import cloud_connections as service
@@ -45,6 +51,15 @@ def _serialize(
     # Lets the card stop showing a spinner once waiting has stopped being a
     # plausible explanation for the silence.
     data["deploy_stalled"] = service.deploy_stalled(connection)
+    data["role_upgrade_available"] = service.role_upgrade_available(connection)
+    # Both grants proven is not the same as having something to scan, and the
+    # card said "Ready to scan: Yes" over an empty connection because it read
+    # ``is_verified``. Readiness needs a subscription CloudGuard can actually
+    # look at. Only meaningful when the caller passed the subscriptions in;
+    # endpoints that do not are reporting on a connection mid-setup.
+    data["is_ready_to_scan"] = connection.is_verified and any(
+        a.is_scannable for a in (subscriptions or [])
+    )
 
     # Regenerated on every read, not just on create. Returning it only from the
     # create response meant a page reload lost the consent button and left the
@@ -134,6 +149,58 @@ async def arm_template(
     )
 
 
+@router.get("/azure/app-registration")
+async def app_registration(tenant: Tenant) -> dict:
+    """What CloudGuard's own Entra app registration must declare.
+
+    The other half of the deployment. The ARM template grants subscription
+    access in the *customer's* tenant; directory access comes from application
+    permissions on CloudGuard's registration in its own tenant, which no
+    template a customer runs can touch. That half has only ever existed as a
+    list in a code comment, which is why a registration missing seven of nine
+    permissions still produced a consent screen that looked entirely normal.
+
+    Returned as the manifest fragment plus the command that applies it, so the
+    registration can be diffed against what is deployed instead of inspected by
+    eye in a portal.
+    """
+    tenant.require_role(Role.OWNER, Role.ADMIN)
+    manifest = app_registration_manifest()
+    return envelope(
+        {
+            "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
+            "required_resource_access": manifest,
+            # Shell-safe by construction. An angle-bracket placeholder reads
+            # as a placeholder and parses as input redirection, so a copied
+            # command fails with "No such file or directory" and names the
+            # placeholder as the missing file -- an error that says nothing
+            # about what actually went wrong.
+            "lookup_command": (
+                'APP_ID=$(az ad app list --display-name CloudGuard '
+                '--query "[0].appId" -o tsv)'
+            ),
+            "apply_command": (
+                'az ad app update --id "$APP_ID" '
+                f"--required-resource-accesses '{json.dumps(manifest)}'"
+            ),
+            "verify_command": (
+                'az ad app show --id "$APP_ID" '
+                '--query "requiredResourceAccess[].resourceAccess[].id" -o tsv'
+            ),
+            "grant_command": (
+                "# Then, in each customer tenant, a Global Administrator "
+                "re-runs the consent link from this page."
+            ),
+            "note": (
+                "Consent grants what the registration declares at the moment it "
+                "is granted. Adding a permission afterwards does not extend an "
+                "existing grant -- every already-connected tenant must consent "
+                "again."
+            ),
+        }
+    )
+
+
 @router.get("/azure/consent/callback", include_in_schema=False)
 async def consent_callback(
     state: str = Query(default=""),
@@ -205,6 +272,22 @@ async def get_connection(connection_id: UUID, session: DbSession, tenant: Tenant
     return envelope(_serialize(connection, len(subscriptions), subscriptions))
 
 
+@router.post("/{connection_id}/discover")
+async def rediscover(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Look for subscriptions again.
+
+    Discovery normally runs by itself, once, while the connections page polls.
+    That leaves no way back from the case where verification succeeded and the
+    discovery call immediately after it did not: the page stops polling a
+    verified connection, so nothing ever asks again. This is the ask-again.
+    """
+    tenant.require_write()
+    connection, subscriptions = await service.rediscover_subscriptions(
+        session, tenant, connection_id
+    )
+    return envelope(_serialize(connection, len(subscriptions), subscriptions))
+
+
 @router.patch("/{connection_id}/subscriptions")
 async def set_scope(
     connection_id: UUID, payload: ScopeSelection, session: DbSession, tenant: Tenant
@@ -215,6 +298,24 @@ async def set_scope(
         session, tenant, connection_id, payload.in_scope
     )
     return envelope([_serialize_subscription(a) for a in accounts])
+
+
+@router.patch("/{connection_id}/schedule")
+async def set_schedule(
+    connection_id: UUID, payload: ScheduleUpdate, session: DbSession, tenant: Tenant
+) -> dict:
+    """Read this environment on a schedule, or stop.
+
+    Every connection starts unscheduled. Turning a customer's cloud into a
+    recurring API cost without being asked would be a surprise on their Azure
+    bill as much as on ours, so continuous scanning is something they switch on
+    rather than something they discover.
+    """
+    tenant.require_write()
+    connection = await service.set_scan_schedule(
+        session, tenant, connection_id, payload.scan_interval_hours
+    )
+    return envelope(_serialize(connection))
 
 
 @router.post("/{connection_id}/cancel")

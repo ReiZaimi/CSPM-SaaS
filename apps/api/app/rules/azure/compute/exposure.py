@@ -8,6 +8,7 @@ open — is the thing that actually gets exploited.
 
 from typing import ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.rules.azure.network.exposure import _find_public_port
@@ -28,7 +29,14 @@ class AzureExposedComputeRule(SecurityRule):
     severity = Severity.HIGH
     exploitability = 4
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.VIRTUAL_MACHINE]
-    requires_collection: ClassVar[list[str]] = ["compute", "network"]
+    # A VM's exposure is read through its interfaces, their public IPs
+    # and the NSGs guarding them, so all four are load-bearing.
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.VIRTUAL_MACHINES,
+        AzureEvidence.NETWORK_INTERFACES,
+        AzureEvidence.PUBLIC_IP_ADDRESSES,
+        AzureEvidence.NETWORK_SECURITY_GROUPS,
+    )
     estimated_effort_minutes = 45
     rationale = (
         "This machine is routable from the internet and accepts administrative logins from "
@@ -57,7 +65,7 @@ class AzureExposedComputeRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Compute or network data unavailable: {failure}")
 

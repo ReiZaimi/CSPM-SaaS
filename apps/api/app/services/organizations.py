@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import commit_unless_externally_managed
 from app.core.enums import Role
 from app.core.errors import OrganizationNotFound, PermissionDenied
 from app.core.security import AuthenticatedUser
@@ -102,4 +103,4 @@ async def delete_organization(
         raise OrganizationNotFound()
 
     await session.delete(organization)
-    await session.commit()
+    await commit_unless_externally_managed(session)

@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import ClassVar
 
-from sqlalchemy import DateTime, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import (
@@ -80,6 +81,28 @@ class CloudConnection(Base, UUIDPrimaryKey, TenantOwned, Timestamps):
     )
     status_detail: Mapped[str | None] = mapped_column(Text)
     last_discovery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # How often this environment should be re-read, in hours. NULL means manual
+    # only, and it is the default: turning a customer's cloud into a recurring
+    # API cost without being asked would be a surprise on their Azure bill as
+    # much as on ours.
+    #
+    # An interval rather than a time of day. "Every night at 03:00" needs a
+    # timezone, a window, and an answer for what happens when a scan overruns
+    # its slot; an interval says the only thing a scanner can actually promise,
+    # which is that the environment is read at least this often.
+    scan_interval_hours: Mapped[int | None] = mapped_column(Integer)
+
+    # What the UI offers, and what the API accepts. Bounded at both ends for
+    # different reasons: below an hour a scan would still be running when the
+    # next was due, and beyond a month a "continuous" posture is a claim
+    # CloudGuard cannot support.
+    MIN_INTERVAL_HOURS: ClassVar[int] = 1
+    MAX_INTERVAL_HOURS: ClassVar[int] = 24 * 30
+
+    @property
+    def is_scheduled(self) -> bool:
+        return self.scan_interval_hours is not None
 
     @property
     def is_verified(self) -> bool:

@@ -14,6 +14,7 @@ import { AssetDetailPage } from "@/pages/AssetDetail";
 import { FindingsPage } from "@/pages/Findings";
 import { FindingDetailPage } from "@/pages/FindingDetail";
 import { RisksPage } from "@/pages/Risks";
+import { AttackPathsPage } from "@/pages/AttackPaths";
 import { ScansPage } from "@/pages/Scans";
 import { RulesPage } from "@/pages/Rules";
 import { CompliancePage } from "@/pages/Compliance";
@@ -71,6 +72,7 @@ export function App() {
         <Route path="/findings" element={<FindingsPage />} />
         <Route path="/findings/:findingId" element={<FindingDetailPage />} />
         <Route path="/risks" element={<RisksPage />} />
+        <Route path="/attack-paths" element={<AttackPathsPage />} />
         <Route path="/remediation" element={<RemediationPage />} />
         <Route path="/scans" element={<ScansPage />} />
         <Route path="/rules" element={<RulesPage />} />

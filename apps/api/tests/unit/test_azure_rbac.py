@@ -113,17 +113,46 @@ def test_arm_template_management_group_schema() -> None:
 # see ROLE_ONLY_ACTIONS.
 
 
-def arm_client_calls() -> set[str]:
-    """Every ARM request method, read off the class rather than a list."""
+# Every client that spends ARM permissions. Resource Graph is a separate class
+# with its own paging and its own quota, but the permissions it spends are
+# still the customer's role, so it is subject to the same guard -- a query the
+# role does not grant fails as a 403 in exactly the way an ARM listing would.
+ARM_FACING_CLIENTS = ("ArmClient", "ResourceGraphClient")
+
+
+def _public_calls(client_name: str) -> set[str]:
     import inspect
 
-    from app.connectors.azure.client import ArmClient
+    from app.connectors.azure import client as client_module
 
     return {
         name
-        for name, member in vars(ArmClient).items()
+        for name, member in vars(getattr(client_module, client_name)).items()
         if not name.startswith("_") and inspect.iscoroutinefunction(member)
     }
+
+
+def arm_client_calls() -> set[str]:
+    """Every ARM-permissioned request method, read off the classes."""
+    calls: set[str] = set()
+    for name in ARM_FACING_CLIENTS:
+        calls |= _public_calls(name)
+    return calls
+
+
+def test_the_ledger_can_name_every_call_unambiguously() -> None:
+    """CLIENT_ACTIONS is keyed by bare method name, which only works while the
+    ARM-facing clients do not share one. Two classes with a ``list_resources``
+    apiece would map to a single entry, and the second one's permissions would
+    be whatever the first happened to declare."""
+    seen: dict[str, str] = {}
+    for client_name in ARM_FACING_CLIENTS:
+        for method in _public_calls(client_name):
+            assert method not in seen, (
+                f"{client_name}.{method} collides with {seen[method]}.{method}. "
+                "Rename one, or key CLIENT_ACTIONS by class as well."
+            )
+            seen[method] = client_name
 
 
 def test_every_arm_call_has_a_matching_action() -> None:
@@ -131,7 +160,7 @@ def test_every_arm_call_has_a_matching_action() -> None:
 
     missing = sorted(arm_client_calls() - set(CLIENT_ACTIONS))
     assert missing == [], (
-        f"ArmClient methods with no RBAC action: {missing}. "
+        f"ARM-facing client methods with no RBAC action: {missing}. "
         "Add them to CLIENT_ACTIONS and to ARM_READ_ACTIONS, or a custom-role "
         "customer loses that whole collection category to a silent 403."
     )

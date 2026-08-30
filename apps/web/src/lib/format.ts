@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import type { ControlStatus, Level } from "./types";
+import type { CollectionOutcome, ControlStatus, Level } from "./types";
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
@@ -21,6 +21,28 @@ const LEVEL_STYLES: Record<Level, string> = {
 
 export const levelStyle = (level: string) =>
   LEVEL_STYLES[(level as Level) ?? "UNKNOWN"] ?? LEVEL_STYLES.UNKNOWN;
+
+/**
+ * Collection outcomes, deliberately a separate scale from severity.
+ *
+ * Routing these through `levelStyle` looks tempting and is wrong: that map has
+ * no OK, so COMPLETE falls through to the UNKNOWN treatment and a full,
+ * trustworthy read renders with the dashed border that means "we could not
+ * look" — the same confusion the note above exists to prevent, inverted.
+ *
+ * PARTIAL is amber rather than green, which is the point of surfacing it at
+ * all: data came back, and it still cannot support a pass. SKIPPED borrows the
+ * UNKNOWN treatment because that is honestly what it is.
+ */
+const OUTCOME_STYLES: Record<CollectionOutcome, string> = {
+  COMPLETE: "bg-ok-bg text-ok border-ok-border",
+  PARTIAL: "bg-medium-bg text-medium border-medium-border",
+  FAILED: "bg-critical-bg text-critical border-critical-border",
+  SKIPPED: "bg-unknown-bg text-unknown border-unknown-border border-dashed",
+};
+
+export const outcomeStyle = (outcome: CollectionOutcome) =>
+  OUTCOME_STYLES[outcome] ?? OUTCOME_STYLES.SKIPPED;
 
 export function scoreColor(score: number): string {
   if (score >= 85) return "text-ok";

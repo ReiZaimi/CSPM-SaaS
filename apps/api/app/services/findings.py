@@ -6,8 +6,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
-from app.core.enums import ExceptionStatus, FindingStatus, RiskStatus
+from app.core.enums import ExceptionStatus, FindingStatus, RiskKind, RiskStatus
 from app.core.errors import FindingNotFound, ValidationFailed
 from app.models.finding import Finding
 from app.models.remediation import AuditLog, RiskException
@@ -48,12 +49,7 @@ async def load_detail(
         await session.execute(select(Rule).where(Rule.rule_id == finding.rule_id))
     ).scalar_one_or_none()
 
-    link = (
-        await session.execute(
-            select(RiskFinding).where(RiskFinding.finding_id == finding.id)
-        )
-    ).scalar_one_or_none()
-    risk = await session.get(Risk, link.risk_id) if link else None
+    risk = await own_risk(session, finding)
 
     effort = rule_row.estimated_effort_minutes if rule_row else 30
     score = float(finding.risk_score) if finding.risk_score is not None else 0.0
@@ -97,15 +93,9 @@ async def accept_risk(
         )
     )
 
-    link = (
-        await session.execute(
-            select(RiskFinding).where(RiskFinding.finding_id == finding.id)
-        )
-    ).scalar_one_or_none()
-    if link:
-        risk = await session.get(Risk, link.risk_id)
-        if risk:
-            risk.status = RiskStatus.ACCEPTED
+    risk = await own_risk(session, finding)
+    if risk:
+        risk.status = RiskStatus.ACCEPTED
 
     await record_audit(
         session,
@@ -115,7 +105,7 @@ async def accept_risk(
         resource_id=finding.id,
         metadata={"reason": reason, "rule_id": finding.rule_id},
     )
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return finding
 
 
@@ -145,8 +135,35 @@ async def set_status(
         resource_id=finding.id,
         metadata={"status": status.value, "rule_id": finding.rule_id},
     )
-    await session.commit()
+    await commit_unless_externally_managed(session)
     return finding
+
+
+async def own_risk(session: AsyncSession, finding: Finding) -> Risk | None:
+    """The risk that is *about* this finding, rather than any risk containing it.
+
+    A finding used to have at most one risk, so every caller here read the
+    junction with ``scalar_one_or_none`` and got it. Scenario risks broke that
+    assumption without breaking the query's shape: a finding on an attack path
+    is linked twice -- once to its own risk and once to the route it is part of
+    -- so those callers began raising ``MultipleResultsFound`` on exactly the
+    findings the graph had found something interesting about.
+
+    Filtering on the kind restores the guarantee rather than papering over it
+    with ``first()``: there is exactly one FINDING risk per finding, and picking
+    an arbitrary row would have quietly attached a remediation task, or an
+    accepted-risk status, to a route instead of to the thing somebody clicked.
+    """
+    return (
+        await session.execute(
+            select(Risk)
+            .join(RiskFinding, RiskFinding.risk_id == Risk.id)
+            .where(
+                RiskFinding.finding_id == finding.id,
+                Risk.kind == RiskKind.FINDING,
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def record_audit(
