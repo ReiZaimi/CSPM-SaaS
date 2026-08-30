@@ -800,6 +800,14 @@ async def _auto_discover(
             connection_id=str(connection.id),
             tenant_id=connection.tenant_id,
         )
+    # Flush before returning, not only commit. ``commit_unless_externally_managed``
+    # does nothing inside a request -- ``rls_session`` owns that transaction --
+    # so a freshly discovered subscription went back to the caller with no
+    # primary key, and serializing it raised a 500 on the one endpoint whose
+    # job is to recover a connection that has none. The flush assigns the ids
+    # without ending the transaction, which matters: RLS settings here are
+    # transaction-scoped, and a commit would tear them down.
+    await session.flush()
     await commit_unless_externally_managed(session)
     return accounts
 

@@ -659,3 +659,94 @@ async def _connection_change_state(connection_id: uuid.UUID) -> tuple:
                 {"id": connection_id},
             )
         ).one()
+
+
+class TestSubscriptionDiscovery:
+    """The escape hatch for a connection that found nothing.
+
+    It returned 500 in staging, and the cause is the kind that only appears
+    against a real session: newly discovered subscriptions were handed back to
+    the serializer before their primary keys existed. ``commit_unless_externally
+    _managed`` does nothing inside a request -- ``rls_session`` owns that
+    transaction -- so nothing had assigned them, and the endpoint whose whole
+    job is recovering a connection with no subscriptions was the one that broke.
+    """
+
+    async def _verified_connection(self, org_id: uuid.UUID) -> uuid.UUID:
+        from datetime import UTC, datetime
+
+        from app.core.db import service_session
+        from app.core.enums import (
+            CloudAccountStatus,
+            ConnectionScope,
+            ConsentStatus,
+            Provider,
+        )
+        from app.models.cloud_connection import CloudConnection
+
+        async with service_session() as session:
+            connection = CloudConnection(
+                organization_id=org_id,
+                provider=Provider.AZURE,
+                name="prod",
+                scope_type=ConnectionScope.TENANT_ROOT,
+                role_version="v2",
+                tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                consent_status=ConsentStatus.GRANTED,
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+            )
+            session.add(connection)
+            await session.commit()
+            return connection.id
+
+    async def test_a_discovered_subscription_comes_back_with_an_id(
+        self, client, cleanup_orgs, monkeypatch
+    ) -> None:
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Discovery Ltd"))
+        cleanup_orgs.append(org_id)
+        connection_id = await self._verified_connection(org_id)
+
+        # Azure, reduced to the one call discovery makes. The bug is on this
+        # side of it: what ARM said was never the problem.
+        class FakeArm:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+            async def list_subscriptions(self) -> list[dict]:
+                return [
+                    {
+                        "subscriptionId": "00000000-0000-0000-0000-000000000001",
+                        "displayName": "Production",
+                    }
+                ]
+
+        from app.services import cloud_connections as service
+
+        monkeypatch.setattr(service, "ArmClient", FakeArm)
+        monkeypatch.setattr(
+            "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
+        )
+
+        response = await client.post(
+            f"/api/v1/cloud-connections/{connection_id}/discover",
+            headers=auth_header(user),
+        )
+
+        assert response.status_code == 200, response.text
+        subscriptions = response.json()["data"]["subscriptions"]
+        assert len(subscriptions) == 1
+        # The assertion the 500 was: a row that exists in the session but has
+        # no primary key yet cannot be serialized, and cannot be linked to by
+        # anything the customer clicks next.
+        assert uuid.UUID(subscriptions[0]["id"])
+        assert subscriptions[0]["subscription_id"] == (
+            "00000000-0000-0000-0000-000000000001"
+        )
