@@ -1108,9 +1108,15 @@ on the reaper.
     claim is made, so `remediation_verifications` is now literally the
     expected-state record this item asked for.
 
-    Still to declare: the remaining seven rules. Two of them (MFA, privileged
-    users) are directory settings that no `policyRule` can express, and their
-    declarations will say so rather than inventing one.
+    Three rules carry a declaration, and the other seven do not for a reason
+    rather than for want of typing: their expectations are predicates over
+    *collections* -- no security rule admits 3389 from the internet, every
+    covered resource has a diagnostic setting, this administrator has at least
+    one MFA method -- and `ExpectedState` expresses a scalar equality. Growing
+    it into something that can say those is inventing a small query language,
+    which is a decision to take on its own rather than at the end of this one.
+    The three declared are the three whose expectation genuinely is "this
+    setting equals that value", and the pattern is proven by them.
 21. A second provider, behind the existing `CloudConnector` seam. Only then
     generalize the permission-manifest pattern and migrate the scope
     vocabulary, in the order `MULTI_CLOUD.md` §8 already argues for.
