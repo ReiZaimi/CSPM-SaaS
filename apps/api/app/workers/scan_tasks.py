@@ -12,8 +12,10 @@ frame.
 """
 
 import asyncio
+from functools import lru_cache
 from uuid import UUID
 
+from app.core.config import settings
 from app.core.db import dispose_engines, service_session
 from app.core.enums import ScanStatus, ScanStepKind
 from app.core.logging import configure_logging, get_logger
@@ -31,6 +33,31 @@ from app.workers.celery_app import (
 log = get_logger(__name__)
 
 
+@lru_cache(maxsize=1)
+def _announce_tenancy() -> None:
+    """Say once, out loud, whether the database is enforcing tenant isolation.
+
+    The fallback is deliberate -- a deployment without the worker role keeps
+    working exactly as it did -- and that is precisely why it needs saying. A
+    silent fallback would leave an operator believing PostgreSQL was holding a
+    boundary that in fact only the pipeline's own filters were holding.
+    """
+    if settings.worker_is_constrained:
+        log.info("worker.tenancy_enforced_by_database")
+    else:
+        log.warning(
+            "worker.tenancy_enforced_by_code_only",
+            detail=(
+                "DATABASE_WORKER_URL is not set, so scans run on the owner "
+                "connection, which row-level security does not constrain. The "
+                "pipeline still scopes every query by organization; nothing "
+                "below it checks. Create cloudguard_worker "
+                "(infrastructure/supabase/roles.sql) and set the variable to "
+                "have PostgreSQL enforce it."
+            ),
+        )
+
+
 @celery_app.task(name="cloudguard.run_scan", bind=True, max_retries=0)
 def run_scan(self: object, scan_id: str) -> dict:
     """Start a scan: give it its steps, then set the loop going.
@@ -44,6 +71,7 @@ def run_scan(self: object, scan_id: str) -> dict:
     unique index already refuses.
     """
     configure_logging()
+    _announce_tenancy()
     log.info("scan.task_received", scan_id=scan_id)
     asyncio.run(_start(UUID(scan_id)))
     return {"scan_id": scan_id}

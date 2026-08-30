@@ -60,6 +60,31 @@ def get_owner_engine() -> AsyncEngine:
 
 
 @lru_cache
+def get_worker_engine() -> AsyncEngine:
+    """The connection a scan's own work runs on.
+
+    ``cloudguard_worker`` where one is configured, and the owner connection
+    otherwise. The fallback is what makes adopting this incremental: a
+    deployment that has not created the role keeps behaving exactly as it did,
+    rather than failing every scan until somebody notices a missing variable.
+    """
+    return create_async_engine(
+        settings.scan_database_url,
+        echo=settings.db_echo,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+    )
+
+
+@lru_cache
+def _worker_session_factory() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(
+        get_worker_engine(), expire_on_commit=False, class_=AsyncSession
+    )
+
+
+@lru_cache
 def _app_session_factory() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(get_app_engine(), expire_on_commit=False, class_=AsyncSession)
 
@@ -90,7 +115,7 @@ async def dispose_engines() -> None:
     need a loop to close the connections on, which is the very thing that has
     gone.
     """
-    for engine in (get_app_engine(), get_owner_engine()):
+    for engine in (get_app_engine(), get_owner_engine(), get_worker_engine()):
         await engine.dispose()
 
 
@@ -146,8 +171,45 @@ async def rls_session(user_id: UUID | str) -> AsyncIterator[AsyncSession]:
 
 
 @asynccontextmanager
+async def scan_session(organization_id: UUID) -> AsyncIterator[AsyncSession]:
+    """A session PostgreSQL will constrain to one organization.
+
+    The worker's counterpart to :func:`rls_session`, and it resolves tenancy
+    differently for a reason: a background scan has no signed-in user, so there
+    is no membership to look up. It declares the organization it is acting for,
+    and ``cloudguard_worker``'s policy arm trusts that declaration -- an arm
+    granted to that role alone, so the request path gains no bypass from it.
+
+    ``SET LOCAL`` is transaction-scoped, so the claim is torn down on commit or
+    rollback and cannot leak to the next checkout of a pooled connection.
+
+    Falls back to the owner connection where no worker role is configured, in
+    which case this is exactly the old unconstrained session and the pipeline's
+    own filters are all that scope it. That is the previous behaviour, kept
+    deliberately so the role can be adopted without a flag day.
+    """
+    session = _worker_session_factory()()
+    session.info[EXTERNAL_TRANSACTION] = True
+    try:
+        async with session.begin():
+            await session.execute(
+                text("SELECT set_config('app.organization_id', :org, true)"),
+                {"org": str(organization_id)},
+            )
+            yield session
+    finally:
+        await session.close()
+
+
+@asynccontextmanager
 async def service_session() -> AsyncIterator[AsyncSession]:
-    """Owner-level session. Bypasses RLS -- worker and migration use only.
+    """Owner-level session. Bypasses RLS -- housekeeping and migrations only.
+
+    What is left on it after :func:`scan_session` took the per-scan work: the
+    reapers, which look for abandoned work across every organization and so are
+    exactly what a per-organization session cannot see. A small enumerable set
+    of queries that scope nothing on purpose, rather than a claim meaning
+    "see everything" -- which would be a bypass with a friendly name.
 
     Anything called with this session is responsible for its own
     ``organization_id`` scoping.

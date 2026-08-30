@@ -694,8 +694,26 @@ on the reaper.
 
 ### Phase 1 — foundations
 
-6. A repository layer taking `organization_id` at construction, so §2.15
-   becomes structural.
+6. **Done, differently** — §2.15. The review proposed a repository layer
+   taking `organization_id` at construction. What shipped is stronger and
+   smaller: migration 0012 adds a `cloudguard_worker` role whose
+   policy arm on every tenant-owned table trusts `app.current_org()`, and the
+   pipeline runs each scan in a session that declares its organization for the
+   length of a transaction. PostgreSQL refuses a read or a write outside it
+   however the query is written — a repository layer would still have been a
+   convention, enforced by whoever remembered to use it.
+
+   The arm is granted to that role alone. Adding it to the policies the request
+   path uses would have handed `authenticated` a bypass it never needs, which
+   is the guarantee being strengthened, weakened.
+
+   Two deliberate limits. Housekeeping — the reapers, which look for abandoned
+   work across every organization — stays on the owner connection, because
+   that is exactly what a per-organization session cannot see, and a claim
+   meaning "see everything" would be a bypass with a friendly name. And
+   `DATABASE_WORKER_URL` is optional: unset, the worker falls back to the owner
+   connection and logs that it has, so adopting the role is a deployment step
+   rather than a flag day.
 7. **Mostly done** — scan steps and the orchestrator. (§6, §2.2) Migration
    0011 adds `scan_steps`; `app/services/orchestrator.py` decides what may run,
    claims it with an `UPDATE ... WHERE status = 'PENDING' RETURNING id`, and

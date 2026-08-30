@@ -27,7 +27,8 @@ the scan record it was handed — never from client input.
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -40,7 +41,7 @@ from app.connectors.azure.evidence import keys_in
 from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.evidence import EvidenceCategory
 from app.connectors.registry import get_connector
-from app.core.db import service_session
+from app.core.db import scan_session, service_session
 from app.core.enums import (
     FindingStatus,
     Level,
@@ -87,6 +88,15 @@ def _digest(payload: dict) -> tuple[str, int]:
     """
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest(), len(encoded)
+
+
+class ScanVanished(Exception):
+    """The scan a step was queued for is gone.
+
+    Not a :class:`ScanStepError`: there is no step outcome to record against a
+    scan that no longer exists, and the rows a settle would write would be
+    orphans.
+    """
 
 
 class ScanStepError(Exception):
@@ -147,12 +157,17 @@ class _StepHeartbeat:
     do is the thing only the running worker knows -- that it is still alive.
     """
 
-    def __init__(self, step_id: UUID) -> None:
+    def __init__(self, step_id: UUID, organization_id: UUID) -> None:
         self.step_id = step_id
+        # Carried so the heartbeat runs on the same constrained session as the
+        # step it is beating for. It writes one column on one row, and doing
+        # that on the owner connection would be a small hole in an otherwise
+        # closed boundary.
+        self.organization_id = organization_id
 
     async def __call__(self, done: int, total: int) -> None:
         try:
-            async with service_session() as session:
+            async with scan_session(self.organization_id) as session:
                 await orchestrator.renew(session, self.step_id)
         except Exception as exc:  # pragma: no cover - a heartbeat is never fatal
             # Losing a heartbeat costs the step its lease eventually, which the
@@ -167,6 +182,46 @@ class ScanPipeline:
     def __init__(self, scan_id: UUID) -> None:
         self.scan_id = scan_id
         self.engine = RuleEngine()
+        self._organization_id: UUID | None = None
+
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[AsyncSession]:
+        """A session PostgreSQL will hold to this scan's organization.
+
+        Every read and write a scan makes goes through here. Before this, the
+        pipeline ran on the owner connection -- RLS does not apply to it -- so
+        the tenant boundary was whatever ``organization_id`` filter each query
+        happened to carry. Those filters are all still there and still correct;
+        what changed is that they are no longer the only thing standing between
+        two customers' data.
+        """
+        organization_id = await self._organization()
+        async with scan_session(organization_id) as session:
+            yield session
+
+    async def _organization(self) -> UUID:
+        """Which organization this scan belongs to.
+
+        The one read that cannot be scoped, because it is the read that
+        establishes the scope. Deliberately narrow: one row by primary key,
+        one column, cached for the life of the step -- and taken from the scan
+        record rather than from the queue message, which is the same rule the
+        pipeline has always followed about where a tenant boundary may come
+        from.
+        """
+        if self._organization_id is None:
+            async with service_session() as session:
+                organization_id = (
+                    await session.execute(
+                        select(Scan.organization_id).where(Scan.id == self.scan_id)
+                    )
+                ).scalar_one_or_none()
+            if organization_id is None:
+                raise ScanVanished(
+                    "This scan no longer exists, so there is nothing to run."
+                )
+            self._organization_id = organization_id
+        return self._organization_id
 
     # ------------------------------------------------------------------ steps
     #
@@ -195,7 +250,7 @@ class ScanPipeline:
         subscription is gone" will be just as gone on the third attempt;
         a throttled API or a killed worker will not.
         """
-        async with service_session() as session:
+        async with self._session() as session:
             step = await session.get(ScanStep, step_id)
             if step is None:
                 log.error("scan.step_missing", step_id=str(step_id))
@@ -245,7 +300,7 @@ class ScanPipeline:
     async def _settle(
         self, step_id: UUID, error: str | None, *, retryable: bool
     ) -> ScanStepStatus:
-        async with service_session() as session:
+        async with self._session() as session:
             step = await session.get(ScanStep, step_id)
             if step is None:
                 return ScanStepStatus.FAILED
@@ -272,7 +327,7 @@ class ScanPipeline:
         that can be minutes deep makes that a real difference rather than a
         theoretical one.
         """
-        async with service_session() as session:
+        async with self._session() as session:
             scan = await self._require_scan(session)
             if scan is None:
                 return []
@@ -315,7 +370,7 @@ class ScanPipeline:
         supposed to be what the provider said in one reading, not a merge of
         two.
         """
-        async with service_session() as session:
+        async with self._session() as session:
             scan = await self._require_scan(session)
             if scan is None:
                 return
@@ -339,7 +394,7 @@ class ScanPipeline:
                     session,
                     scan,
                     connection,
-                    _StepHeartbeat(step_id),
+                    _StepHeartbeat(step_id, scan.organization_id),
                     observed_at,
                     required=True,
                 )
@@ -357,7 +412,7 @@ class ScanPipeline:
                 tenant_id=account.tenant_id,
                 subscription_id=account.subscription_id,
             )
-            snapshot = await connector.collect(_StepHeartbeat(step_id))
+            snapshot = await connector.collect(_StepHeartbeat(step_id, scan.organization_id))
             await self._explain_role_drift(session, account, snapshot)
 
             # Persisted before interpretation, always. One row per subscription,
@@ -394,7 +449,7 @@ class ScanPipeline:
         the pipeline was always performing -- now with the collection that
         produced them separately durable.
         """
-        async with service_session() as session:
+        async with self._session() as session:
             scan = await self._require_scan(session)
             if scan is None:
                 return
@@ -757,7 +812,7 @@ class ScanPipeline:
         describes the present, and findings across it cannot be resolved from a
         picture that is partly stale.
         """
-        async with service_session() as session:
+        async with self._session() as session:
             scan = await session.get(Scan, self.scan_id)
             if scan is None:
                 log.error("scan.missing", scan_id=str(self.scan_id))

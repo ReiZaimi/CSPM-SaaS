@@ -30,6 +30,11 @@ jobs:
       # them as the owner would silently pass while proving nothing.
       DATABASE_URL: postgresql+asyncpg://cloudguard_app:cloudguard_app@localhost:5432/cloudguard
       DATABASE_OWNER_URL: postgresql+asyncpg://cloudguard:cloudguard@localhost:5432/cloudguard
+      # Set here so the integration tests exercise the constrained path. Left
+      # unset, the worker falls back to the owner connection, which bypasses
+      # RLS -- so the tests that prove the worker cannot reach another tenant
+      # would pass while proving nothing.
+      DATABASE_WORKER_URL: postgresql+asyncpg://cloudguard_worker:cloudguard_worker@localhost:5432/cloudguard
       REDIS_URL: redis://localhost:6379/0
       SUPABASE_JWT_SECRET: ci-test-secret
       APP_ENV: test

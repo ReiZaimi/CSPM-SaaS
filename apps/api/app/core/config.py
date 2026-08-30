@@ -57,7 +57,26 @@ class Settings(BaseSettings):
     # app connection == RLS-constrained. owner connection == migrations.
     database_url: str = ""
     database_owner_url: str = ""
+    # Optional. Authenticates as cloudguard_worker, whose row-level security
+    # arm trusts the organization a scan declares rather than a membership
+    # lookup -- a background scan has no user to resolve one for.
+    #
+    # Left unset, the worker keeps using the owner connection, which bypasses
+    # RLS entirely and relies on the pipeline's own filters. That is what it did
+    # before this existed, so not setting it changes nothing; setting it moves
+    # the guarantee from our code into PostgreSQL.
+    database_worker_url: str = ""
     db_echo: bool = False
+
+    @property
+    def worker_is_constrained(self) -> bool:
+        """Whether the worker's tenancy is enforced by the database."""
+        return bool(self.database_worker_url)
+
+    @property
+    def scan_database_url(self) -> str:
+        """The connection a scan's own work runs on."""
+        return self.database_worker_url or self.database_owner_url
 
     redis_url: str = ""
 

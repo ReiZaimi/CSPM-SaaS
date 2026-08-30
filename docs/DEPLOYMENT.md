@@ -26,13 +26,19 @@ Node installed on your machine.
 1. **Create a project** at [supabase.com](https://supabase.com) → New Project.
    Pick a strong database password and save it — you'll need it below.
 
-2. **Create the app's database role.** Supabase already provides
-   `authenticated`, `anon`, and `service_role`; this project only needs its own
-   login role on top of those (`app/models/base.py`'s whole RLS strategy
-   depends on the API connecting as a non-owner). Open **SQL Editor** in the
-   Supabase dashboard, paste the contents of
+2. **Create the app's database roles.** Supabase already provides
+   `authenticated`, `anon`, and `service_role`; this project needs two login
+   roles on top of those, neither of which owns any table (`app/models/base.py`'s
+   whole RLS strategy depends on connecting as a non-owner). Open **SQL Editor**
+   in the Supabase dashboard, paste the contents of
    [`infrastructure/supabase/roles.sql`](../infrastructure/supabase/roles.sql),
-   **change the password on the `CREATE ROLE` line first**, and run it.
+   **change both placeholder passwords first**, and run it.
+
+   - `cloudguard_app` — every API request. Resolves tenancy through the
+     signed-in user's membership.
+   - `cloudguard_worker` — the Celery worker's scan work. A background scan has
+     no signed-in user, so it declares the organization it is acting for and
+     PostgreSQL holds it to that.
 
 3. **Get your connection strings.** Project Settings → Database → Connection
    string, and choose **Session pooler**.
@@ -53,7 +59,21 @@ Node installed on your machine.
 
    # App connection — every request. RLS-constrained, owns nothing.
    DATABASE_URL=postgresql+asyncpg://cloudguard_app.<project-ref>:<the-password-you-set-in-step-2>@aws-0-<region>.pooler.supabase.com:5432/postgres
+
+   # Worker connection — the Celery worker's scan work. Also RLS-constrained,
+   # by a different rule: a background scan has no signed-in user, so it
+   # declares the organization it is acting for and PostgreSQL holds it to
+   # that. Worker service only; the API has no use for it.
+   DATABASE_WORKER_URL=postgresql+asyncpg://cloudguard_worker.<project-ref>:<the-other-password-you-set-in-step-2>@aws-0-<region>.pooler.supabase.com:5432/postgres
    ```
+
+   > `DATABASE_WORKER_URL` is **optional**. Leave it unset and the worker uses
+   > `DATABASE_OWNER_URL`, which is what it did before this role existed — row
+   > level security does not constrain the owner at all, so the scan pipeline's
+   > own `organization_id` filters are then the whole of the tenant boundary.
+   > They are correct, and they are code rather than a mechanism. The worker
+   > logs which of the two it is running under on its first task, so you never
+   > have to guess.
 
    Copy the host and region from the Session pooler string Supabase shows you,
    and remember to change `postgresql://` to `postgresql+asyncpg://`.
@@ -210,6 +230,9 @@ Node installed on your machine.
    DATABASE_URL=postgresql+asyncpg://cloudguard_app:<password>@db.<ref>.supabase.co:5432/postgres
    DATABASE_OWNER_URL=postgresql+asyncpg://postgres:<db-password>@db.<ref>.supabase.co:5432/postgres
 
+   # Worker service only, and optional — see step 1.3.
+   DATABASE_WORKER_URL=postgresql+asyncpg://cloudguard_worker:<password>@db.<ref>.supabase.co:5432/postgres
+
    REDIS_URL=${{Redis.REDIS_URL}}
 
    CORS_ORIGINS=https://<your-vercel-domain>
@@ -350,7 +373,8 @@ That is an IPv6 address. Supabase's **direct** connection hostname
 (`db.<ref>.supabase.co`) is IPv6-only on current projects, and Railway cannot
 route IPv6, so the connection never leaves the container.
 
-Switch both `DATABASE_URL` and `DATABASE_OWNER_URL` to the **Session pooler**
+Switch every one of `DATABASE_URL`, `DATABASE_OWNER_URL` and (if set)
+`DATABASE_WORKER_URL` to the **Session pooler**
 (step 1.3): host `aws-0-<region>.pooler.supabase.com`, port **5432**, username
 `<user>.<project-ref>`. Port 6543 is the Transaction pooler and will break
 asyncpg's prepared statements — do not use it.

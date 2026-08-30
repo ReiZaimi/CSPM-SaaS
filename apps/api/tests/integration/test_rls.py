@@ -9,12 +9,14 @@ independently of it (SECURITY.md section 2).
 """
 
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
-from app.core.db import rls_session
+from app.core.config import settings
+from app.core.db import rls_session, scan_session, service_session
 from tests.integration.conftest import create_org_as
 
 pytestmark = pytest.mark.integration
@@ -371,3 +373,126 @@ class TestEvidenceBlobIsolation:
             async with rls_session(USER_A) as session:
                 await self._seed(session, org_b, "b" * 64)
         assert "row-level security" in str(exc.value).lower()
+
+
+@asynccontextmanager
+async def worker_engine_session():
+    """A worker connection that declares no organization.
+
+    Deliberately not exported from ``app.core.db``: the application has no use
+    for one, and offering it would be offering the mistake this test exists to
+    prove is harmless.
+    """
+    from app.core.db import _worker_session_factory
+
+    session = _worker_session_factory()()
+    try:
+        async with session.begin():
+            yield session
+    finally:
+        await session.close()
+
+
+class TestWorkerTenancy:
+    """The worker's isolation, enforced by PostgreSQL rather than by review.
+
+    The API is tenant-isolated twice over: the service layer derives the
+    organization from a verified JWT, and RLS re-checks it because requests
+    connect as a role that owns nothing. The worker had only the first half --
+    it connected as the table owner, so every ``organization_id`` filter in the
+    scan pipeline was the whole of the boundary.
+
+    These run against ``cloudguard_worker``, whose policy arm trusts the
+    organization a scan declares. Running them on the owner connection would
+    pass while proving nothing, which is the same trap the rest of this file
+    describes.
+    """
+
+    async def _seed(self, org_id: uuid.UUID) -> uuid.UUID:
+        async with service_session() as session:
+            scan_id = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO scans (id, organization_id, status) "
+                    "VALUES (:sid, :org, 'COMPLETED')"
+                ),
+                {"sid": scan_id, "org": org_id},
+            )
+            await session.commit()
+        return scan_id
+
+    async def test_a_scan_session_sees_only_its_own_organization(
+        self, two_orgs
+    ) -> None:
+        org_a, org_b = two_orgs
+        mine = await self._seed(org_a)
+        theirs = await self._seed(org_b)
+
+        async with scan_session(org_a) as session:
+            visible = set(
+                (await session.execute(text("SELECT id FROM scans"))).scalars().all()
+            )
+
+        assert mine in visible
+        assert theirs not in visible, "a scan session reached another tenant's rows"
+
+    async def test_a_scan_session_cannot_write_into_another_organization(
+        self, two_orgs
+    ) -> None:
+        """The WITH CHECK half. A pipeline bug that carried the wrong
+        organization onto a row is refused by the database rather than
+        written."""
+        org_a, org_b = two_orgs
+        if not settings.worker_is_constrained:
+            pytest.skip("worker role not configured; nothing below the code checks")
+
+        with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+            async with scan_session(org_a) as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO scans (id, organization_id, status) "
+                        "VALUES (:sid, :org, 'QUEUED')"
+                    ),
+                    {"sid": uuid.uuid4(), "org": org_b},
+                )
+        assert "row-level security" in str(exc.value).lower()
+
+    async def test_a_session_that_declares_nothing_sees_nothing(self) -> None:
+        """Failing closed is the only acceptable direction for this mistake.
+
+        ``app.current_org()`` reads as NULL when unset, and ``NULL =
+        organization_id`` is NULL rather than true -- so a worker session that
+        forgot to declare its organization reads an empty database instead of
+        every tenant's.
+        """
+        if not settings.worker_is_constrained:
+            pytest.skip("worker role not configured; the owner connection sees all")
+
+        async with worker_engine_session() as session:
+            rows = (
+                await session.execute(text("SELECT count(*) FROM scans"))
+            ).scalar_one()
+        assert rows == 0
+
+    async def test_the_worker_role_does_not_inherit_the_membership_arm(
+        self, two_orgs
+    ) -> None:
+        """The two roles resolve tenancy differently on purpose.
+
+        Granting ``authenticated`` to the worker would give it the
+        membership-based arm as well, and a scan running as a user who happens
+        to belong to several organizations would quietly see all of them.
+        """
+        if not settings.worker_is_constrained:
+            pytest.skip("worker role not configured")
+
+        async with service_session() as session:
+            inherited = (
+                await session.execute(
+                    text(
+                        "SELECT pg_has_role('cloudguard_worker', 'authenticated', "
+                        "'MEMBER')"
+                    )
+                )
+            ).scalar_one()
+        assert inherited is False
