@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import Level, RiskStatus
+from app.core.enums import Level, RiskKind, RiskStatus
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -19,6 +19,17 @@ class Risk(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     """
 
     __tablename__ = "risks"
+
+    kind: Mapped[RiskKind] = mapped_column(
+        StrEnumType(RiskKind, 16), nullable=False, default=RiskKind.FINDING
+    )
+    # The route, hop by hop, for a scenario risk. Empty for a finding risk,
+    # which is about one asset and has no route to describe.
+    path: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # What makes a scenario the same scenario between scans. A finding risk is
+    # identified by its finding; a path has no finding of its own, so it is
+    # identified by where it starts and ends.
+    scenario_key: Mapped[str | None] = mapped_column(String(2100))
 
     title: Mapped[str] = mapped_column(String(400), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")

@@ -91,6 +91,76 @@ class RiskScorer:
                 return level
         return Level.CRITICAL if score > 0 else Level.LOW
 
+    def scenario_score(
+        self,
+        member_scores: list[float],
+        *,
+        hops: int,
+        entry_exposure: Level,
+        target_sensitivity: Level,
+    ) -> ScoredRisk:
+        """What a route is worth, given what is already known about its parts.
+
+        Built on top of the members rather than beside them. The worst finding
+        on the path is the floor: a scenario cannot be less serious than the
+        most serious thing in it, and a formula that could would let a route
+        through a critical misconfiguration rank below that misconfiguration
+        alone.
+
+        The amplifier is what the *combination* adds, and it is bounded and
+        mostly about length. That bound is deliberate. An unbounded structural
+        term would let a long chain of ordinary facts outrank a genuinely
+        critical finding, which is how a risk score stops meaning anything --
+        and the members are the evidence here, while this is only the
+        observation that they join up.
+
+        Deliberately no probability. Calibrating one needs breach outcomes that
+        will never exist here, and an uncalibrated probability is a weighted
+        sum wearing a costume (RISK_ENGINE.md, ARCHITECTURE_REVIEW.md section 9).
+        """
+        cfg = self.config
+        floor = max(member_scores) if member_scores else 0.0
+
+        # Shortness, then the two things that decide whether the ends are worth
+        # joining at all.
+        shortness = max(0.0, cfg.max_scenario_amplifier - (hops - 1) * cfg.scenario_hop_penalty)
+        ends = (
+            cfg.level_scores[entry_exposure] + cfg.level_scores[target_sensitivity]
+        ) / 10.0
+        amplifier = min(cfg.max_scenario_amplifier, shortness * ends)
+
+        uncapped = floor + amplifier
+        score = round(min(100.0, uncapped), 2)
+        inputs = RiskInputs(
+            severity=Severity.HIGH,
+            asset_criticality=Level.UNKNOWN,
+            data_sensitivity=target_sensitivity,
+            internet_exposure=entry_exposure,
+            exploitability=0,
+        )
+        return ScoredRisk(
+            score=score,
+            level=self.band(score),
+            business_impact=round(cfg.level_scores[target_sensitivity], 1),
+            breakdown={
+                # Every term named, so "why is this 91?" is answerable without
+                # rerunning anything -- and so the floor is visibly the members'
+                # rather than something this function decided.
+                "worst_member": round(floor, 2),
+                "amplifier": round(amplifier, 2),
+                "hops": hops,
+                "shortness": round(shortness, 2),
+                "ends": round(ends, 3),
+                "amplifier_cap": cfg.max_scenario_amplifier,
+                # Recorded so the ceiling explains itself. Without it a
+                # scenario that came to 101 and shows 100 leaves the terms
+                # visibly not adding up, which is worse than not showing them.
+                "uncapped": round(uncapped, 2),
+                "total": score,
+            },
+            inputs=inputs,
+        )
+
     def security_score(self, open_risk_levels: list[Level]) -> int:
         """Org-level posture, 0-100. Strict on purpose.
 

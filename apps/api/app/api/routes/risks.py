@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from app.core.deps import DbSession, Tenant
-from app.core.enums import Level, RiskStatus
+from app.core.enums import Level, RiskKind, RiskStatus
 from app.core.errors import NotFound, envelope
 from app.models.finding import Finding
 from app.models.risk import Risk, RiskFinding
@@ -19,6 +19,7 @@ async def list_risks(
     tenant: Tenant,
     risk_level: Level | None = None,
     risk_status: RiskStatus | None = Query(default=None, alias="status"),
+    kind: RiskKind | None = None,
     limit: int = Query(default=100, le=500),
     offset: int = 0,
 ) -> dict:
@@ -27,6 +28,12 @@ async def list_risks(
         stmt = stmt.where(Risk.risk_level == risk_level)
     if risk_status:
         stmt = stmt.where(Risk.status == risk_status)
+    # Unfiltered by default, so a scenario ranks against the findings it groups
+    # rather than hiding on a page of its own. That is the whole point of
+    # putting it in this table: the combination outranking its parts is only
+    # visible where they are listed together.
+    if kind:
+        stmt = stmt.where(Risk.kind == kind)
 
     total = (
         await session.execute(select(func.count()).select_from(stmt.subquery()))

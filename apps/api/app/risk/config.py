@@ -82,6 +82,19 @@ class RiskEngineConfig:
         }
     )
 
+    # How much a scenario may add on top of its worst member, and what earns
+    # it. Bounded so a path can never dominate the score on structure alone:
+    # the members are the evidence, and this is the fact that they compose.
+    #
+    # Shortness is the dominant term because it is the honest one. A two-hop
+    # route from an exposed host to sensitive data is both likelier to be
+    # walked and cheaper to describe than a five-hop one, and every hop is
+    # another thing that has to hold for the route to be real.
+    max_scenario_amplifier: float = 25.0
+    # Subtracted per hop beyond the first, so a long chain converges on adding
+    # nothing rather than on adding a lot slowly.
+    scenario_hop_penalty: float = 6.0
+
     def __post_init__(self) -> None:
         total = self.weights.total()
         if abs(total - 1.0) > 1e-9:

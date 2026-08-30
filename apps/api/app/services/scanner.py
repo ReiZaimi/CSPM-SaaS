@@ -46,6 +46,7 @@ from app.core.enums import (
     FindingStatus,
     Level,
     RelationshipType,
+    RiskKind,
     RiskStatus,
     ScanStatus,
     ScanStepKind,
@@ -55,6 +56,7 @@ from app.core.enums import (
 )
 from app.core.logging import get_logger
 from app.domain.resource import CloudResource
+from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
@@ -1106,6 +1108,11 @@ class ScanPipeline:
                 account_ids=account_ids,
                 connection_id=connection_id,
             )
+            # After the findings exist, because a scenario is built out of
+            # them: the worst member is the floor a route is scored from, and
+            # a route assembled before its members would have nothing to stand
+            # on.
+            await self._correlate_paths(session, org_id, merged, id_map)
         else:
             # What today's rules would have raised against that capture,
             # reported as a number without being written down as fact --
@@ -1971,6 +1978,192 @@ class ScanPipeline:
             risk.resolved_at = None
 
         return risk
+
+    # ------------------------------------------------------------ correlation
+    async def _correlate_paths(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        merged: NormalizedState,
+        id_map: dict[str, UUID],
+    ) -> None:
+        """Turn each route through this environment into one risk.
+
+        Five findings across a jump box, an identity and a storage account rank
+        by severity and get worked top-down, which is the right order for "what
+        is wrong" and the wrong one for "what is wrong together". The same five
+        as a route rank by how few hops separate the internet from customer
+        data, and name the one change that severs it.
+
+        **Only where the route has at least one failing check on it.** A path
+        with nothing misconfigured along it is architecture rather than a
+        mistake, and minting a risk for it would mean inventing a severity for
+        something no rule objected to -- the made-up number this engine exists
+        to avoid.
+
+        Built from this scan's own normalized state rather than from the
+        database, so the route and the findings it groups describe one reading
+        of one environment.
+        """
+        graph = AssetGraph.build(merged.resources, merged.relationships)
+        paths = graph.attack_paths()
+
+        existing = {
+            risk.scenario_key: risk
+            for risk in (
+                await session.execute(
+                    select(Risk).where(
+                        Risk.organization_id == org_id,
+                        Risk.kind == RiskKind.ATTACK_PATH,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if risk.scenario_key
+        }
+
+        open_findings = {
+            (finding.resource_id): finding
+            for finding in (
+                await session.execute(
+                    select(Finding).where(
+                        Finding.organization_id == org_id,
+                        Finding.status.in_(
+                            [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if finding.resource_id is not None
+        }
+
+        seen: set[str] = set()
+        for path in paths:
+            key = f"{path.entry.provider_resource_id}->{path.target.provider_resource_id}"
+            members = self._members_on(path, open_findings, id_map)
+            if not members:
+                # Nothing on this route is misconfigured. Real reach, and not a
+                # finding -- it stays on the attack-paths page and creates no
+                # risk here.
+                continue
+
+            seen.add(key)
+            scored = default_scorer.scenario_score(
+                [float(m.risk_score or 0) for m in members],
+                hops=path.hops,
+                entry_exposure=path.entry.public_exposure,
+                target_sensitivity=path.target.data_sensitivity,
+            )
+            risk = existing.get(key)
+            if risk is None:
+                risk = Risk(
+                    organization_id=org_id,
+                    kind=RiskKind.ATTACK_PATH,
+                    scenario_key=key,
+                )
+                session.add(risk)
+
+            step = path.cheapest_break()
+            risk.title = f"{path.entry.name} can reach {path.target.name}"
+            risk.description = (
+                f"{path.entry.name} is reachable from the internet and, in "
+                f"{path.hops} steps, reaches {path.target.name}. "
+                + (f"Severing it: {step.describe()}." if step else "")
+            )
+            risk.path = [
+                {
+                    "source": s.source.name,
+                    "source_id": s.source.provider_resource_id,
+                    "relationship": s.relationship.value,
+                    "target": s.target.name,
+                    "target_id": s.target.provider_resource_id,
+                    "description": s.describe(),
+                }
+                for s in path.steps
+            ]
+            risk.risk_score = scored.score
+            risk.risk_level = scored.level
+            risk.severity = Severity.HIGH.value
+            risk.asset_criticality = path.target.criticality
+            risk.data_sensitivity = path.target.data_sensitivity
+            risk.internet_exposure = path.entry.public_exposure
+            risk.exploitability = 0
+            risk.business_impact = scored.business_impact
+            risk.score_breakdown = scored.breakdown
+            risk.status = RiskStatus.OPEN
+            risk.resolved_at = None
+
+            await session.flush()
+            await self._link_members(session, org_id, risk, members)
+
+        # Routes that are gone. Resolved rather than deleted: a scenario that
+        # was closed is the record of a fix, exactly as a resolved finding is,
+        # and deleting it would erase the evidence that the remediation worked.
+        now = datetime.now(UTC)
+        for key, risk in existing.items():
+            if key not in seen and risk.status != RiskStatus.RESOLVED:
+                risk.status = RiskStatus.RESOLVED
+                risk.resolved_at = now
+
+        await session.commit()
+
+    def _members_on(
+        self,
+        path: "Path",
+        open_findings: dict[UUID, Finding],
+        id_map: dict[str, UUID],
+    ) -> list[Finding]:
+        """The open findings sitting on any asset this route passes through.
+
+        Every node, not just the ends. A route is only as real as the weakest
+        thing along it, and the misconfiguration that makes it walkable is
+        frequently in the middle -- the over-broad role assignment rather than
+        the exposed host or the sensitive store.
+        """
+        node_ids = {path.entry.provider_resource_id, path.target.provider_resource_id}
+        for step in path.steps:
+            node_ids.add(step.source.provider_resource_id)
+            node_ids.add(step.target.provider_resource_id)
+
+        members: list[Finding] = []
+        for provider_id in node_ids:
+            resource_uuid = id_map.get(provider_id)
+            finding = open_findings.get(resource_uuid) if resource_uuid else None
+            if finding is not None:
+                members.append(finding)
+        return members
+
+    async def _link_members(
+        self, session: AsyncSession, org_id: UUID, risk: Risk, members: list[Finding]
+    ) -> None:
+        """Join a scenario to the findings it is made of.
+
+        The junction has always allowed this -- ``RiskFinding`` was built as a
+        junction precisely so several findings could become one risk later
+        without a migration. This is that later.
+        """
+        linked = {
+            link.finding_id
+            for link in (
+                await session.execute(
+                    select(RiskFinding).where(RiskFinding.risk_id == risk.id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+        for member in members:
+            if member.id not in linked:
+                session.add(
+                    RiskFinding(
+                        risk_id=risk.id,
+                        finding_id=member.id,
+                        organization_id=org_id,
+                    )
+                )
 
     # ----------------------------------------------------------- verification
     async def _verify_remediations(

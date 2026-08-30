@@ -201,6 +201,19 @@ class FindingStatus(StrEnum):
         return self in {FindingStatus.OPEN, FindingStatus.IN_PROGRESS}
 
 
+class RiskKind(StrEnum):
+    """What a risk is a risk *about*.
+
+    A finding risk is one observation, scored for the asset it was made on. A
+    scenario risk is several of them seen as one thing -- a route from somewhere
+    an attacker could start to something worth taking -- and it ranks above any
+    of its parts because the combination is worse than the sum.
+    """
+
+    FINDING = "FINDING"
+    ATTACK_PATH = "ATTACK_PATH"
+
+
 class RiskStatus(StrEnum):
     OPEN = "OPEN"
     IN_PROGRESS = "IN_PROGRESS"

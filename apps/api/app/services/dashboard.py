@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import FindingStatus, Level, ScanStatus
+from app.core.enums import FindingStatus, Level, RiskKind, ScanStatus
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
@@ -24,6 +24,12 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
     open_statuses = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
     # Risk bands of open findings drive the score.
+    #
+    # Finding risks only. A scenario risk groups findings that are already
+    # counted here, and this query joins through the junction -- so a scenario
+    # with four members would deduct four times, and even once would charge the
+    # customer twice for one problem. A scenario re-ranks and explains; it does
+    # not add a fault to the tally.
     band_rows = (
         await session.execute(
             select(Risk.risk_level, func.count())
@@ -31,6 +37,7 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
             .join(Finding, Finding.id == RiskFinding.finding_id)
             .where(
                 Risk.organization_id == organization_id,
+                Risk.kind == RiskKind.FINDING,
                 Finding.status.in_(open_statuses),
             )
             .group_by(Risk.risk_level)

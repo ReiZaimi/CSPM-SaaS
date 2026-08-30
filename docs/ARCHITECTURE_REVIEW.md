@@ -828,9 +828,35 @@ on the reaper.
     one that matters: no sensitive targets means CloudGuard does not know what
     would cost the customer anything, which is a gap in what it was told rather
     than a clean environment.
-15. Correlation, starting with three hand-written scenario templates:
-    internet-to-data, privilege escalation chain, unmonitored critical asset.
-16. Scenario risk and risk history. (§9)
+15. **Done for the one template the graph can support** — correlation. A route
+    from an exposed asset to a sensitive one becomes a single risk grouping the
+    open findings along it, in the `risks` table beside the findings it groups.
+    No new table: `risk_findings` was written as a junction precisely so several
+    findings could become one risk later, and its comment said that later would
+    be a change in the pipeline rather than a migration. It was.
+
+    Two rules kept it honest. A route with **no failing check on it** creates no
+    risk — that is architecture rather than a mistake, and minting one would
+    mean inventing a severity no rule assigned. And a route that closes is
+    **resolved, not deleted**, exactly as a fixed finding is.
+
+    The other two templates in this item — privilege escalation chains,
+    unmonitored critical assets — need edges the graph does not yet have.
+
+16. **Done for scenario risk; history still open.** `scenario_score` floors at
+    the worst member and adds a bounded amplifier that is mostly about
+    shortness. The floor means a scenario can never rank below its own
+    evidence; the bound means a long chain of ordinary facts can never outrank
+    a genuinely critical finding. Every term is in the persisted breakdown,
+    including the uncapped total, so a score of 100 explains why it is not 101.
+
+    **Scenario risks are excluded from the security score**, because the score
+    joins risks through findings — a scenario with four members would deduct
+    four times, and even once would charge the customer twice for one problem.
+    A scenario re-ranks and explains; it does not add a fault to the tally.
+
+    Risk history — score over time, "did risk increase" — is still §2.10 and
+    still unbuilt.
 
 ### Phase 4 — operations and proof
 

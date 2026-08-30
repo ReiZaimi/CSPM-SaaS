@@ -2246,3 +2246,127 @@ class TestAssetGraph:
             graph = await graph_service.load_graph(session, org_id)
 
         assert graph.attack_paths() == []
+
+
+class TestScenarioRisk:
+    """A route through the environment, as a risk rather than a page.
+
+    The graph could say an internet-facing host reaches customer data, and
+    nothing else knew: the risk list still ranked the five underlying findings
+    separately. A scenario puts the combination where the parts already are.
+    """
+
+    async def _risks(self, org_id: uuid.UUID, kind: str) -> list:
+        return await fetch(
+            "SELECT id, title, risk_score, status, path FROM risks "
+            "WHERE organization_id = :o AND kind = :k ORDER BY risk_score DESC",
+            {"o": org_id, "k": kind},
+        )
+
+    async def test_a_route_becomes_one_risk(self, replay, connected_account) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        scenarios = await self._risks(org_id, "ATTACK_PATH")
+        assert scenarios, "the recorded environment contains a reachable route"
+
+    async def test_a_scenario_outranks_the_findings_it_groups(
+        self, replay, connected_account
+    ) -> None:
+        """The whole reason it exists. If the combination scored below its
+        parts it would be buried beneath its own evidence."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        scenarios = await self._risks(org_id, "ATTACK_PATH")
+        members = await fetch(
+            "SELECT max(r.risk_score) FROM risks r "
+            "JOIN risk_findings rf ON rf.risk_id = r.id "
+            "WHERE r.organization_id = :o AND r.kind = 'FINDING'",
+            {"o": org_id},
+        )
+
+        assert float(scenarios[0][2]) >= float(members[0][0])
+
+    async def test_a_scenario_carries_the_route_that_made_it(
+        self, replay, connected_account
+    ) -> None:
+        """"This is a risk" is an alarm. The hops are what somebody acts on."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        scenarios = await self._risks(org_id, "ATTACK_PATH")
+        route = scenarios[0][4]
+        assert route, "a scenario without its route cannot explain itself"
+        assert all("description" in hop for hop in route)
+
+    async def test_a_scenario_is_linked_to_its_member_findings(
+        self, replay, connected_account
+    ) -> None:
+        """Through the junction that was built for exactly this, and has held
+        one finding per risk since it was written."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT count(*) FROM risk_findings rf "
+            "JOIN risks r ON r.id = rf.risk_id "
+            "WHERE r.organization_id = :o AND r.kind = 'ATTACK_PATH'",
+            {"o": org_id},
+        )
+        assert rows[0][0] > 0
+
+    async def test_a_scenario_does_not_charge_the_score_twice(
+        self, replay, connected_account
+    ) -> None:
+        """The score joins risks to findings, so a scenario with four members
+        would deduct four times — and even once would charge the customer again
+        for problems they have already been charged for through the parts."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            before = await build_dashboard(session, org_id)
+
+            # Double the scenario's severity. The score must not move: it is a
+            # view of findings that are already counted.
+            await session.execute(
+                text(
+                    "UPDATE risks SET risk_score = 100, risk_level = 'CRITICAL' "
+                    "WHERE organization_id = :o AND kind = 'ATTACK_PATH'"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            after = await build_dashboard(session, org_id)
+
+        assert before["security_score"] == after["security_score"]
+
+    async def test_a_route_that_closes_is_resolved_not_deleted(
+        self, replay, connected_account
+    ) -> None:
+        """A closed scenario is the record of a fix, exactly as a resolved
+        finding is. Deleting it would erase the evidence the loop worked."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        assert await self._risks(org_id, "ATTACK_PATH")
+
+        # Sever the route at its first hop, which is what the product tells the
+        # customer to do.
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "DELETE FROM resource_relationships "
+                    "WHERE organization_id = :o AND relationship_type = 'has_identity'"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+
+        await run_scan(org_id, account_id)
+
+        scenarios = await self._risks(org_id, "ATTACK_PATH")
+        assert scenarios, "the record of the closed route survives"
+        assert all(row[3] == "RESOLVED" for row in scenarios)
