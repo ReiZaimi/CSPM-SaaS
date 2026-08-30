@@ -1917,3 +1917,43 @@ class TestOrchestration:
             scan = await session.get(Scan, scan_id)
         assert scan.status == ScanStatus.PARTIAL
         assert "storage" in scan.collection_errors
+
+    async def test_one_subscription_names_its_gaps_plainly(
+        self, replay, connected_account
+    ) -> None:
+        """No qualifier where there is nothing to disambiguate.
+
+        The regression: the qualifier was applied whenever a scan held more than
+        one *capture*, and a scan now stores a directory capture beside the
+        subscription's. A customer with a single subscription saw
+        "00000000-0000-0000-0000-000000000001: storage" on the one screen whose
+        job is to be readable.
+        """
+        org_id, account_id = connected_account
+        replay["payload"]["errors"]["storage"] = "Azure API timeout"
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        assert "storage" in scan.collection_errors
+        assert not any(":" in key for key in scan.collection_errors), (
+            f"a single-subscription scan qualified its gaps: {scan.collection_errors}"
+        )
+
+    async def test_several_subscriptions_still_name_theirs(
+        self, replay, connected_tenant
+    ) -> None:
+        """The other half of the same rule. Two subscriptions can both fail to
+        read storage, and "storage: timeout" twice over tells a customer nothing
+        about which one to go and look at."""
+        org_id, connection_id = connected_tenant
+        replay["payload"]["errors"]["storage"] = "Azure API timeout"
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+
+        qualified = [key for key in scan.collection_errors if key.endswith(": storage")]
+        assert len(qualified) == 2, scan.collection_errors
+        assert {"Subscription 1: storage", "Subscription 2: storage"} == set(qualified)

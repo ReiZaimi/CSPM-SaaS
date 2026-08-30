@@ -695,7 +695,15 @@ class ScanPipeline:
     def _scoped_key(
         self, account: CloudAccount, category: str, account_count: int
     ) -> str:
-        """Category name, qualified by subscription when there is more than one."""
+        """Category name, qualified by subscription when there is more than one.
+
+        ``account_count`` counts *subscriptions*, not captures. A scan now
+        stores a directory capture alongside them, and counting captures made a
+        single-subscription scan look like two -- so its errors were qualified
+        with a subscription id nobody needed, turning a plain "storage" into
+        "00000000-0000-0000-0000-000000000001: storage" on the one screen whose
+        job is to be readable.
+        """
         if account_count == 1:
             return category
         return f"{account.display_name or account.subscription_id}: {category}"
@@ -875,7 +883,7 @@ class ScanPipeline:
             # nothing about which one to look at.
             for category, reason in snapshot.errors.items():
                 state.errors[
-                    self._scoped_key(account, category, len(stored))
+                    self._scoped_key(account, category, len(accounts))
                 ] = reason
             state.merged.collection_errors.update(account_state.collection_errors)
 
@@ -1038,9 +1046,13 @@ class ScanPipeline:
         await session.commit()
 
         log.info(
-            "scan.completed",
+            "scan.evaluated",
             scan_id=str(scan.id),
-            status=scan.status.value,
+            # Not the scan's status. A step-driven scan is still running when
+            # this line is written -- the orchestrator settles it afterwards --
+            # so reporting ``scan.status`` here printed CALCULATING_RISK beside
+            # the word "completed" and invited exactly the wrong conclusion.
+            finalized=finalize,
             subscriptions=len(account_state),
             resources=scan.resource_count,
             findings=finding_count,
@@ -1341,7 +1353,10 @@ class ScanPipeline:
                 "scan.role_behind",
                 connection_id=str(connection.id),
                 deployed=connection.role_version,
-                categories=sorted(behind),
+                # ``.value``, because the keys are a StrEnum now and a log line
+                # reading "[<EvidenceCategory.RESOURCES: 'resources'>]" is
+                # noise where a category name was wanted.
+                categories=sorted(category.value for category in behind),
             )
 
     # ------------------------------------------------------------------ state
