@@ -28,10 +28,11 @@ the scan record it was handed — never from client input.
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -46,6 +47,8 @@ from app.core.enums import (
     RelationshipType,
     RiskStatus,
     ScanStatus,
+    ScanStepKind,
+    ScanStepStatus,
     Severity,
     TaskOutcome,
 )
@@ -63,10 +66,12 @@ from app.models.scan import (
     Scan,
     ScanEvaluationGap,
     ScanRuleResult,
+    ScanStep,
 )
 from app.risk.scorer import RiskInputs, ScoredRisk, default_scorer
 from app.rules.base import RuleContext, SecurityRule
 from app.rules.engine import EvaluationReport, RuleEngine
+from app.services import orchestrator
 from app.services.cloud_connections import degraded_categories
 
 log = get_logger(__name__)
@@ -84,81 +89,78 @@ def _digest(payload: dict) -> tuple[str, int]:
     return hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
-class _ScanProgress:
-    """How far along collection is, across every phase of one scan.
+class ScanStepError(Exception):
+    """A step could not do its work, and said why in terms a customer can read.
 
-    Two things it does that the closure it replaced could not.
-
-    It writes through its **own** session. The old reporter committed on the
-    pipeline's session, mid-pipeline: a commit there is not merely a wasted
-    round trip, it ends the transaction the pipeline is still building work in.
-    A short UPDATE of two columns on a separate connection says the same thing
-    and touches nothing else.
-
-    And it accumulates across phases rather than assuming they are identical.
-    Progress used to be ``index * plan_size + done``, which reads every phase as
-    the same size as the one currently reporting -- true while every phase was
-    one subscription running one fixed plan, and false the moment a
-    tenant-scoped directory phase runs a plan of its own. The total grows as
-    phases announce their size, so it can be short early but is never wrong
-    about what has finished.
+    Distinguished from an unexpected exception because the two deserve
+    different treatment: this is a condition the pipeline anticipated, so its
+    message is the one shown, and there is nothing to retry when the reason is
+    "the subscription is gone".
     """
 
-    def __init__(self, scan_id: UUID, account_count: int) -> None:
-        self.scan_id = scan_id
-        self.account_count = account_count
-        self._finished = 0  # units completed in phases that have ended
-        self._directory_size = 0
-        self._account_size = 0
+    retryable: bool = False
 
-    def directory_reporter(self) -> Callable[[int, int], Awaitable[None]]:
-        return self._reporter(is_directory=True)
 
-    def account_reporter(self) -> Callable[[int, int], Awaitable[None]]:
-        return self._reporter(is_directory=False)
+class ScanScopeEmpty(ScanStepError):
+    """Nothing in scope. Retrying resolves the same empty set."""
 
-    def _reporter(self, *, is_directory: bool) -> Callable[[int, int], Awaitable[None]]:
-        # Captured when the phase starts, so the next phase resumes from where
-        # this one left off instead of restarting the count at each
-        # subscription. The executor's last callback carries done == plan_size,
-        # which is what leaves ``_finished`` at the phase's full size.
-        base = self._finished
 
-        async def report(done: int, plan_size: int) -> None:
-            if is_directory:
-                self._directory_size = plan_size
-            else:
-                self._account_size = plan_size
-            self._finished = base + done
-            await self._write(self._finished, self._total())
+class CollectionUnavailable(ScanStepError):
+    """The scope this step was created for is no longer reachable."""
 
-        return report
 
-    def _total(self) -> int:
-        return self._directory_size + self.account_count * self._account_size
+class NothingToAnalyze(ScanStepError):
+    """Every collection failed, so there is nothing to interpret."""
 
-    async def _write(self, done: int, total: int) -> None:
+
+@dataclass
+class ReconstructedScan:
+    """A scan's captures, read back and normalized.
+
+    What the single-task pipeline used to carry in memory between collection
+    and evaluation. Reading it back from the captures is not a workaround for
+    having split the two apart: everything after a capture is already a pure
+    function of it -- the property replay depends on -- so this is the same
+    operation the pipeline always performed.
+    """
+
+    merged: NormalizedState = field(default_factory=NormalizedState)
+    account_state: list[tuple[CloudAccount, NormalizedState]] = field(
+        default_factory=list
+    )
+    directory: tuple[CloudConnection, NormalizedState] | None = None
+    errors: dict[str, str] = field(default_factory=dict)
+    # Whether these captures are still CloudGuard's current picture. False when
+    # any of them has been superseded, which is what forbids resolving a finding
+    # from them.
+    is_current: bool = True
+    observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+class _StepHeartbeat:
+    """The progress callback a step hands to collection.
+
+    Renews the step's lease rather than counting anything. Per-listing progress
+    was accumulated in one process, which could only ever describe the part of
+    a scan that process happened to run; the scan's progress is now derived
+    from its steps, which every worker can see. What is left for a callback to
+    do is the thing only the running worker knows -- that it is still alive.
+    """
+
+    def __init__(self, step_id: UUID) -> None:
+        self.step_id = step_id
+
+    async def __call__(self, done: int, total: int) -> None:
         try:
-            async with service_session() as progress_session:
-                await progress_session.execute(
-                    update(Scan)
-                    .where(Scan.id == self.scan_id)
-                    .values(
-                        progress_done=done,
-                        progress_total=total,
-                        # Progress is the cheapest available proof that this
-                        # worker is alive, so it carries the lease. A scan that
-                        # is still collecting keeps extending; one whose worker
-                        # died stops, and the reaper takes it.
-                        lease_until=datetime.now(UTC)
-                        + timedelta(seconds=Scan.LEASE_SECONDS),
-                    )
-                )
-                await progress_session.commit()
-        except Exception as exc:  # pragma: no cover - progress is never fatal
-            # A scan must not fail because a cosmetic counter could not be
-            # written. The bar stops moving; the scan keeps going.
-            log.warning("scan.progress_write_failed", scan_id=str(self.scan_id), error=str(exc))
+            async with service_session() as session:
+                await orchestrator.renew(session, self.step_id)
+        except Exception as exc:  # pragma: no cover - a heartbeat is never fatal
+            # Losing a heartbeat costs the step its lease eventually, which the
+            # reaper handles. Failing the step over it would turn a database
+            # blip into lost collection.
+            log.warning(
+                "scan.heartbeat_failed", step_id=str(self.step_id), error=str(exc)
+            )
 
 
 class ScanPipeline:
@@ -166,183 +168,299 @@ class ScanPipeline:
         self.scan_id = scan_id
         self.engine = RuleEngine()
 
-    async def run(self) -> None:
-        """Collect the customer's current state, then evaluate it.
+    # ------------------------------------------------------------------ steps
+    #
+    # A scan used to be this class's ``run`` method: resolve the scope, read
+    # every subscription in sequence, then interpret the lot, all inside one
+    # Celery task with no retries. The three methods below are that method cut
+    # at the seams it already had, so each becomes a durably recorded step that
+    # can be claimed, retried and settled on its own
+    # (``app/services/orchestrator.py``).
+    #
+    # The cut is not arbitrary. Collection writes captures and nothing else;
+    # everything after a capture is a pure function of it. That was already
+    # true -- it is what makes replay possible -- and it is what lets ANALYZE
+    # reconstruct from the database exactly what the old in-memory pipeline
+    # carried between its phases.
 
-        A scan covers whatever its scope resolves to: every in-scope
-        subscription under a connection, or the single subscription a targeted
-        rescan names. Each subscription is collected and stored separately --
-        the snapshot has to stay what Azure said -- and all of them are
-        evaluated together, so a rule sees the tenant rather than one slice of
-        it.
+    async def run_step(self, step_id: UUID) -> ScanStepStatus:
+        """Perform one claimed step and settle it. Returns how it went.
+
+        The dispatch lives here rather than in the Celery task so that the
+        thing under test and the thing in production are the same code. A test
+        that drove the steps its own way would be testing its own driver.
+
+        Which failures are retried is decided here too, and the distinction is
+        between conditions the pipeline anticipated and ones it did not. "That
+        subscription is gone" will be just as gone on the third attempt;
+        a throttled API or a killed worker will not.
         """
         async with service_session() as session:
-            scan = await session.get(Scan, self.scan_id)
+            step = await session.get(ScanStep, step_id)
+            if step is None:
+                log.error("scan.step_missing", step_id=str(step_id))
+                return ScanStepStatus.FAILED
+            kind = step.kind
+
+        try:
+            if kind == ScanStepKind.PLAN:
+                await self.plan()
+            elif kind == ScanStepKind.COLLECT:
+                await self.collect(step_id)
+            else:
+                await self.analyze()
+        except ScanStepError as exc:
+            return await self._settle(step_id, str(exc), retryable=exc.retryable)
+        except Exception as exc:
+            log.exception(
+                "scan.step_failed", scan_id=str(self.scan_id), step_id=str(step_id)
+            )
+            return await self._settle(step_id, str(exc), retryable=True)
+
+        return await self._settle(step_id, None, retryable=False)
+
+    async def _settle(
+        self, step_id: UUID, error: str | None, *, retryable: bool
+    ) -> ScanStepStatus:
+        async with service_session() as session:
+            step = await session.get(ScanStep, step_id)
+            if step is None:
+                return ScanStepStatus.FAILED
+            if error is None:
+                await orchestrator.finish(session, step, ScanStepStatus.SUCCEEDED)
+                return ScanStepStatus.SUCCEEDED
+            if not retryable:
+                await orchestrator.finish(
+                    session, step, ScanStepStatus.FAILED, error
+                )
+                return ScanStepStatus.FAILED
+            return await orchestrator.fail_or_retry(session, step, error)
+
+    async def plan(self) -> list[CloudAccount]:
+        """Resolve what this scan covers and create a step per scope.
+
+        Scope is resolved here rather than when the scan was queued, and that
+        is deliberate: a subscription discovered or excluded while the scan sat
+        in the queue should be picked up or left out accordingly, and a queue
+        that can be minutes deep makes that a real difference rather than a
+        theoretical one.
+        """
+        async with service_session() as session:
+            scan = await self._require_scan(session)
             if scan is None:
-                log.error("scan.missing", scan_id=str(self.scan_id))
-                return
+                return []
 
             accounts = await self._resolve_scope(session, scan)
             if not accounts:
-                await self._fail(
-                    session,
-                    scan,
+                raise ScanScopeEmpty(
                     "This scan has nothing in scope. Its subscriptions may have "
-                    "been removed, excluded from scanning, or never discovered.",
+                    "been removed, excluded from scanning, or never discovered."
                 )
+
+            connection = await self._resolve_connection(session, scan, accounts)
+            scan.started_at = scan.started_at or datetime.now(UTC)
+            await orchestrator.create_collect_steps(
+                session,
+                scan,
+                accounts,
+                # No connection means no tenant-level grant to read a directory
+                # through, so there is no step to create. ANALYZE records the
+                # resulting gap rather than inventing a step that could only
+                # fail.
+                directory=connection is not None and bool(connection.tenant_id),
+            )
+            await session.commit()
+            log.info(
+                "scan.planned",
+                scan_id=str(scan.id),
+                subscriptions=len(accounts),
+                directory=connection is not None,
+            )
+            return accounts
+
+    async def collect(self, step_id: UUID) -> None:
+        """Read one scope and store what came back. Interprets nothing.
+
+        Idempotent by demolition: a retried step deletes whatever the previous
+        attempt stored for this scope before storing again. The alternative is
+        an upsert across two tables and a blob store, and a retry that half
+        matched would be worse than one that starts clean -- a capture is
+        supposed to be what the provider said in one reading, not a merge of
+        two.
+        """
+        async with service_session() as session:
+            scan = await self._require_scan(session)
+            if scan is None:
+                return
+            step = await session.get(ScanStep, step_id)
+            if step is None:
+                log.error("scan.step_missing", step_id=str(step_id))
                 return
 
-            # Cancelled between being queued and being picked up. The worker
-            # may sit behind a backlog for minutes, which is exactly the window
-            # someone uses the cancel button in -- starting anyway would ignore
-            # them and write findings they asked not to collect.
-            if scan.status == ScanStatus.CANCELLED:
-                log.info("scan.cancelled_before_start", scan_id=str(self.scan_id))
-                return
+            observed_at = datetime.now(UTC)
+            connection = await self._resolve_connection(
+                session, scan, await self._resolve_scope(session, scan)
+            )
+            await self._discard_prior_attempt(session, scan, step.cloud_account_id)
 
-            scan.started_at = datetime.now(UTC)
-            org_id = scan.organization_id  # authoritative; never from a request
-
-            try:
-                # --- collect ------------------------------------------------
-                await self._set_status(session, scan, ScanStatus.DISCOVERING)
-                observed_at = datetime.now(UTC)
-                merged = NormalizedState()
-                account_state: list[tuple[CloudAccount, NormalizedState]] = []
-                errors: dict[str, str] = {}
-                connection = await self._resolve_connection(session, scan, accounts)
-                progress = _ScanProgress(scan.id, len(accounts))
-
-                # --- the tenant, once ---------------------------------------
-                # Before any subscription, and exactly once however many there
-                # are. The directory is the same directory from every one of
-                # them; reading it per subscription produced a duplicate set of
-                # user assets each time, and with them a duplicate finding per
-                # subscription for every administrator missing MFA.
-                directory = await self._collect_directory(
-                    session, scan, connection, progress, observed_at
-                )
-                identity_gap: str | None = None
-                if directory is not None:
-                    directory_state, directory_snapshot = directory
-                    # Unqualified, unlike a subscription's. A directory failure
-                    # happened once, to the tenant, and naming a subscription
-                    # beside it would invite someone to go and look at one.
-                    errors.update(directory_snapshot.errors)
-                    merged.resources.extend(directory_state.resources)
-                    merged.relationships.extend(directory_state.relationships)
-                elif connection is not None:
-                    identity_gap = (
-                        "The directory could not be read for this scan, so no "
-                        "identity check could reach a verdict."
+            if step.is_directory:
+                if connection is None or not connection.tenant_id:
+                    raise CollectionUnavailable(
+                        "This connection has no tenant to read a directory from."
                     )
-                else:
-                    # A subscription with no connection behind it predates
-                    # connections entirely. There is no tenant-level grant to
-                    # read the directory through, and saying so is the only
-                    # honest answer -- the identity rules degrade to UNKNOWN
-                    # rather than passing over a directory nobody looked at.
-                    identity_gap = (
-                        "This subscription is not attached to a cloud connection, "
-                        "so CloudGuard has no grant to read its tenant directory. "
-                        "Reconnect it from the connections page."
-                    )
-                if identity_gap is not None:
-                    errors[EvidenceCategory.IDENTITY.value] = identity_gap
-
-                # --- each subscription --------------------------------------
-                for account in accounts:
-                    connector = get_connector(
-                        account.provider,
-                        tenant_id=account.tenant_id,
-                        subscription_id=account.subscription_id,
-                    )
-                    snapshot = await connector.collect(progress.account_reporter())
-                    await self._explain_role_drift(session, account, snapshot)
-
-                    # Persisted before interpretation, always. One row per
-                    # subscription, so a tenant-wide scan can still be replayed
-                    # subscription by subscription.
-                    session.add(
-                        CloudSnapshot(
-                            organization_id=org_id,
-                            cloud_account_id=account.id,
-                            connection_id=account.connection_id,
-                            scan_id=scan.id,
-                            snapshot_version=snapshot.version,
-                            data=snapshot.to_json(),
-                        )
-                    )
-                    # Namespaced by subscription: two subscriptions can both
-                    # fail to read storage, and "storage: timeout" twice over
-                    # tells a customer nothing about which one to look at.
-                    for category, reason in snapshot.errors.items():
-                        errors[self._scoped_key(account, category, len(accounts))] = reason
-
-                    await self._record_evidence(
-                        session,
-                        org_id,
-                        scan,
-                        snapshot,
-                        observed_at=observed_at,
-                        account=account,
-                    )
-
-                    state = connector.normalize(snapshot)
-                    account_state.append((account, state))
-                    merged.resources.extend(state.resources)
-                    merged.relationships.extend(state.relationships)
-
-                scan.collection_errors = errors
-                # The rule engine keys degradation on the bare category, so it
-                # gets the unqualified names; the scan row keeps the detail.
-                merged.collection_errors = {
-                    category: reason
-                    for _account, state in account_state
-                    for category, reason in state.collection_errors.items()
-                }
-                if directory is not None:
-                    merged.collection_errors.update(directory[0].collection_errors)
-                elif identity_gap is not None:
-                    # Keyed per evidence key, because that is what the identity
-                    # rules declare. A category name here would match nothing
-                    # and every identity check would PASS over a directory
-                    # nobody read.
-                    for key in keys_in(EvidenceCategory.IDENTITY):
-                        merged.collection_errors[key.value] = identity_gap
-                await session.commit()
-
-                await self._evaluate(
+                await self._collect_directory(
                     session,
                     scan,
-                    account_state,
-                    merged,
-                    observed_at=observed_at,
-                    mutate_findings=True,
-                    degraded=bool(errors),
-                    directory=(
-                        (connection, directory[0])
-                        if directory is not None and connection is not None
-                        else None
-                    ),
+                    connection,
+                    _StepHeartbeat(step_id),
+                    observed_at,
+                    required=True,
+                )
+                await session.commit()
+                return
+
+            account = await session.get(CloudAccount, step.cloud_account_id)
+            if account is None:
+                raise CollectionUnavailable(
+                    "This subscription is no longer connected to CloudGuard."
                 )
 
-                for account in accounts:
-                    account.last_scan_at = scan.completed_at
-                await session.commit()
+            connector = get_connector(
+                account.provider,
+                tenant_id=account.tenant_id,
+                subscription_id=account.subscription_id,
+            )
+            snapshot = await connector.collect(_StepHeartbeat(step_id))
+            await self._explain_role_drift(session, account, snapshot)
 
-            except Exception as exc:
-                log.exception("scan.failed", scan_id=str(scan.id))
-                await session.rollback()
-                await self._fail(session, scan, str(exc))
+            # Persisted before interpretation, always. One row per subscription,
+            # so a tenant-wide scan can still be replayed subscription by
+            # subscription.
+            session.add(
+                CloudSnapshot(
+                    organization_id=scan.organization_id,
+                    cloud_account_id=account.id,
+                    connection_id=account.connection_id,
+                    scan_id=scan.id,
+                    snapshot_version=snapshot.version,
+                    data=snapshot.to_json(),
+                )
+            )
+            await self._record_evidence(
+                session,
+                scan.organization_id,
+                scan,
+                snapshot,
+                observed_at=observed_at,
+                account=account,
+            )
+            account.last_scan_at = observed_at
+            await session.commit()
+
+    async def analyze(self) -> None:
+        """Interpret every capture this scan stored.
+
+        Reconstructs from the database what the old single-task pipeline held
+        in memory between its phases. That is not a workaround: everything
+        after a capture is already a pure function of it, which is the property
+        replay depends on, so reading the captures back is the same operation
+        the pipeline was always performing -- now with the collection that
+        produced them separately durable.
+        """
+        async with service_session() as session:
+            scan = await self._require_scan(session)
+            if scan is None:
+                return
+
+            stored = await self._snapshots_of(session, scan.organization_id, scan.id)
+            if not stored:
+                raise NothingToAnalyze(
+                    "This scan stored no readings, so there is nothing to "
+                    "evaluate. Every subscription it covered failed to collect."
+                )
+
+            state = await self._reconstruct(session, scan, stored)
+            state.errors.update(await self._directory_gap(session, scan, state))
+            scan.collection_errors = state.errors
+            await session.commit()
+
+            await self._evaluate(
+                session,
+                scan,
+                state.account_state,
+                state.merged,
+                observed_at=state.observed_at,
+                mutate_findings=True,
+                degraded=bool(state.errors),
+                directory=state.directory,
+                # The orchestrator decides when a scan is finished and how,
+                # from the steps. A stage writing its own terminal status would
+                # be a second source of truth for it.
+                finalize=False,
+            )
+
+    async def _require_scan(self, session: AsyncSession) -> Scan | None:
+        """The scan, unless it has been cancelled or no longer exists.
+
+        Checked at every step rather than only at the start. A scan runs across
+        several steps and possibly several workers, and the cancel button is
+        used in exactly the window between two of them -- carrying on would
+        write findings somebody asked not to collect.
+        """
+        scan = await session.get(Scan, self.scan_id)
+        if scan is None:
+            log.error("scan.missing", scan_id=str(self.scan_id))
+            return None
+        if scan.status == ScanStatus.CANCELLED:
+            log.info("scan.cancelled_before_step", scan_id=str(self.scan_id))
+            return None
+        return scan
+
+    async def _discard_prior_attempt(
+        self, session: AsyncSession, scan: Scan, account_id: UUID | None
+    ) -> None:
+        """Clear what an earlier attempt at this scope stored.
+
+        A capture is unique on (scan, scope), so a retry that simply wrote again
+        would conflict; and a capture is supposed to be one reading rather than
+        a merge of two, so clearing is also the honest thing rather than merely
+        the convenient one. Evidence rows go with it, since they describe that
+        reading.
+        """
+        scope = (
+            CloudSnapshot.cloud_account_id == account_id
+            if account_id is not None
+            else CloudSnapshot.cloud_account_id.is_(None)
+        )
+        await session.execute(
+            delete(CloudSnapshot).where(
+                CloudSnapshot.organization_id == scan.organization_id,
+                CloudSnapshot.scan_id == scan.id,
+                scope,
+            )
+        )
+        evidence_scope = (
+            Evidence.cloud_account_id == account_id
+            if account_id is not None
+            else Evidence.cloud_account_id.is_(None)
+        )
+        await session.execute(
+            delete(Evidence).where(
+                Evidence.organization_id == scan.organization_id,
+                Evidence.scan_id == scan.id,
+                evidence_scope,
+            )
+        )
 
     async def _collect_directory(
         self,
         session: AsyncSession,
         scan: Scan,
         connection: CloudConnection | None,
-        progress: "_ScanProgress",
+        heartbeat: Callable[[int, int], Awaitable[None]],
         observed_at: datetime,
+        *,
+        required: bool = False,
     ) -> tuple[NormalizedState, RawSnapshot] | None:
         """Read the tenant directory once, and store it as its own capture.
 
@@ -350,6 +468,11 @@ class ScanPipeline:
         read failed outright. Both cases end as a recorded gap rather than as a
         failed scan: a directory CloudGuard could not reach costs the identity
         rules their verdict and costs the subscription rules nothing.
+
+        ``required`` raises instead, which is what its own step wants: a step
+        that swallowed the failure would report SUCCEEDED, spend none of its
+        retries, and leave the customer a silent gap where a transient Graph
+        error deserved a second attempt.
 
         The capture is stored with a NULL ``cloud_account_id`` because it is not
         a reading of any subscription. That is also what makes it replayable on
@@ -365,8 +488,10 @@ class ScanPipeline:
             subscription_id=None,
         )
         try:
-            snapshot = await connector.collect_directory(progress.directory_reporter())
+            snapshot = await connector.collect_directory(heartbeat)
         except Exception as exc:
+            if required:
+                raise
             # Never fatal. The same position collection takes on a single
             # failing ARM category, applied one level up: the directory is one
             # source among several, and losing it must cost the checks that
@@ -622,75 +747,11 @@ class ScanPipeline:
                     )
                     return
 
-                merged = NormalizedState()
-                account_state: list[tuple[CloudAccount, NormalizedState]] = []
-                directory: tuple[CloudConnection, NormalizedState] | None = None
-                errors: dict[str, str] = {}
-                is_current = True
-                observed_at = min(row.created_at for row in stored)
-
-                # Both lookups are done for the whole set rather than inside
-                # the loop: one subscription's account and one subscription's
-                # newest snapshot are two statements each, which a tenant-wide
-                # replay would multiply by every subscription it covered.
-                accounts = await self._accounts_by_id(
-                    session,
-                    org_id,
-                    [row.cloud_account_id for row in stored if row.cloud_account_id],
-                )
-                newest_by_account = await self._newest_snapshot_ids(
-                    session, org_id, list(accounts)
+                state = await self._reconstruct(
+                    session, scan, stored, check_freshness=True
                 )
 
-                for row in stored:
-                    # The scan's directory capture, replayed on its own terms.
-                    # It is a reading of the tenant, so it has no account to
-                    # resolve and no per-subscription staleness to check --
-                    # only whether a later scan has since re-read the same
-                    # directory through the same connection.
-                    if row.cloud_account_id is None:
-                        replayed = await self._replay_directory(
-                            session, org_id, row
-                        )
-                        if replayed is None:
-                            is_current = False
-                            continue
-                        directory, snapshot, current = replayed
-                        is_current = is_current and current
-                        merged.resources.extend(directory[1].resources)
-                        merged.relationships.extend(directory[1].relationships)
-                        merged.collection_errors.update(directory[1].collection_errors)
-                        errors.update(snapshot.errors)
-                        continue
-
-                    account = accounts.get(row.cloud_account_id)
-                    if account is None:
-                        # The subscription is gone. Its capture is still real
-                        # history, but there is nothing left to attribute the
-                        # resources to, so it cannot be re-evaluated.
-                        is_current = False
-                        continue
-
-                    if row.id != newest_by_account.get(account.id):
-                        is_current = False
-
-                    snapshot = RawSnapshot.from_json(row.data)
-                    connector = get_connector(
-                        account.provider,
-                        tenant_id=account.tenant_id,
-                        subscription_id=account.subscription_id,
-                    )
-                    state = connector.normalize(snapshot)
-                    account_state.append((account, state))
-                    merged.resources.extend(state.resources)
-                    merged.relationships.extend(state.relationships)
-                    for category, reason in snapshot.errors.items():
-                        errors[
-                            self._scoped_key(account, category, len(stored))
-                        ] = reason
-                    merged.collection_errors.update(state.collection_errors)
-
-                if not account_state and directory is None:
+                if not state.account_state and state.directory is None:
                     await self._fail(
                         session,
                         scan,
@@ -699,22 +760,22 @@ class ScanPipeline:
                     )
                     return
 
-                scan.evaluation_only = not is_current
-                scan.collection_errors = errors
+                scan.evaluation_only = not state.is_current
+                scan.collection_errors = state.errors
                 await session.commit()
 
                 await self._evaluate(
                     session,
                     scan,
-                    account_state,
-                    merged,
+                    state.account_state,
+                    state.merged,
                     # The observation happened when the snapshots were taken.
                     # Stamping findings with the replay time would date
                     # month-old evidence to today.
-                    observed_at=observed_at,
-                    mutate_findings=is_current,
-                    degraded=bool(errors),
-                    directory=directory,
+                    observed_at=state.observed_at,
+                    mutate_findings=state.is_current,
+                    degraded=bool(state.errors),
+                    directory=state.directory,
                 )
 
                 # ``last_scan_at`` is deliberately left alone: it records when
@@ -725,6 +786,145 @@ class ScanPipeline:
                 log.exception("scan.replay_failed", scan_id=str(scan.id))
                 await session.rollback()
                 await self._fail(session, scan, str(exc))
+
+    # ---------------------------------------------------------- reconstruction
+    async def _reconstruct(
+        self,
+        session: AsyncSession,
+        scan: Scan,
+        stored: list[CloudSnapshot],
+        *,
+        check_freshness: bool = False,
+    ) -> ReconstructedScan:
+        """Read captures back into the state the rule engine evaluates.
+
+        Shared verbatim by ANALYZE and by replay, and the sharing is the point.
+        The two differ in one thing only -- whether the captures being read are
+        this scan's own or an earlier scan's, which is what ``check_freshness``
+        asks about -- and if the paths diverged, a replay would stop being
+        evidence about the pipeline a real scan runs.
+
+        ``check_freshness`` decides whether findings may be touched at all. A
+        capture that has since been superseded describes an environment that has
+        moved on, and resolving a finding from it would stamp "verified fixed"
+        against something nobody looked at.
+        """
+        org_id = scan.organization_id
+        state = ReconstructedScan(observed_at=min(row.created_at for row in stored))
+
+        # Both lookups are done for the whole set rather than inside the loop:
+        # one subscription's account and one subscription's newest capture are
+        # two statements each, which a tenant-wide scan would multiply by every
+        # subscription it covered.
+        accounts = await self._accounts_by_id(
+            session,
+            org_id,
+            [row.cloud_account_id for row in stored if row.cloud_account_id],
+        )
+        newest_by_account = (
+            await self._newest_snapshot_ids(session, org_id, list(accounts))
+            if check_freshness
+            else {}
+        )
+
+        for row in stored:
+            # The directory capture, read on its own terms. It is a reading of
+            # the tenant, so it has no account to resolve and no
+            # per-subscription staleness to check -- only whether a later scan
+            # has since re-read the same directory through the same connection.
+            if row.cloud_account_id is None:
+                restored = await self._restore_directory(
+                    session, org_id, row, check_freshness=check_freshness
+                )
+                if restored is None:
+                    state.is_current = False
+                    continue
+                state.directory, snapshot, current = restored
+                state.is_current = state.is_current and current
+                state.merged.resources.extend(state.directory[1].resources)
+                state.merged.relationships.extend(state.directory[1].relationships)
+                state.merged.collection_errors.update(
+                    state.directory[1].collection_errors
+                )
+                state.errors.update(snapshot.errors)
+                continue
+
+            account = accounts.get(row.cloud_account_id)
+            if account is None:
+                # The subscription is gone. Its capture is still real history,
+                # but there is nothing left to attribute the resources to, so it
+                # cannot be re-evaluated.
+                state.is_current = False
+                continue
+
+            if check_freshness and row.id != newest_by_account.get(account.id):
+                state.is_current = False
+
+            snapshot = RawSnapshot.from_json(row.data)
+            connector = get_connector(
+                account.provider,
+                tenant_id=account.tenant_id,
+                subscription_id=account.subscription_id,
+            )
+            account_state = connector.normalize(snapshot)
+            state.account_state.append((account, account_state))
+            state.merged.resources.extend(account_state.resources)
+            state.merged.relationships.extend(account_state.relationships)
+            # Namespaced by subscription: two subscriptions can both fail to
+            # read storage, and "storage: timeout" twice over tells a customer
+            # nothing about which one to look at.
+            for category, reason in snapshot.errors.items():
+                state.errors[
+                    self._scoped_key(account, category, len(stored))
+                ] = reason
+            state.merged.collection_errors.update(account_state.collection_errors)
+
+        return state
+
+    async def _directory_gap(
+        self, session: AsyncSession, scan: Scan, state: ReconstructedScan
+    ) -> dict[str, str]:
+        """Why the identity checks have no directory, when they have none.
+
+        A scan with no directory capture must not let its identity rules pass:
+        failing to look is not the same as looking and finding nothing. The
+        steps say which of the two happened -- a directory step that failed, or
+        no directory step at all because there was no grant to read one through
+        -- and the two need different sentences, because they send the customer
+        to different places.
+
+        Written into the rule-facing gaps keyed per evidence key, not per
+        category. A category name there would match nothing a rule declares, and
+        every identity check would quietly PASS over a directory nobody read.
+        """
+        if state.directory is not None:
+            return {}
+
+        step = (
+            await session.execute(
+                select(ScanStep).where(
+                    ScanStep.scan_id == scan.id,
+                    ScanStep.kind == ScanStepKind.COLLECT,
+                    ScanStep.cloud_account_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if step is None:
+            reason = (
+                "This scan has no cloud connection behind it, so CloudGuard has "
+                "no grant to read the tenant directory. Reconnect it from the "
+                "connections page."
+            )
+        else:
+            reason = (
+                "The tenant directory could not be read for this scan, so no "
+                f"identity check could reach a verdict. ({step.error or 'unknown error'})"
+            )
+
+        for key in keys_in(EvidenceCategory.IDENTITY):
+            state.merged.collection_errors[key.value] = reason
+        return {EvidenceCategory.IDENTITY.value: reason}
 
     # --------------------------------------------------------------- evaluate
     async def _evaluate(
@@ -738,6 +938,7 @@ class ScanPipeline:
         mutate_findings: bool,
         degraded: bool,
         directory: tuple[CloudConnection, NormalizedState] | None = None,
+        finalize: bool = True,
     ) -> None:
         """Everything downstream of the snapshots: persist, evaluate, finalize.
 
@@ -825,9 +1026,15 @@ class ScanPipeline:
             )
 
         scan.finding_count = finding_count
-        scan.completed_at = datetime.now(UTC)
-        scan.status = ScanStatus.PARTIAL if degraded else ScanStatus.COMPLETED
-        scan.lease_until = None  # finished; nothing left to reclaim
+        if finalize:
+            # Replay owns its own ending: it is one task rather than a set of
+            # steps, so nothing else is going to write this. A step-driven scan
+            # passes False and the orchestrator derives the same fields from the
+            # steps -- two writers for one fact is how a scan ends up COMPLETED
+            # with a step still running.
+            scan.completed_at = datetime.now(UTC)
+            scan.status = ScanStatus.PARTIAL if degraded else ScanStatus.COMPLETED
+            scan.lease_until = None
         await session.commit()
 
         log.info(
@@ -918,6 +1125,30 @@ class ScanPipeline:
         return len(keys - accepted)
 
     # --------------------------------------------------------------- snapshots
+    async def _snapshots_of(
+        self, session: AsyncSession, org_id: UUID, scan_id: UUID
+    ) -> list[CloudSnapshot]:
+        """Every capture stored under one scan, oldest first.
+
+        Scoped by organization as well as by scan. The id arrives on a scan row
+        rather than from a request, but a tenant boundary enforced only where
+        input is untrusted is one nobody can reason about.
+        """
+        return list(
+            (
+                await session.execute(
+                    select(CloudSnapshot)
+                    .where(
+                        CloudSnapshot.scan_id == scan_id,
+                        CloudSnapshot.organization_id == org_id,
+                    )
+                    .order_by(CloudSnapshot.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
     async def _stored_snapshots(
         self, session: AsyncSession, org_id: UUID, scan: Scan
     ) -> list[CloudSnapshot]:
@@ -944,8 +1175,13 @@ class ScanPipeline:
             .all()
         )
 
-    async def _replay_directory(
-        self, session: AsyncSession, org_id: UUID, row: CloudSnapshot
+    async def _restore_directory(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        row: CloudSnapshot,
+        *,
+        check_freshness: bool = False,
     ) -> tuple[tuple[CloudConnection, NormalizedState], RawSnapshot, bool] | None:
         """Re-normalize a stored directory capture.
 
@@ -965,18 +1201,27 @@ class ScanPipeline:
         if connection is None or connection.organization_id != org_id:
             return None
 
+        # Skipped when a scan is reading its own captures: they were taken
+        # moments ago and are the newest by construction, so the query would be
+        # a round trip to confirm what the caller already knows.
         newest = (
-            await session.execute(
-                select(CloudSnapshot.id)
-                .where(
-                    CloudSnapshot.organization_id == org_id,
-                    CloudSnapshot.connection_id == connection.id,
-                    CloudSnapshot.cloud_account_id.is_(None),
+            (
+                await session.execute(
+                    select(CloudSnapshot.id)
+                    .where(
+                        CloudSnapshot.organization_id == org_id,
+                        CloudSnapshot.connection_id == connection.id,
+                        CloudSnapshot.cloud_account_id.is_(None),
+                    )
+                    .order_by(
+                        CloudSnapshot.created_at.desc(), CloudSnapshot.id.desc()
+                    )
+                    .limit(1)
                 )
-                .order_by(CloudSnapshot.created_at.desc(), CloudSnapshot.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+            ).scalar_one_or_none()
+            if check_freshness
+            else row.id
+        )
 
         snapshot = RawSnapshot.from_json(row.data)
         connector = get_connector(

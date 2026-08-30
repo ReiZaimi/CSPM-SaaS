@@ -50,6 +50,7 @@ from app.core.enums import (
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.scan import Scan
+from app.services import orchestrator
 from app.services import scanner as scanner_module
 from app.services.rule_sync import sync_rules_to_database
 from app.services.scanner import ScanPipeline
@@ -122,6 +123,37 @@ class ReplayConnector(CloudConnector):
 
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
         return self._normalizer.normalize(snapshot)
+
+
+async def drive_scan(scan_id) -> None:
+    """Run a scan to completion in this process.
+
+    A scan is normally driven by two Celery tasks passing a scan id between
+    them; the seed has no broker and no worker, so it performs the same loop
+    directly: ask what may run, claim it, run it, ask again. Every decision is
+    still the orchestrator's and the pipeline's -- what is skipped here is only
+    the queue between them.
+    """
+    async with service_session() as session:
+        scan = await session.get(Scan, scan_id)
+        await orchestrator.create_initial_steps(session, scan)
+        await session.commit()
+
+    while True:
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            steps = await orchestrator.sync_scan_state(session, scan)
+            claimed = await orchestrator.claim(
+                session, [s.id for s in orchestrator.runnable(steps)]
+            )
+        if not claimed:
+            break
+        for step_id in claimed:
+            await ScanPipeline(scan_id).run_step(step_id)
+
+    async with service_session() as session:
+        scan = await session.get(Scan, scan_id)
+        await orchestrator.sync_scan_state(session, scan)
 
 
 def apply_fixes(payload: dict) -> dict:
@@ -260,7 +292,7 @@ async def seed(email: str, fix: bool) -> None:
     original = scanner_module.get_connector
     scanner_module.get_connector = lambda _provider, **kw: ReplayConnector(payload, **kw)
     try:
-        await ScanPipeline(scan_id).run()
+        await drive_scan(scan_id)
     finally:
         scanner_module.get_connector = original
 

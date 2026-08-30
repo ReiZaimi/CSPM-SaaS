@@ -696,8 +696,25 @@ on the reaper.
 
 6. A repository layer taking `organization_id` at construction, so §2.15
    becomes structural.
-7. Scan steps and the orchestrator: PLAN / COLLECT / ANALYZE, leased and
-   retryable, with split queues. (§6)
+7. **Mostly done** — scan steps and the orchestrator. (§6, §2.2) Migration
+   0011 adds `scan_steps`; `app/services/orchestrator.py` decides what may run,
+   claims it with an `UPDATE ... WHERE status = 'PENDING' RETURNING id`, and
+   derives the scan's status from what its steps add up to. `ScanPipeline.run`
+   became `plan` / `collect` / `analyze`, cut at the seam that already existed:
+   collection writes captures, and everything after a capture is a pure
+   function of it — so ANALYZE reconstructs from the database exactly what the
+   single task used to carry in memory, sharing that reconstruction with
+   replay.
+
+   A redeploy now costs the step in flight rather than the scan, a tenant of
+   fifty subscriptions is fifty retryable units, and one unreadable
+   subscription no longer withholds the other forty-nine.
+
+   Still to do: split queues (`collect` is IO-bound and high-concurrency,
+   `analyze` is memory-bound and low), and moving the request ceiling from a
+   per-run `RequestLimiter` to a Redis token bucket keyed *(tenant, service)* —
+   which matters more now that a tenant's subscriptions genuinely collect in
+   parallel.
 8. **Partly done** — the evidence model. (§7, §2.5, §2.6) Migration 0010
    renames `scan_collection_results` to `evidence` and gives a reading the
    provenance it lacked: the provider, when it was collected, the permissions

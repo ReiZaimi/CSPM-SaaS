@@ -18,7 +18,13 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import Provider, ScanStatus, TaskOutcome
+from app.core.enums import (
+    Provider,
+    ScanStatus,
+    ScanStepKind,
+    ScanStepStatus,
+    TaskOutcome,
+)
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -367,3 +373,70 @@ class EvidenceBlob(Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ScanStep(UUIDPrimaryKey, TenantOwned, Base):
+    """One durably recorded stage of a scan.
+
+    A scan used to be a single Celery task: resolve the scope, read every
+    subscription in sequence, interpret the lot. A worker redeployed after
+    reading nine subscriptions out of ten had read nothing, because nothing
+    recorded that the nine were done; fifty subscriptions were fifty sequential
+    collections inside one thirty-minute limit; and retrying one failure meant
+    retrying everything that had already worked.
+
+    A step is claimed under a lease, retried on its own, and settled
+    independently of its siblings. The claim is the concurrency control: an
+    ``UPDATE ... WHERE status = 'PENDING' RETURNING id`` that exactly one worker
+    wins, so two workers advancing the same scan cannot both run a step.
+    """
+
+    __tablename__ = "scan_steps"
+    __table_args__ = (
+        Index("ix_scan_steps_scan_status", "scan_id", "status"),
+    )
+
+    scan_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[ScanStepKind] = mapped_column(
+        StrEnumType(ScanStepKind, 16), nullable=False
+    )
+    # Which subscription a COLLECT step reads. NULL on the step that reads the
+    # tenant directory, and on PLAN and ANALYZE, which are about the scan rather
+    # than about any one scope.
+    cloud_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("cloud_accounts.id", ondelete="CASCADE")
+    )
+
+    status: Mapped[ScanStepStatus] = mapped_column(
+        StrEnumType(ScanStepStatus, 16), nullable=False, default=ScanStepStatus.PENDING
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # How long a claimed step may go without a sign of life. Shorter than the
+    # scan's own lease: a step is one subscription's collection or one
+    # evaluation, and a worker that has stopped reporting for this long has
+    # stopped.
+    LEASE_SECONDS: ClassVar[int] = 600
+
+    @property
+    def is_directory(self) -> bool:
+        """Whether this COLLECT step reads the tenant rather than a subscription."""
+        return self.kind == ScanStepKind.COLLECT and self.cloud_account_id is None
+
+    def describe(self) -> str:
+        """What this step is, for a log line or an error message."""
+        if self.kind != ScanStepKind.COLLECT:
+            return self.kind.value.lower()
+        return "the tenant directory" if self.is_directory else "one subscription"

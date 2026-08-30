@@ -30,11 +30,14 @@ from app.core.enums import (
     Provider,
     RiskStatus,
     ScanStatus,
+    ScanStepKind,
+    ScanStepStatus,
     TaskOutcome,
 )
 from app.models.cloud_account import CloudAccount
 from app.models.finding import Finding
-from app.models.scan import Scan
+from app.models.scan import Scan, ScanStep
+from app.services import orchestrator
 from app.services import scanner as scanner_module
 from app.services import scans as scans_service
 from app.services.scanner import ScanPipeline
@@ -272,6 +275,41 @@ async def connected_tenant(cleanup_orgs):
         return org_id, connection.id
 
 
+async def drive(scan_id: uuid.UUID, *, max_rounds: int = 20) -> uuid.UUID:
+    """Run a scan to completion the way the workers would.
+
+    The same loop ``advance_scan`` and ``run_scan_step`` perform between them:
+    ask what may run, claim it, run it, ask again. Written out here rather than
+    calling the Celery tasks so the test needs no broker -- but every decision
+    it makes is the orchestrator's and the pipeline's, not this helper's.
+
+    ``max_rounds`` bounds it so a dependency bug shows up as a failing test
+    rather than as a suite that never finishes.
+    """
+    async with service_session() as session:
+        scan = await session.get(Scan, scan_id)
+        await orchestrator.create_initial_steps(session, scan)
+        await session.commit()
+
+    for _ in range(max_rounds):
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            steps = await orchestrator.sync_scan_state(session, scan)
+            ready = orchestrator.runnable(steps)
+            claimed = await orchestrator.claim(session, [s.id for s in ready])
+        if not claimed:
+            break
+        for step_id in claimed:
+            await ScanPipeline(scan_id).run_step(step_id)
+    else:  # pragma: no cover - a dependency that never settles
+        raise AssertionError(f"scan {scan_id} did not settle in {max_rounds} rounds")
+
+    async with service_session() as session:
+        scan = await session.get(Scan, scan_id)
+        await orchestrator.sync_scan_state(session, scan)
+    return scan_id
+
+
 async def run_connection_scan(org_id: uuid.UUID, connection_id: uuid.UUID) -> uuid.UUID:
     async with service_session() as session:
         scan = Scan(
@@ -283,8 +321,7 @@ async def run_connection_scan(org_id: uuid.UUID, connection_id: uuid.UUID) -> uu
         await session.commit()
         scan_id = scan.id
 
-    await ScanPipeline(scan_id).run()
-    return scan_id
+    return await drive(scan_id)
 
 
 async def run_scan(org_id: uuid.UUID, account_id: uuid.UUID) -> uuid.UUID:
@@ -298,8 +335,7 @@ async def run_scan(org_id: uuid.UUID, account_id: uuid.UUID) -> uuid.UUID:
         await session.commit()
         scan_id = scan.id
 
-    await ScanPipeline(scan_id).run()
-    return scan_id
+    return await drive(scan_id)
 
 
 async def run_replay(
@@ -1580,3 +1616,218 @@ class TestEvidence:
             {"s": scan_id},
         )
         assert rows[0][0] > 0
+
+
+class TestOrchestration:
+    """A scan is durable steps, not one task that must survive everything.
+
+    The bug this replaces: a worker redeployed after reading nine subscriptions
+    out of ten had read nothing, because nothing recorded that the nine were
+    done. Migration 0009 made that detectable; steps make it survivable.
+    """
+
+    async def _steps(self, scan_id: uuid.UUID) -> list[ScanStep]:
+        async with service_session() as session:
+            return await orchestrator.steps_for(session, scan_id)
+
+    async def test_a_scan_records_a_step_per_scope(
+        self, replay, connected_tenant
+    ) -> None:
+        org_id, connection_id = connected_tenant
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        steps = await self._steps(scan_id)
+        kinds = [s.kind for s in steps]
+        assert kinds.count(ScanStepKind.PLAN) == 1
+        assert kinds.count(ScanStepKind.ANALYZE) == 1
+        # Two subscriptions plus the tenant directory.
+        assert kinds.count(ScanStepKind.COLLECT) == 3
+        assert all(s.status == ScanStepStatus.SUCCEEDED for s in steps)
+
+    async def test_a_claimed_step_cannot_be_claimed_twice(
+        self, replay, connected_account
+    ) -> None:
+        """The concurrency control, exercised where it can actually race.
+
+        Two advances arriving together must split the work rather than hand the
+        same subscription to two workers -- which would collect it twice and
+        write two captures for one reading.
+        """
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+        async with service_session() as session:
+            steps = await orchestrator.steps_for(session, scan_id)
+            ids = [s.id for s in orchestrator.runnable(steps)]
+            first = await orchestrator.claim(session, ids)
+
+        async with service_session() as session:
+            second = await orchestrator.claim(session, ids)
+
+        assert first, "the first advance should have won the step"
+        assert second == [], "a claimed step must not be handed out again"
+
+    async def test_a_scan_resumes_after_its_worker_disappears(
+        self, replay, connected_account
+    ) -> None:
+        """The whole point of the exercise.
+
+        A step whose lease expired goes back to PENDING and the next advance
+        runs it -- so a redeploy costs the step in flight rather than the scan,
+        and the customer does not run the whole thing again.
+        """
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+        # Claim the PLAN step and then vanish, exactly as a killed worker does.
+        async with service_session() as session:
+            steps = await orchestrator.steps_for(session, scan_id)
+            plan = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+            await orchestrator.claim(session, [plan.id])
+            await session.execute(
+                text("UPDATE scan_steps SET lease_until = :t WHERE id = :s"),
+                {"t": datetime.now(UTC) - timedelta(minutes=30), "s": plan.id},
+            )
+            await session.commit()
+
+        async with service_session() as session:
+            reclaimed = await orchestrator.reap_expired_steps(session)
+        assert scan_id in reclaimed
+
+        async with service_session() as session:
+            refreshed = await orchestrator.steps_for(session, scan_id)
+            plan = next(s for s in refreshed if s.kind == ScanStepKind.PLAN)
+        assert plan.status == ScanStepStatus.PENDING
+        assert plan.attempt == 1, "the attempt is spent, not forgotten"
+
+        # And the scan runs to completion from where it was.
+        await drive(scan_id)
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL)
+
+    async def test_a_reaped_step_is_not_a_reaped_scan(
+        self, replay, connected_account
+    ) -> None:
+        """A scan with a step waiting for a worker has work outstanding, not
+        work nobody is doing -- and closing it would close a scan that is about
+        to continue."""
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.DISCOVERING,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+            # Old enough that the queue grace period has elapsed.
+            await session.execute(
+                text("UPDATE scans SET created_at = :t WHERE id = :s"),
+                {
+                    "t": datetime.now(UTC)
+                    - timedelta(seconds=Scan.QUEUE_GRACE_SECONDS + 60),
+                    "s": scan_id,
+                },
+            )
+            await session.commit()
+
+        async with service_session() as session:
+            closed = await scans_service.reap_abandoned_scans(session)
+
+        assert scan_id not in {sid for sid, _ in closed}
+
+    async def test_a_scan_with_nothing_to_read_skips_its_analysis(
+        self, replay, connected_tenant
+    ) -> None:
+        """Otherwise it would hang rather than fail: ANALYZE waits on
+        collection, collection waits on a PLAN that gave up, and nothing is left
+        to move."""
+        org_id, connection_id = connected_tenant
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE cloud_accounts SET in_scope = false "
+                    "WHERE connection_id = :c"
+                ),
+                {"c": connection_id},
+            )
+            await session.commit()
+
+        scan_id = await run_connection_scan(org_id, connection_id)
+
+        steps = await self._steps(scan_id)
+        plan = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+        analyze = next(s for s in steps if s.kind == ScanStepKind.ANALYZE)
+        assert plan.status == ScanStepStatus.FAILED
+        assert analyze.status == ScanStepStatus.SKIPPED, (
+            "a step whose dependency gave up is skipped, not left pending forever"
+        )
+
+    async def test_one_unreadable_subscription_does_not_withhold_the_report(
+        self, replay, connected_tenant
+    ) -> None:
+        """Settled, not succeeded. Nine subscriptions out of ten is nine
+        subscriptions' worth of findings and one recorded gap."""
+        org_id, connection_id = connected_tenant
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                connection_id=connection_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+        # Run PLAN, then fail one subscription outright before the rest run.
+        async with service_session() as session:
+            steps = await orchestrator.steps_for(session, scan_id)
+            plan = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+            await orchestrator.claim(session, [plan.id])
+        await ScanPipeline(scan_id).run_step(plan.id)
+
+        async with service_session() as session:
+            steps = await orchestrator.steps_for(session, scan_id)
+            doomed = next(
+                s
+                for s in steps
+                if s.kind == ScanStepKind.COLLECT and s.cloud_account_id is not None
+            )
+            doomed.status = ScanStepStatus.FAILED
+            doomed.error = "Forbidden"
+            doomed.finished_at = datetime.now(UTC)
+            await session.commit()
+
+        await drive(scan_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.status == ScanStatus.PARTIAL, "a gap is a report, not a failure"
+        assert scan.finding_count > 0, "the readable subscriptions still produced findings"
+        assert "Forbidden" in (scan.error_message or "")

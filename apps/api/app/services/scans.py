@@ -14,12 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
-from app.core.enums import FindingStatus, ScanStatus, TaskOutcome
+from app.core.enums import FindingStatus, ScanStatus, ScanStepStatus, TaskOutcome
 from app.core.errors import ScanNotFound
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
-from app.models.scan import Evidence, Scan
+from app.models.scan import Evidence, Scan, ScanStep
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
@@ -128,12 +128,16 @@ async def reap_abandoned_scans(session: AsyncSession) -> list[tuple[UUID, str]]:
     connection unscannable for ever, answering 409 to every attempt with no
     timeout and no way out short of editing the database.
 
-    Two populations, judged differently because they mean different things. A
-    running scan holds a lease it extends as it makes progress, so an expired
-    lease means the worker stopped; a queued scan holds no lease because
-    nothing has claimed it, so it is judged on how long it has waited, with a
-    much longer grace period -- a deep queue is normal and reaping a scan that
-    was about to start would be its own bug.
+    Steps changed what this is for. A scan now runs as leased steps that are
+    reclaimed individually, so a worker dying costs the step in flight rather
+    than the scan -- and a scan with any live step is explicitly excluded here,
+    because it has work waiting for a worker rather than work nobody is doing.
+
+    What is left is the case steps cannot fix: a scan that never got steps at
+    all, because the message that would have created them was lost. That one
+    is judged on how long it has waited, with a long grace period -- a deep
+    queue is normal and reaping a scan that was about to start would be its own
+    bug.
 
     Returns what it closed, so the caller can log it. Runs with the owner
     session from a periodic task, so it scopes nothing by organization on
@@ -142,11 +146,30 @@ async def reap_abandoned_scans(session: AsyncSession) -> list[tuple[UUID, str]]:
     now = datetime.now(UTC)
     queued_cutoff = now - timedelta(seconds=Scan.QUEUE_GRACE_SECONDS)
 
+    # Scans with a step that is still live. A step reaper runs before this and
+    # returns expired steps to PENDING, so anything still here has work waiting
+    # for a worker rather than work nobody is doing -- and closing it would be
+    # closing a scan that is about to continue.
+    alive = (
+        select(ScanStep.scan_id)
+        .where(
+            or_(
+                ScanStep.status == ScanStepStatus.PENDING,
+                and_(
+                    ScanStep.status == ScanStepStatus.RUNNING,
+                    ScanStep.lease_until > now,
+                ),
+            )
+        )
+        .scalar_subquery()
+    )
+
     stale = (
         (
             await session.execute(
                 select(Scan).where(
                     Scan.status.in_(ACTIVE_SCAN_STATUSES),
+                    Scan.id.not_in(alive),
                     or_(
                         Scan.lease_until < now,
                         and_(

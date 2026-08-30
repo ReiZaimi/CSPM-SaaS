@@ -16,6 +16,7 @@ from app.models.scan import (
     Scan,
     ScanEvaluationGap,
     ScanRuleResult,
+    ScanStep,
 )
 
 __all__ = [
@@ -39,4 +40,5 @@ __all__ = [
     "Scan",
     "ScanEvaluationGap",
     "ScanRuleResult",
+    "ScanStep",
 ]

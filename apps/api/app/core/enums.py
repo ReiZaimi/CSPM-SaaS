@@ -97,6 +97,63 @@ class CollectionScope(StrEnum):
     DIRECTORY = "directory"
 
 
+class ScanStepKind(StrEnum):
+    """The stages a scan runs as separately durable units.
+
+    Three, not a general DAG. A scan's shape is decided in code and has been
+    the same shape since the pipeline existed -- resolve what to read, read it,
+    interpret it -- so edges between arbitrary steps would be a mechanism with
+    one configuration, and cycle checking for a graph nobody can author.
+    Ordering by kind says the same thing in a query.
+    """
+
+    # Resolve what this scan covers, and create the COLLECT steps for it.
+    # A step rather than work done at queue time, because the scope must be
+    # resolved when the scan runs: a subscription discovered or excluded while
+    # the scan sat in the queue should be picked up or left out accordingly.
+    PLAN = "PLAN"
+    # Read one scope -- one subscription, or the tenant directory -- and store
+    # what came back. One step each, so a tenant of fifty subscriptions is
+    # fifty retryable units rather than one that has to survive them all.
+    COLLECT = "COLLECT"
+    # Interpret every capture this scan stored: normalize, evaluate, score,
+    # verify. Runs once the COLLECT steps have settled, which is not the same
+    # as having succeeded -- a subscription CloudGuard could not read is a gap
+    # in the report, never a reason to withhold the rest of it.
+    ANALYZE = "ANALYZE"
+
+
+class ScanStepStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    # Its input never arrived. Distinct from FAILED for the same reason the
+    # collection executor draws that line: nothing is known to be wrong with
+    # this step, and saying otherwise sends someone looking one hop away from
+    # the real problem.
+    SKIPPED = "SKIPPED"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {
+            ScanStepStatus.SUCCEEDED,
+            ScanStepStatus.FAILED,
+            ScanStepStatus.SKIPPED,
+        }
+
+    @property
+    def is_settled(self) -> bool:
+        """Whether this step will do no more work.
+
+        The condition ANALYZE waits on. Deliberately not "succeeded": a scan
+        whose storage listing failed still has everything else to say, and
+        holding the whole report back over one unreadable subscription would
+        turn a partial answer into no answer.
+        """
+        return self.is_terminal
+
+
 class ScanStatus(StrEnum):
     QUEUED = "QUEUED"
     DISCOVERING = "DISCOVERING"

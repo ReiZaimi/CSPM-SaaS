@@ -31,7 +31,7 @@ class RecordingPipeline:
     def __init__(self, scan_id: object) -> None:
         self.scan_id = scan_id
 
-    async def run(self) -> None:
+    async def replay(self) -> None:
         RecordingPipeline.loops.append(asyncio.get_running_loop())
 
 
@@ -54,7 +54,7 @@ async def test_connections_are_released_before_the_loop_closes(instrumented) -> 
     Afterwards there would be no loop left to close the connections on, which
     is exactly the thing that has gone wrong.
     """
-    await scan_tasks._run_and_release(uuid4())
+    await scan_tasks._replay_and_release(uuid4())
 
     assert len(instrumented["disposals"]) == 1
     assert instrumented["disposals"][0] is RecordingPipeline.loops[0]
@@ -66,14 +66,14 @@ async def test_a_failing_scan_still_releases_its_connections(
     """Otherwise one bad scan poisons every later scan in that worker."""
 
     class FailingPipeline(RecordingPipeline):
-        async def run(self) -> None:
-            await super().run()
+        async def replay(self) -> None:
+            await super().replay()
             raise RuntimeError("Azure exploded")
 
     monkeypatch.setattr(scan_tasks, "ScanPipeline", FailingPipeline)
 
     with pytest.raises(RuntimeError, match="Azure exploded"):
-        await scan_tasks._run_and_release(uuid4())
+        await scan_tasks._replay_and_release(uuid4())
 
     assert len(instrumented["disposals"]) == 1
 
@@ -85,8 +85,31 @@ def test_consecutive_tasks_each_get_a_fresh_loop(instrumented) -> None:
     second would inherit the first loop's connections.
     """
     for _ in range(2):
-        asyncio.run(scan_tasks._run_and_release(uuid4()))
+        asyncio.run(scan_tasks._replay_and_release(uuid4()))
 
     assert len(RecordingPipeline.loops) == 2
     assert RecordingPipeline.loops[0] is not RecordingPipeline.loops[1]
     assert instrumented["disposals"] == RecordingPipeline.loops
+
+
+def test_every_task_internal_releases_its_connections() -> None:
+    """The invariant applies to all of them, not just the one tested above.
+
+    A scan is now several tasks rather than one, so the number of places that
+    could forget this went from two to five -- and forgetting it in any of them
+    reproduces the same failure: the first task in a worker child succeeds and
+    every later one dies on a closed loop.
+    """
+    import inspect
+
+    for name in (
+        "_start",
+        "_advance",
+        "_run_step",
+        "_reap_and_release",
+        "_replay_and_release",
+    ):
+        source = inspect.getsource(getattr(scan_tasks, name))
+        assert "finally:" in source and "dispose_engines()" in source, (
+            f"{name} does not release its connections inside its own loop"
+        )
