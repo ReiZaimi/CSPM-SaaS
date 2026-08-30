@@ -192,3 +192,39 @@ def test_a_scan_with_no_steps_is_not_reported_as_finished() -> None:
     exactly like one that succeeded."""
     finished, _degraded, _problems = orchestrator.summarize([])
     assert not finished
+
+
+# ------------------------------------------------------------- degradation
+def test_a_scan_is_partial_when_a_listing_failed_inside_a_step() -> None:
+    """The half the steps cannot see, and the half that happens most often.
+
+    A COLLECT step that read a subscription but lost its storage listing to a
+    403 *succeeded*: it collected, and it recorded the gap exactly as it should.
+    The scan is still PARTIAL, because a rule somewhere lost its verdict --
+    reporting COMPLETED over that is the same overclaim as a PASS nobody earned.
+
+    Regression: when scan status moved to the orchestrator it was derived from
+    the steps alone, and every such scan started reporting COMPLETED.
+    """
+    steps = [
+        step(ScanStepKind.PLAN, ScanStepStatus.SUCCEEDED),
+        step(ScanStepKind.COLLECT, ScanStepStatus.SUCCEEDED, account=uuid.uuid4()),
+        step(ScanStepKind.ANALYZE, ScanStepStatus.SUCCEEDED),
+    ]
+    assert orchestrator.status_for(steps) == ScanStatus.COMPLETED
+    assert orchestrator.status_for(steps, degraded=True) == ScanStatus.PARTIAL
+
+
+def test_a_step_failure_degrades_a_scan_without_being_told() -> None:
+    """The other source. Both are independent, and either is enough."""
+    steps = [
+        step(ScanStepKind.PLAN, ScanStepStatus.SUCCEEDED),
+        step(
+            ScanStepKind.COLLECT,
+            ScanStepStatus.FAILED,
+            account=uuid.uuid4(),
+            error="403",
+        ),
+        step(ScanStepKind.ANALYZE, ScanStepStatus.SUCCEEDED),
+    ]
+    assert orchestrator.status_for(steps, degraded=False) == ScanStatus.PARTIAL

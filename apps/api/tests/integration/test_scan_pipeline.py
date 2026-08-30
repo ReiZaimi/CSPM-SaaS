@@ -1831,3 +1831,89 @@ class TestOrchestration:
         assert scan.status == ScanStatus.PARTIAL, "a gap is a report, not a failure"
         assert scan.finding_count > 0, "the readable subscriptions still produced findings"
         assert "Forbidden" in (scan.error_message or "")
+
+    async def test_starting_a_scan_twice_does_not_duplicate_its_steps(
+        self, replay, connected_account
+    ) -> None:
+        """A broker that redelivers the start message must not fail the scan.
+
+        The regression: an acknowledgement lost, or a worker killed between
+        running the start task and acking it, inserted a second PLAN, hit the
+        unique index, and failed the start of a scan that had already started
+        correctly.
+        """
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+
+            first = await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+            second = await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+        assert len(first) == 2
+        assert second == [], "a redelivered start creates nothing new"
+        steps = await self._steps(scan_id)
+        assert len(steps) == 2
+
+    async def test_a_redelivered_start_does_not_reset_a_failing_step(
+        self, replay, connected_account
+    ) -> None:
+        """Attempts are spent, not forgotten. Otherwise a step that fails every
+        time would be retried for ever, one redelivery at a time."""
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+            steps = await orchestrator.steps_for(session, scan_id)
+            plan = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+            await orchestrator.claim(session, [plan.id])
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+            steps = await orchestrator.steps_for(session, scan_id)
+
+        plan = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+        assert plan.attempt == 1
+        assert plan.status == ScanStepStatus.RUNNING
+
+    async def test_a_scan_that_read_everything_but_lost_a_listing_is_partial(
+        self, replay, connected_account
+    ) -> None:
+        """A step succeeded and the scan is still degraded.
+
+        The COLLECT step did its job: it collected, and it recorded that the
+        storage listing was unreadable. Deriving the scan's status from the
+        steps alone reported COMPLETED over a rule that had lost its verdict.
+        """
+        org_id, account_id = connected_account
+        replay["payload"]["errors"]["storage"] = "Azure API timeout"
+        scan_id = await run_scan(org_id, account_id)
+
+        steps = await self._steps(scan_id)
+        assert all(s.status == ScanStepStatus.SUCCEEDED for s in steps), (
+            "no step failed -- the gap is inside a successful reading"
+        )
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+        assert scan.status == ScanStatus.PARTIAL
+        assert "storage" in scan.collection_errors

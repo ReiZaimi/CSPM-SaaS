@@ -49,7 +49,7 @@ WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 DEFAULT_MAX_ATTEMPTS = 3
 
 
-async def create_initial_steps(session: AsyncSession, scan: Scan) -> None:
+async def create_initial_steps(session: AsyncSession, scan: Scan) -> list[ScanStep]:
     """The two steps every scan has before it knows its own scope.
 
     COLLECT steps are not created here, because what a scan covers is resolved
@@ -57,16 +57,37 @@ async def create_initial_steps(session: AsyncSession, scan: Scan) -> None:
     excluded while the scan sat in the queue should be picked up or left out
     accordingly, and a queue that can be minutes deep makes that a real
     difference. PLAN is the step that decides.
+
+    Idempotent, and not merely as a courtesy. A broker that redelivers the
+    start message -- an acknowledgement lost, a worker killed between running
+    the task and acking it -- would otherwise insert a second PLAN, hit the
+    unique index and fail the start of a scan that had already started
+    correctly. Existing steps are left exactly as they are, attempt counts
+    included: a redelivered start must not grant fresh attempts to a step that
+    has been failing.
     """
-    for kind in (ScanStepKind.PLAN, ScanStepKind.ANALYZE):
-        session.add(
-            ScanStep(
-                organization_id=scan.organization_id,
-                scan_id=scan.id,
-                kind=kind,
-                max_attempts=DEFAULT_MAX_ATTEMPTS,
+    existing = set(
+        (
+            await session.execute(
+                select(ScanStep.kind).where(ScanStep.scan_id == scan.id)
             )
+        ).scalars()
+    )
+
+    created: list[ScanStep] = []
+    for kind in (ScanStepKind.PLAN, ScanStepKind.ANALYZE):
+        if kind in existing:
+            continue
+        step = ScanStep(
+            organization_id=scan.organization_id,
+            scan_id=scan.id,
+            kind=kind,
+            max_attempts=DEFAULT_MAX_ATTEMPTS,
         )
+        session.add(step)
+        created.append(step)
+    await session.flush()
+    return created
 
 
 async def create_collect_steps(
@@ -324,15 +345,23 @@ def progress(steps: Sequence[ScanStep]) -> tuple[int, int]:
     return sum(1 for step in steps if step.status.is_settled), len(steps)
 
 
-def status_for(steps: Sequence[ScanStep]) -> ScanStatus:
+def status_for(steps: Sequence[ScanStep], *, degraded: bool = False) -> ScanStatus:
     """The scan status these steps add up to.
 
     Mapped onto the statuses that already exist rather than inventing a
     parallel vocabulary: the frontend, the scans list and the stuck-scan
     diagnostics all read ``ScanStatus``, and a step is an implementation detail
     of how a scan runs rather than a new thing for a customer to learn.
+
+    ``degraded`` carries the half the steps cannot see, and it is the half that
+    happens most often. A COLLECT step that read a subscription but lost its
+    storage listing to a 403 **succeeded** -- it collected, and it recorded the
+    gap exactly as it should. The scan is still PARTIAL, because a rule
+    somewhere lost its verdict, and reporting COMPLETED over that would be the
+    same overclaim as a PASS nobody earned.
     """
-    finished, degraded, _problems = summarize(steps)
+    finished, step_problems, _problems = summarize(steps)
+    degraded = degraded or step_problems
     if finished:
         if all(
             step.status in (ScanStepStatus.FAILED, ScanStepStatus.SKIPPED)
@@ -408,7 +437,10 @@ async def sync_scan_state(session: AsyncSession, scan: Scan) -> list[ScanStep]:
         return steps
 
     finished, _degraded, problems = summarize(steps)
-    scan.status = status_for(steps)
+    # Two independent sources of degradation, and the scan is PARTIAL for
+    # either. A step that failed lost a whole scope; ``collection_errors`` is a
+    # scope that was read with a listing missing from it.
+    scan.status = status_for(steps, degraded=bool(scan.collection_errors))
     if finished:
         scan.completed_at = scan.completed_at or datetime.now(UTC)
         scan.lease_until = None
