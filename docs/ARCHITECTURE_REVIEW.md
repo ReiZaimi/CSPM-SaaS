@@ -998,8 +998,35 @@ on the reaper.
     a scan was one task with one start and one end, so a slow subscription and
     a slow evaluation looked identical.
 
-    Still to do: traces spanning scan → step → task, and
-    evidence-freshness and coverage gauges.
+    **Now done, in the form this stack can honour.** A scan runs as several
+    Celery tasks across several workers, so its lines arrive interleaved with
+    every other tenant's and were joined only by whichever ids each call site
+    remembered to pass. `log_context` binds `scan_id`, `step_id`, `step_kind`,
+    `cloud_account_id` and the task name for the length of a block, and
+    `merge_contextvars` was already the first processor — so every line inside,
+    including ones nobody thought to annotate, carries them.
+
+    Deliberately **not** OpenTelemetry. Spans need a collector to send them to
+    and this deployment has none; an exporter writing into a socket nobody reads
+    is the appearance of observability rather than the thing. The ids are the
+    part that makes the lines joinable, and they cost nothing. The trigger for
+    real tracing is a collector existing, not the code being ready for one.
+
+    The coverage gauge already existed on the dashboard — conclusive over
+    conclusive-plus-unknown, from the last scan's rule results. What was missing
+    beside it is **evidence freshness**, and the two answer different questions:
+    coverage is what fraction of the checks reached a verdict, freshness is how
+    recently the provider was asked, and a posture can be fully covered and
+    three weeks out of date.
+
+    Measured over the newest reading of each (scope, evidence key) rather than
+    from `scans.completed_at`, because those differ now that a scan may carry a
+    reading forward instead of re-taking it — and a carried reading keeps the
+    time it was *collected* (`DECISIONS.md` §16). The headline is the **oldest**
+    of them: an average would let a hundred fresh listings hide the one
+    subscription nobody has managed to read since Tuesday. `unusable` counts
+    readings that came back failed, truncated or skipped, because "recent" and
+    "usable" are two halves of whether to trust the picture.
 18. **Done.** All three tables exist. `risk_history` came first with item 16;
     migration 0018 adds the other two, plus `cloud_resources.absent_since`.
 

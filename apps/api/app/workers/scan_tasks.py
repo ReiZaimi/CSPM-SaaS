@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import dispose_engines, service_session
 from app.core.enums import ScanStatus, ScanStepKind, ScanTrigger
-from app.core.logging import configure_logging, get_logger
+from app.core.logging import configure_logging, get_logger, log_context
 from app.models.cloud_account import CloudAccount
 from app.models.scan import Scan
 from app.services import orchestrator
@@ -77,8 +77,9 @@ def run_scan(self: object, scan_id: str) -> dict:
     """
     configure_logging()
     _announce_tenancy()
-    log.info("scan.task_received", scan_id=scan_id)
-    asyncio.run(_start(UUID(scan_id)))
+    with log_context(scan_id=scan_id, task="run_scan"):
+        log.info("scan.task_received")
+        asyncio.run(_start(UUID(scan_id)))
     return {"scan_id": scan_id}
 
 
@@ -92,7 +93,8 @@ def advance_scan(self: object, scan_id: str) -> dict:
     without coordinating with anyone.
     """
     configure_logging()
-    claimed = asyncio.run(_advance(UUID(scan_id)))
+    with log_context(scan_id=scan_id, task="advance_scan"):
+        claimed = asyncio.run(_advance(UUID(scan_id)))
     for step_id, kind in claimed:
         # Routed by what the step costs rather than by what it is called.
         # Collection waits on Azure and wants many in flight; analysis holds a
@@ -115,7 +117,10 @@ def run_scan_step(self: object, scan_id: str, step_id: str) -> dict:
     raised, and the next advance gives it to whichever worker is free.
     """
     configure_logging()
-    outcome = asyncio.run(_run_step(UUID(scan_id), UUID(step_id)))
+    # The whole point of the binding: a step's lines are the ones interleaved
+    # with every other tenant's, on the queue that does the slow work.
+    with log_context(scan_id=scan_id, step_id=step_id, task="run_scan_step"):
+        outcome = asyncio.run(_run_step(UUID(scan_id), UUID(step_id)))
     # Always, whatever happened. A step that failed is still progress: it may
     # have unblocked ANALYZE, or been the last one outstanding.
     advance_scan.delay(scan_id)
@@ -131,8 +136,9 @@ def replay_scan(self: object, scan_id: str) -> dict:
     lose halfway. It is one evaluation over captures already in the database.
     """
     configure_logging()
-    log.info("scan.replay_task_received", scan_id=scan_id)
-    asyncio.run(_replay_and_release(UUID(scan_id)))
+    with log_context(scan_id=scan_id, task="replay_scan"):
+        log.info("scan.replay_task_received")
+        asyncio.run(_replay_and_release(UUID(scan_id)))
     return {"scan_id": scan_id}
 
 

@@ -12,11 +12,18 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import FindingStatus, Level, RiskKind, RiskStatus, ScanStatus
+from app.core.enums import (
+    FindingStatus,
+    Level,
+    RiskKind,
+    RiskStatus,
+    ScanStatus,
+    TaskOutcome,
+)
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding, RiskHistory
-from app.models.scan import Scan, ScanRuleResult
+from app.models.scan import Evidence, Scan, ScanRuleResult
 from app.risk.scorer import default_scorer
 
 
@@ -159,6 +166,11 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
             for r in top_risks
         ],
         "coverage": await _coverage(session, organization_id, last_scan),
+        # How old the readings behind all of the above are. Coverage says what
+        # fraction of the checks reached a verdict; this says how recently the
+        # provider was asked -- and a posture can be fully covered and three
+        # weeks out of date.
+        "evidence_freshness": await _evidence_freshness(session, organization_id),
         "last_scan": (
             {
                 "id": str(last_scan.id),
@@ -218,6 +230,68 @@ async def _score_delta(
     if len(previous) < 2:
         return None
     return current - int(previous[1])
+
+
+async def _evidence_freshness(session: AsyncSession, organization_id: UUID) -> dict:
+    """How recently the provider was actually read, per unit of evidence.
+
+    Measured over the newest reading of each (scope, evidence key), not over
+    the last scan. Those differ, and the difference is the reason this exists:
+    a scan may carry a reading forward rather than re-take it, and a reading
+    carried forward keeps the time it was *collected* rather than the time it
+    was reused (``DECISIONS.md`` §16). A freshness figure taken from
+    ``scans.completed_at`` would therefore report a posture as current when
+    part of it is a week old.
+
+    The headline is the **oldest** of those readings, because that is the
+    honest answer to "how current is this picture". An average would let a
+    hundred fresh listings hide the one subscription nobody has been able to
+    read since Tuesday.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(Evidence)
+                .where(Evidence.organization_id == organization_id)
+                .order_by(
+                    Evidence.cloud_account_id,
+                    Evidence.evidence_key,
+                    Evidence.collected_at.desc(),
+                )
+                .distinct(Evidence.cloud_account_id, Evidence.evidence_key)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return {
+            "readings": 0,
+            "oldest_at": None,
+            "newest_at": None,
+            "stale_hours": None,
+            "unusable": 0,
+        }
+
+    now = datetime.now(UTC)
+    times = [_aware(row.collected_at) for row in rows]
+    oldest, newest = min(times), max(times)
+    return {
+        "readings": len(rows),
+        "oldest_at": oldest.isoformat(),
+        "newest_at": newest.isoformat(),
+        "stale_hours": round((now - oldest).total_seconds() / 3600, 1),
+        # Readings that came back unusable -- failed, truncated, or skipped
+        # because their input never arrived. Counted here because a customer
+        # reading a freshness figure is asking whether to trust the picture,
+        # and "recent" and "usable" are two different halves of that.
+        "unusable": sum(1 for row in rows if row.outcome is not TaskOutcome.COMPLETE),
+    }
+
+
+def _aware(moment: datetime) -> datetime:
+    """PostgreSQL returns an aware datetime; a fixture may not."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 async def posture_history(

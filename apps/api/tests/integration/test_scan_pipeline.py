@@ -3078,3 +3078,75 @@ class TestTemporalModel:
 
         after = len(await self._changes(org_id)) + len(await self._events(org_id))
         assert after == before
+
+
+class TestEvidenceFreshness:
+    """How current the picture is, which is not what coverage says.
+
+    Coverage is the fraction of checks that reached a verdict. Freshness is how
+    recently the provider was asked. A posture can be fully covered and three
+    weeks out of date, and until this existed nothing said so.
+    """
+
+    async def test_a_scan_reports_what_it_read_and_when(
+        self, replay, connected_account
+    ) -> None:
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            summary = await build_dashboard(session, org_id)
+
+        freshness = summary["evidence_freshness"]
+        assert freshness["readings"] > 0
+        assert freshness["oldest_at"] is not None
+        # Just read, so the picture is current to within the length of a scan.
+        assert freshness["stale_hours"] < 1
+        assert freshness["unusable"] == 0
+
+    async def test_a_failed_reading_is_counted_as_unusable(
+        self, replay, connected_account
+    ) -> None:
+        """Recent and usable are two different halves of "can I trust this".
+
+        A customer reading a freshness figure is asking whether to believe the
+        picture, and a listing that failed an hour ago is fresh and worthless.
+        """
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        blind = load_raw()
+        blind["errors"] = {"storage": "the storage API could not be read"}
+        blind["gaps"] = {"storage_accounts": "the storage API could not be read"}
+        replay["payload"] = blind
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            summary = await build_dashboard(session, org_id)
+
+        assert summary["evidence_freshness"]["unusable"] >= 1
+
+    async def test_the_oldest_reading_is_the_headline(
+        self, replay, connected_account
+    ) -> None:
+        """An average would let a hundred fresh listings hide the one scope
+        nobody has managed to read since Tuesday."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE evidence SET collected_at = now() - interval '9 days' "
+                    "WHERE organization_id = :o AND evidence_key = 'storage_accounts'"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            summary = await build_dashboard(session, org_id)
+
+        assert summary["evidence_freshness"]["stale_hours"] > 200

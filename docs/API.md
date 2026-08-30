@@ -69,6 +69,15 @@ token rather than a session: `/cloud-connections/azure/consent/callback`, which
 Entra's redirect reaches from the customer's browser, and
 `/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches.
 
+`/dashboard` carries two figures that are easy to confuse and answer different
+questions. `coverage` is the share of checks that reached a verdict;
+`evidence_freshness` is how recently the provider was actually read, measured
+over the newest reading of each scope and evidence key rather than from the last
+scan's finish time — a scan may carry a reading forward instead of re-taking it,
+and a carried reading keeps the time it was collected. The headline is the
+*oldest* of those readings, because an average would let a hundred fresh
+listings hide the one subscription nobody has managed to read since Tuesday.
+
 `/changes` answers "what moved while I was away": asset appearances,
 disappearances, and changes to the three attributes the risk engine multiplies a
 finding by. A feed of transitions rather than a diff of two scans, so a week in

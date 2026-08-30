@@ -60,7 +60,7 @@ from app.core.enums import (
     TaskOutcome,
     VerificationStatus,
 )
-from app.core.logging import get_logger
+from app.core.logging import get_logger, log_context
 from app.domain.resource import CloudResource
 from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
@@ -269,23 +269,32 @@ class ScanPipeline:
                 log.error("scan.step_missing", step_id=str(step_id))
                 return ScanStepStatus.FAILED
             kind = step.kind
+            scope = step.cloud_account_id
 
-        try:
-            if kind == ScanStepKind.PLAN:
-                await self.plan()
-            elif kind == ScanStepKind.COLLECT:
-                await self.collect(step_id)
-            else:
-                await self.analyze()
-        except ScanStepError as exc:
-            return await self._settle(step_id, str(exc), retryable=exc.retryable)
-        except Exception as exc:
-            log.exception(
-                "scan.step_failed", scan_id=str(self.scan_id), step_id=str(step_id)
-            )
-            return await self._settle(step_id, str(exc), retryable=True)
+        # Bound here rather than in the Celery task, so a step driven by the
+        # tests or by a future caller carries the same context a queued one
+        # does. The scope is the id that matters when a tenant-wide scan has
+        # fifty collections in flight and one of them is slow.
+        with log_context(
+            scan_id=str(self.scan_id),
+            step_id=str(step_id),
+            step_kind=kind.value,
+            cloud_account_id=str(scope) if scope else None,
+        ):
+            try:
+                if kind == ScanStepKind.PLAN:
+                    await self.plan()
+                elif kind == ScanStepKind.COLLECT:
+                    await self.collect(step_id)
+                else:
+                    await self.analyze()
+            except ScanStepError as exc:
+                return await self._settle(step_id, str(exc), retryable=exc.retryable)
+            except Exception as exc:
+                log.exception("scan.step_failed")
+                return await self._settle(step_id, str(exc), retryable=True)
 
-        return await self._settle(step_id, None, retryable=False)
+            return await self._settle(step_id, None, retryable=False)
 
     def _log_step(self, step: ScanStep, outcome: ScanStepStatus) -> None:
         """One line per stage, carrying what it cost.

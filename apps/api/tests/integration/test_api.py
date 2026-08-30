@@ -465,6 +465,11 @@ class TestDashboard:
         assert data["last_scan"] is None
         # No scan has run, so we make no claim about coverage.
         assert data["coverage"]["ratio"] is None
+        # Nor about freshness. Nothing has been read, and reporting an age of
+        # zero hours would read as "up to date" for an environment nobody has
+        # looked at.
+        assert data["evidence_freshness"]["readings"] == 0
+        assert data["evidence_freshness"]["stale_hours"] is None
 
 
 class TestChangeFeed:
