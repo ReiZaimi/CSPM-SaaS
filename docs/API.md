@@ -69,6 +69,15 @@ token rather than a session: `/cloud-connections/azure/consent/callback`, which
 Entra's redirect reaches from the customer's browser, and
 `/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches.
 
+`/rules/{rule_id}` and `/findings/{id}` carry `remediation_spec` beside the
+remediation prose: the settings that must be true for the finding to close, the
+CLI commands that set them, the Terraform arguments for whoever manages this in
+code, and — only where one can genuinely enforce the whole rule — a generated
+Azure Policy definition. `enforceable: false` with `azure_policy: null` is a
+fact about the check rather than missing work: whether an administrator has MFA
+is a directory setting, and no `policyRule` can express it. A rule with no
+declaration at all returns `remediation_spec: null`, which is the other answer.
+
 `/dashboard` carries two figures that are easy to confuse and answer different
 questions. `coverage` is the share of checks that reached a verdict;
 `evidence_freshness` is how recently the provider was actually read, measured

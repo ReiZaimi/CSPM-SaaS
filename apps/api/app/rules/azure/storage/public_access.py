@@ -5,6 +5,7 @@ from typing import ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
+from app.remediation import ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
 
@@ -39,6 +40,33 @@ class AzurePublicStorageRule(SecurityRule):
         "    --allow-blob-public-access false --default-action Deny\n\n"
         "Where a container genuinely must be public, serve it through a CDN or a "
         "time-limited SAS token rather than leaving the container itself anonymous."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="allow_blob_public_access",
+                equals=False,
+                describes="Anonymous blob access is disabled",
+                arm_alias="Microsoft.Storage/storageAccounts/allowBlobPublicAccess",
+                terraform_attribute="allow_nested_items_to_be_public",
+            ),
+            ExpectedState(
+                field="network_default_action",
+                equals="Deny",
+                describes="Network rules default to Deny, allowing only named ranges",
+                arm_alias="Microsoft.Storage/storageAccounts/networkAcls.defaultAction",
+                terraform_attribute="network_rules.default_action",
+            ),
+        ),
+        cli=(
+            "az storage account update --name <account> --resource-group <rg> "
+            "--allow-blob-public-access false --default-action Deny",
+        ),
+        policy_resource_type="Microsoft.Storage/storageAccounts",
+        # Deny rather than Audit: an account created with anonymous access on is
+        # exposed from the moment it exists, and no deployment needs it to pass
+        # through unblocked first.
+        policy_effect="Deny",
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["3.7", "3.8"],
@@ -122,6 +150,34 @@ class AzureStorageEncryptionRule(SecurityRule):
         "Entra ID:\n"
         "  az storage account update --name <account> --resource-group <rg> \\\n"
         "    --allow-shared-key-access false"
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="https_traffic_only",
+                equals=True,
+                describes="Secure transfer required is enabled",
+                arm_alias="Microsoft.Storage/storageAccounts/supportsHttpsTrafficOnly",
+                terraform_attribute="https_traffic_only",
+            ),
+            ExpectedState(
+                field="min_tls_version",
+                equals="TLS1_2",
+                # The rule accepts 1.3 as well, so the policy must too: pinned
+                # to equality it would refuse an account configured better than
+                # asked, and a customer would find the policy and the check
+                # disagreeing about the same account.
+                also_accepts=("TLS1_3",),
+                describes="The minimum TLS version is 1.2 or higher",
+                arm_alias="Microsoft.Storage/storageAccounts/minimumTlsVersion",
+                terraform_attribute="min_tls_version",
+            ),
+        ),
+        cli=(
+            "az storage account update --name <account> --resource-group <rg> "
+            "--https-only true --min-tls-version TLS1_2",
+        ),
+        policy_resource_type="Microsoft.Storage/storageAccounts",
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["3.1", "3.15"],

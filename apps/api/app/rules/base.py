@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 from app.connectors.evidence import EvidenceKey
 from app.core.enums import Provider, ResourceType, RuleScope, RuleState, Severity
 from app.domain.resource import CloudResource
+from app.remediation import RemediationSpec
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,15 @@ class SecurityRule(ABC):
     # reporting a gap it had invented, which is the same overclaim as a PASS
     # nobody earned, pointed the other way.
     requires_evidence: ClassVar[tuple[EvidenceKey, ...]] = ()
+    # The machine-readable half of ``remediation`` above: what must be true for
+    # this finding to be fixed, and the artifacts generated from that.
+    #
+    # ``None`` means no declaration has been written, which is deliberately
+    # distinguishable from a declaration saying no policy can enforce this. The
+    # first is work not done; the second is a fact about the check -- whether an
+    # administrator has MFA is a directory setting, and no ``policyRule`` can
+    # express it.
+    remediation_spec: ClassVar[RemediationSpec | None] = None
 
     @abstractmethod
     def evaluate(

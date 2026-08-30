@@ -1075,10 +1075,42 @@ on the reaper.
     the schedule is what stops there being a next time somebody forgets.
 
     Still to do: change-triggered scans via Azure Event Grid.
-20. Remediation as data: `expected_state` and `verification_spec` beside the
-    human text, with IaC and Policy snippets generated from the same
-    declaration that generates the RBAC artifact — the `rbac.py` pattern
-    applied a second time.
+20. **Done for the pattern; declared on three rules so far.**
+    `app/remediation/` holds `ExpectedState` and `RemediationSpec`: what has to
+    be true for a finding to close, carrying three names for one setting --
+    the normalized field the rule reads, the ARM alias a policy matches on, and
+    the Terraform argument that sets it -- because the setting genuinely has
+    three. The Azure Policy definition and the Terraform hints are *generated*
+    from that, which is the `rbac.py` pattern: one declaration, several
+    artifacts, tests holding them to each other.
+
+    The test that earns it runs in both directions, as the RBAC ones do. An
+    asset built from a rule's own declaration must make that rule PASS, and one
+    violating it must make the rule FAIL. Without the second half a declaration
+    is documentation, and documentation drifts: a rule whose check moved on
+    while its remediation stayed put tells a customer to change something that
+    no longer closes the finding, and they do the work and are told it did not
+    count.
+
+    Two decisions worth keeping. A policy is generated **only where every**
+    expected state carries an alias -- one covering half a rule would pass an
+    asset that still fails it, and a customer who deployed it would believe the
+    class was closed. And `also_accepts` exists because a rule that accepts TLS
+    1.2 *or higher* would otherwise generate a policy pinned to equality, which
+    refuses an account configured better than asked; that is a change-control
+    incident rather than a bug report.
+
+    Aliases carry `rbac.py`'s own rule about unverified strings: declared where
+    verified, omitted where not. `AZ-DB-001` therefore generates a policy for
+    SQL and says plainly that the PostgreSQL half and the firewall half are not
+    covered, rather than generating something that silently applies to neither.
+    Migration 0019 copies the declared expectation onto a verification when the
+    claim is made, so `remediation_verifications` is now literally the
+    expected-state record this item asked for.
+
+    Still to declare: the remaining seven rules. Two of them (MFA, privileged
+    users) are directory settings that no `policyRule` can express, and their
+    declarations will say so rather than inventing one.
 21. A second provider, behind the existing `CloudConnector` seam. Only then
     generalize the permission-manifest pattern and migrate the scope
     vocabulary, in the order `MULTI_CLOUD.md` §8 already argues for.

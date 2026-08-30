@@ -35,6 +35,7 @@ from app.models.remediation import RemediationTask
 from app.models.resource import ResourceRecord
 from app.models.scan import Scan
 from app.models.verification import RemediationVerification
+from app.rules.registry import get_rule
 
 log = get_logger(__name__)
 
@@ -92,6 +93,7 @@ async def open_verification(
     existing = await pending_for(session, organization_id, finding.id)
 
     account_id, connection_id = await _scope_of(session, organization_id, finding)
+    expected = _expected_state(finding.rule_id)
 
     if existing is not None:
         existing.claimed_at = moment
@@ -105,6 +107,9 @@ async def open_verification(
         existing.last_state = None
         existing.next_attempt_at = next_attempt_after(0, now=moment)
         existing.detail = None
+        # Restated with the claim, because the claim is new: the customer is
+        # being told what will be checked *this* time.
+        existing.expected_state = expected
         return existing
 
     verification = RemediationVerification(
@@ -119,6 +124,7 @@ async def open_verification(
         claimed_at=moment,
         claimed_by_user_id=claimed_by_user_id,
         next_attempt_at=next_attempt_after(0, now=moment),
+        expected_state=expected,
     )
     session.add(verification)
     log.info(
@@ -264,6 +270,26 @@ async def due(
         .scalars()
         .all()
     )
+
+
+def _expected_state(rule_id: str) -> list[dict]:
+    """What the rule says has to be true, in the customer's own vocabulary.
+
+    Empty where the rule has no declaration yet. The verification still works --
+    it waits for the rule to pass, which is the real test -- and the customer
+    is simply told less about what is being waited for.
+    """
+    rule = get_rule(rule_id)
+    if rule is None or rule.remediation_spec is None:
+        return []
+    return [
+        {
+            "field": state.field,
+            "equals": state.equals,
+            "describes": state.describes,
+        }
+        for state in rule.remediation_spec.expected
+    ]
 
 
 async def _scope_of(

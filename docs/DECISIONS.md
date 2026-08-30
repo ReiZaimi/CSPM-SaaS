@@ -498,6 +498,47 @@ pass is verification while a person moving a status is a decision.
 and makes no observation, so it records neither changes nor events, exactly as
 it records no risk history and resolves no findings.
 
+## 21. Remediation is declared once and the artifacts are generated from it
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §12 item 20 — "`expected_state` and
+`verification_spec` beside the human text, with IaC and Policy snippets
+generated from the same declaration that generates the RBAC artifact".
+
+The prose stays. `SecurityRule.remediation` is what somebody reads at two in the
+morning and it is snapshot-copied onto every finding, so an old finding keeps
+the guidance it was raised with. What is new is the half a machine can act on.
+
+**One setting has three names, so the declaration carries three.** The
+normalized field the rule reads, the ARM alias a policy matches on, and the
+Terraform argument that sets it — and often three values too: ARM says
+`publicNetworkAccess: "Disabled"` where the provider says
+`public_network_access_enabled = false`. Emitting the ARM spelling into HCL
+would produce a line that does not mean what it says.
+
+**The test runs in both directions**, exactly as the RBAC ones do. An asset
+built from a rule's own declaration must make that rule PASS; one violating it
+must make it FAIL. Without the second half the declaration is documentation, and
+documentation drifts — a rule whose check moved on while its remediation stayed
+put tells a customer to change something that no longer closes the finding.
+
+**A policy is generated only where it can enforce the whole rule.** One covering
+half of it would pass an asset that still fails, and a customer who deployed it
+would believe the class was closed. Where no policy can exist — a directory
+setting, a condition over a child collection — the API says so rather than
+emitting a definition that deploys and checks nothing, which is the same
+discipline `rbac.py` records for permission strings nobody verified: an alias
+that looks plausible and is not real fails the customer's deployment outright.
+
+**`also_accepts` exists because floors are not equalities.** A rule accepting
+TLS 1.2 or higher, expressed as a policy pinned to 1.2, refuses an account
+configured better than asked. That is a change-control incident rather than a
+bug report, so the accepted set is declared rather than discovered after
+deployment.
+
+The generator negates the expected state, because a policy matches what it
+refuses. Doing that by hand per rule is how one ends up denying every compliant
+resource, which is why it is computed in one place.
+
 ---
 
 ## Open items carried forward

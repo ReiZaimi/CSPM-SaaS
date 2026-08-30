@@ -12,6 +12,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -118,6 +119,13 @@ class RemediationVerification(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     )
     # The sentence a customer reads. Written for them, not for a log.
     detail: Mapped[str | None] = mapped_column(Text)
+
+    # What has to be true for this to close, in the provider's own vocabulary.
+    # Copied from the rule's declaration when the claim is made rather than read
+    # back at display time, for the reason a finding copies its remediation
+    # prose: a rule's declaration can change, and somebody looking at a two-week
+    # -old claim should see what was expected of them when they made it.
+    expected_state: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
     verified_by_scan_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="SET NULL")

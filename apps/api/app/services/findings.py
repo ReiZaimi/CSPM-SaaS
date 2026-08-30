@@ -23,6 +23,7 @@ from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
 from app.models.rule import Rule
 from app.models.verification import RemediationVerification
+from app.remediation import azure_policy, terraform_hints
 from app.risk.scorer import default_scorer
 from app.rules.registry import get_rule
 from app.services import verification as verification_service
@@ -306,4 +307,48 @@ def rule_metadata(rule_id: str) -> dict:
         "category": rule.category,
         "compliance_mappings": rule.compliance_mappings,
         "estimated_effort_minutes": rule.estimated_effort_minutes,
+        # The machine-readable half of the remediation, beside the prose the
+        # finding already carries. Read from the registry rather than the
+        # finding, deliberately: the prose is snapshot-copied so an old finding
+        # keeps the guidance it was raised with, while this describes what
+        # CloudGuard checks *today* -- and being told to satisfy a condition
+        # that is no longer the one being checked would be worse than not being
+        # told at all.
+        "remediation_spec": remediation_detail(rule_id),
+    }
+
+
+def remediation_detail(rule_id: str) -> dict | None:
+    """What must become true, plus the artifacts generated from that.
+
+    ``None`` where a rule has no declaration yet, which is a different answer
+    from a declaration saying no policy can enforce it: the first is work not
+    done, the second is a fact about the check. The API keeps them apart because
+    a customer reading "no preventive policy" deserves to know which they are
+    looking at.
+    """
+    rule = get_rule(rule_id)
+    if rule is None or rule.remediation_spec is None:
+        return None
+
+    spec = rule.remediation_spec
+    policy = azure_policy(rule.rule_id, rule.name, spec)
+    return {
+        "expected_state": [
+            {
+                "field": state.field,
+                "equals": state.equals,
+                "also_accepts": list(state.also_accepts),
+                "describes": state.describes,
+            }
+            for state in spec.expected
+        ],
+        "cli": list(spec.cli),
+        "terraform": terraform_hints(spec),
+        # Present where a policy can genuinely refuse this misconfiguration,
+        # null where none can. A definition invented for the second case would
+        # deploy and check nothing.
+        "azure_policy": policy,
+        "enforceable": spec.enforceable,
+        "notes": spec.notes,
     }

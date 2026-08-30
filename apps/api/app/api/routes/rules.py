@@ -4,6 +4,7 @@ from sqlalchemy import select
 from app.core.deps import DbSession, Tenant
 from app.core.errors import NotFound, envelope
 from app.models.rule import Rule
+from app.services import findings as findings_service
 
 router = APIRouter(prefix="/rules", tags=["rules"])
 
@@ -27,6 +28,13 @@ def _serialize(rule: Rule) -> dict:
         # Data-driven framework tagging, straight out of JSONB. No business
         # logic anywhere branches on these values.
         "compliance_mappings": rule.compliance_mappings,
+        # What "fixed" means for this rule, and the artifacts generated from
+        # that one statement: the commands, the Terraform arguments, and -- only
+        # where one can genuinely enforce it -- an Azure Policy definition.
+        # Read from the registry rather than the mirror because it is code, not
+        # a row: a policy stored in the database could outlive the rule that
+        # generated it.
+        "remediation_spec": findings_service.remediation_detail(rule.rule_id),
     }
 
 

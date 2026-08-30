@@ -135,6 +135,9 @@ class VerificationOut(BaseModel):
 
     status: VerificationStatus
     claimed_at: datetime
+    # What has to become true for this to close, as it was declared when the
+    # claim was made.
+    expected_state: list[dict] = []
     attempts: int
     last_state: RuleState | None = None
     next_attempt_at: datetime | None = None
