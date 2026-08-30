@@ -3,7 +3,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import FindingStatus, Level, Priority, RemediationStatus, RiskKind, Severity
+from app.core.enums import (
+    FindingStatus,
+    Level,
+    Priority,
+    RemediationStatus,
+    RiskKind,
+    RuleState,
+    Severity,
+    VerificationStatus,
+)
 
 
 class ResourceSummary(BaseModel):
@@ -110,3 +119,23 @@ class RemediationOut(BaseModel):
     notes: str | None = None
     completed_at: datetime | None = None
     created_at: datetime
+
+
+class VerificationOut(BaseModel):
+    """Where a claimed fix has got to.
+
+    ``detail`` is the field that matters and it is written for a person: the
+    three ways of not being verified -- too soon, still failing, could not tell
+    -- are the same open finding and entirely different news, and a status code
+    alone leaves the reader to guess which one they are looking at.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: VerificationStatus
+    claimed_at: datetime
+    attempts: int
+    last_state: RuleState | None = None
+    next_attempt_at: datetime | None = None
+    settled_at: datetime | None = None
+    detail: str | None = None

@@ -9,7 +9,13 @@ from app.core.errors import ConflictError, ValidationFailed, envelope
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 from app.models.scan import Scan
-from app.schemas.finding import AcceptRiskRequest, FindingOut, ResourceSummary, RiskOut
+from app.schemas.finding import (
+    AcceptRiskRequest,
+    FindingOut,
+    ResourceSummary,
+    RiskOut,
+    VerificationOut,
+)
 from app.services import cloud_accounts as accounts_service
 from app.services import findings as service
 from app.services import scans as scans_service
@@ -99,6 +105,14 @@ async def get_finding(finding_id: UUID, session: DbSession, tenant: Tenant) -> d
     )
     payload["priority"] = detail["priority"].value
     payload["estimated_effort_minutes"] = detail["estimated_effort_minutes"]
+    # Null until somebody claims a fix. Present afterwards whether or not
+    # CloudGuard has settled it -- "checking, and it has not appeared yet" is
+    # the answer a customer who has just done the work is waiting for.
+    payload["verification"] = (
+        VerificationOut.model_validate(detail["verification"]).model_dump(mode="json")
+        if detail["verification"]
+        else None
+    )
     payload.update(service.rule_metadata(finding.rule_id))
     return envelope(payload)
 

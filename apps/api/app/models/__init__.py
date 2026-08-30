@@ -19,6 +19,7 @@ from app.models.scan import (
     ScanRuleResult,
     ScanStep,
 )
+from app.models.verification import RemediationVerification
 
 __all__ = [
     "AuditLog",
@@ -33,6 +34,7 @@ __all__ = [
     "Organization",
     "OrganizationMember",
     "RemediationTask",
+    "RemediationVerification",
     "ResourceRecord",
     "ResourceRelationship",
     "Risk",

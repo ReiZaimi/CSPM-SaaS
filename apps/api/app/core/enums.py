@@ -168,6 +168,11 @@ class ScanTrigger(StrEnum):
 
     MANUAL = "MANUAL"
     SCHEDULED = "SCHEDULED"
+    # CloudGuard checking whether a fix the customer reported actually took.
+    # Distinct from SCHEDULED because it answers a question somebody asked, and
+    # from MANUAL because they asked it by marking work done rather than by
+    # pressing scan -- and because it retries on a backoff nobody sees.
+    VERIFICATION = "VERIFICATION"
 
 
 class ScanStepKind(StrEnum):
@@ -286,6 +291,41 @@ class RemediationStatus(StrEnum):
     IN_PROGRESS = "IN_PROGRESS"
     DONE = "DONE"
     CANCELLED = "CANCELLED"
+
+
+class VerificationStatus(StrEnum):
+    """What became of a fix the customer said they had made.
+
+    The reason this is not a boolean: "not verified" covers three different
+    situations that need three different sentences. The fix might not have
+    worked; CloudGuard might not have been able to look; or it might simply be
+    too soon, because a cloud takes its time agreeing with itself and a check
+    run thirty seconds after a change reports the environment as it was.
+
+    Collapsing those into one answer is what makes a verification feature
+    untrustworthy: a customer told "still failing" who has in fact fixed it
+    stops believing the next answer too.
+    """
+
+    # Being checked. The fix is claimed, and CloudGuard has not yet seen enough
+    # to agree or disagree.
+    PENDING = "PENDING"
+    # A rule that used to fail returned an explicit PASS over the same asset.
+    VERIFIED = "VERIFIED"
+    # CloudGuard looked, repeatedly, and the check still fails.
+    STILL_FAILING = "STILL_FAILING"
+    # CloudGuard looked and could not tell -- the evidence the rule needs never
+    # arrived. Not the same as failing, and never reported as if it were: this
+    # is a gap in what CloudGuard could see, which is CloudGuard's problem to
+    # explain rather than the customer's to fix.
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    # The question stopped being worth asking: the finding was accepted as a
+    # risk, or the asset it was about is gone.
+    ABANDONED = "ABANDONED"
+
+    @property
+    def is_settled(self) -> bool:
+        return self is not VerificationStatus.PENDING
 
 
 class Priority(StrEnum):

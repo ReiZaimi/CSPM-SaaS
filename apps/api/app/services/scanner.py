@@ -50,11 +50,13 @@ from app.core.enums import (
     RelationshipType,
     RiskKind,
     RiskStatus,
+    RuleState,
     ScanStatus,
     ScanStepKind,
     ScanStepStatus,
     Severity,
     TaskOutcome,
+    VerificationStatus,
 )
 from app.core.logging import get_logger
 from app.domain.resource import CloudResource
@@ -74,10 +76,12 @@ from app.models.scan import (
     ScanRuleResult,
     ScanStep,
 )
+from app.models.verification import RemediationVerification
 from app.risk.scorer import RiskInputs, ScoredRisk, default_scorer
 from app.rules.base import RuleContext, SecurityRule
-from app.rules.engine import EvaluationReport, RuleEngine
+from app.rules.engine import EvaluatedResult, EvaluationReport, RuleEngine
 from app.services import orchestrator
+from app.services import verification as verification_service
 from app.services.cloud_connections import degraded_categories
 from app.services.evidence_planner import plan_collection, required_evidence
 
@@ -2409,10 +2413,25 @@ class ScanPipeline:
             (rule_id, id_map.get(provider_id) if provider_id else None)
             for rule_id, provider_id in report.passes
         }
-        if not passed:
-            return
-
         now = datetime.now(UTC)
+        # Settled first, and regardless of whether anything passed. A scan that
+        # proves nothing is still an observation: it is how a claimed fix that
+        # did not work eventually gets told so, and how one CloudGuard cannot
+        # see gets called insufficient evidence rather than left in silence.
+        await self._settle_verifications(
+            session,
+            org_id,
+            scan,
+            report,
+            id_map,
+            now=now,
+            account_ids=account_ids,
+            connection_id=connection_id,
+        )
+
+        if not passed:
+            await session.commit()
+            return
         open_findings = (
             (
                 await session.execute(
@@ -2437,6 +2456,11 @@ class ScanPipeline:
             if (finding.rule_id, finding.resource_id) in passed
         ]
         if not resolved:
+            # Nothing to close, but the verifications settled above are still
+            # this scan's work. Returning without committing would throw away
+            # the attempt it just spent, and the customer would be told nothing
+            # for a scan that did look.
+            await session.commit()
             return
 
         # Both lookups batched. They ran inside the loop -- one statement for the
@@ -2483,6 +2507,111 @@ class ScanPipeline:
                 risk.resolved_at = now
 
         await session.commit()
+
+    async def _settle_verifications(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        scan: Scan,
+        report: EvaluationReport,
+        id_map: dict[str, UUID],
+        *,
+        now: datetime,
+        account_ids: list[UUID],
+        connection_id: UUID | None,
+    ) -> None:
+        """Apply this scan's verdicts to the fixes customers say they have made.
+
+        Every scan does this, not only one started to verify something. A
+        nightly scan that happens to pass the rule a customer fixed this morning
+        has answered their question, and making them wait for a scan with the
+        right label on it would be ceremony.
+
+        Scoped to what this scan read. A verification about a subscription this
+        scan never opened has not been observed by it, and spending one of its
+        attempts would burn the customer's answer on a scan that never looked.
+
+        A pending verification this scan reached no verdict on **still counts as
+        an attempt**, recorded as UNKNOWN. That is the honest reading -- the
+        scan covered the scope and produced nothing about that asset, usually
+        because the asset is no longer in the environment being returned -- and
+        without it a verification whose asset vanished would stay pending for
+        ever, with the scheduler starting scans to settle a question that can no
+        longer be answered.
+        """
+        pending = (
+            (
+                await session.execute(
+                    select(RemediationVerification).where(
+                        RemediationVerification.organization_id == org_id,
+                        RemediationVerification.status == VerificationStatus.PENDING,
+                        self._verification_scope(account_ids, connection_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not pending:
+            return
+
+        observed: dict[tuple[str, UUID | None], RuleState] = {}
+        # Least specific first, so an explicit verdict always wins: a rule can
+        # produce a gap for one asset and a pass for another in the same run.
+        for gap in report.gaps:
+            observed[self._verdict_key(gap, id_map)] = RuleState.UNKNOWN
+        for failure in report.failures:
+            observed[self._verdict_key(failure, id_map)] = RuleState.FAIL
+        for rule_id, provider_id in report.passes:
+            observed[(rule_id, id_map.get(provider_id) if provider_id else None)] = (
+                RuleState.PASS
+            )
+
+        for verification in pending:
+            state = observed.get(
+                (verification.rule_id, verification.resource_id), RuleState.UNKNOWN
+            )
+            outcome = verification_service.observe(
+                verification, state, scan_id=scan.id, now=now
+            )
+            log.info(
+                "verification.observed",
+                verification_id=str(verification.id),
+                rule_id=verification.rule_id,
+                state=state.value,
+                attempts=verification.attempts,
+                outcome=outcome.value,
+            )
+
+    @staticmethod
+    def _verdict_key(
+        result: EvaluatedResult, id_map: dict[str, UUID]
+    ) -> tuple[str, UUID | None]:
+        provider_id = (
+            result.resource.provider_resource_id if result.resource is not None else None
+        )
+        return result.rule.rule_id, id_map.get(provider_id) if provider_id else None
+
+    def _verification_scope(
+        self, account_ids: list[UUID], connection_id: UUID | None
+    ) -> ColumnElement[bool]:
+        """The verifications this scan is entitled to have an opinion about."""
+        clauses: list[ColumnElement[bool]] = []
+        if account_ids:
+            clauses.append(RemediationVerification.cloud_account_id.in_(account_ids))
+        if connection_id is not None:
+            # Directory findings belong to no subscription. They are settled by
+            # any scan that read the tenant through the same connection, which
+            # is every scan under it.
+            clauses.append(
+                and_(
+                    RemediationVerification.cloud_account_id.is_(None),
+                    RemediationVerification.connection_id == connection_id,
+                )
+            )
+        if not clauses:
+            return RemediationVerification.id.is_(None)
+        return or_(*clauses) if len(clauses) > 1 else clauses[0]
 
     def _title(self, rule_name: str, resource: CloudResource | None) -> str:
         """Plain language, naming the asset.

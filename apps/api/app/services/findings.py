@@ -15,8 +15,10 @@ from app.models.remediation import AuditLog, RiskException
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
 from app.models.rule import Rule
+from app.models.verification import RemediationVerification
 from app.risk.scorer import default_scorer
 from app.rules.registry import get_rule
+from app.services import verification as verification_service
 
 
 async def get_finding(
@@ -61,6 +63,12 @@ async def load_detail(
         "risk": risk,
         "priority": default_scorer.priority(score, effort),
         "estimated_effort_minutes": effort,
+        # Where the claimed fix has got to, if somebody has claimed one. The
+        # answer to "did my work count" belongs on the page where the work was
+        # reported, and the interesting part of it is the sentence: "still
+        # failing" and "CloudGuard could not read enough to tell" are the same
+        # open finding and entirely different news.
+        "verification": await latest_verification(session, finding),
     }
 
 
@@ -80,6 +88,16 @@ async def accept_risk(
         raise ValidationFailed("This finding is already resolved")
 
     finding.status = FindingStatus.ACCEPTED_RISK
+
+    # A risk somebody has decided to live with is not a fix waiting to be
+    # confirmed. Left pending, the scheduler would keep starting scans to settle
+    # a question that has been answered by a decision instead of by evidence.
+    await verification_service.abandon(
+        session,
+        tenant.organization_id,
+        finding.id,
+        reason="The risk was accepted, so CloudGuard stopped checking for a fix.",
+    )
 
     session.add(
         RiskException(
@@ -137,6 +155,26 @@ async def set_status(
     )
     await commit_unless_externally_managed(session)
     return finding
+
+
+async def latest_verification(
+    session: AsyncSession, finding: Finding
+) -> RemediationVerification | None:
+    """The most recent claim that this finding was fixed, settled or not.
+
+    Newest rather than pending, because a settled verification is the more
+    useful answer once there is one: a customer looking at a finding that is
+    still open after they fixed it wants to be told why, not told nothing on
+    the grounds that CloudGuard has finished asking.
+    """
+    return (
+        await session.execute(
+            select(RemediationVerification)
+            .where(RemediationVerification.finding_id == finding.id)
+            .order_by(RemediationVerification.claimed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def own_risk(session: AsyncSession, finding: Finding) -> Risk | None:

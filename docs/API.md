@@ -68,6 +68,15 @@ token rather than a session: `/cloud-connections/azure/consent/callback`, which
 Entra's redirect reaches from the customer's browser, and
 `/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches.
 
+Marking a remediation task `DONE` opens a **verification**: CloudGuard records
+what it now expects to see and checks the environment on a backoff (5m, 15m, 1h,
+4h) until it can answer. `GET /findings/{id}` returns that answer under
+`verification`, and its `detail` is written for a person, because "still
+failing", "CloudGuard could not read enough to tell" and "too soon, checking
+again" are the same open finding and three different pieces of news. Cancelling
+the task, or accepting the risk, withdraws the question rather than leaving it
+pending.
+
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's
 latest scan. Each control resolves to FAILING, INCONCLUSIVE, PASSING,

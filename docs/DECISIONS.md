@@ -365,6 +365,60 @@ declaration does not rescore stored findings on the spot — a risk score is wha
 a scan concluded, and rewriting one from an API call would leave findings
 carrying numbers no observation ever produced.
 
+## 18. A claimed fix is verified on a backoff, and not-verified has three answers
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §12 item 12 — "a verification engine:
+expected-state records, targeted plans, backoff for eventual consistency, and
+`INSUFFICIENT_EVIDENCE` as an outcome distinct from `STILL_FAILING`".
+
+Marking a task done recorded a timestamp and told the customer to run a scan.
+If they did, and if that scan happened to produce a PASS on the same rule and
+asset, the finding resolved. Every part of that is a coincidence: nothing
+recorded what CloudGuard was expecting to see, nothing looked again on its own,
+and every way of *not* being verified came out as the same silence — the finding
+stayed open and the customer was told nothing.
+
+`remediation_verifications` holds the expectation, written when the claim is
+made: this rule, on this asset, should now PASS. Every scan that reaches a
+verdict on that pair settles it or spends one attempt — every scan, not only one
+started to verify something, because a nightly scan that passes the rule a
+customer fixed this morning has answered their question and making them wait for
+a scan with the right label on it would be ceremony.
+
+**The backoff is about the cloud, not about load.** Azure applies a change to
+its control plane before every read path agrees about it, so a check run a
+minute after the work reads the old state and is right to — the environment
+genuinely still said that when it was asked. Four attempts over roughly five
+hours (5m, 15m, 1h, 4h), then an answer. It stops rather than retrying
+indefinitely because an answer is the product: a verification that never settles
+is the same silence this table was built to remove, dressed up as diligence.
+
+**Three outcomes, because "not verified" is three different pieces of news.**
+STILL_FAILING is CloudGuard looking and disagreeing. INSUFFICIENT_EVIDENCE is
+CloudGuard failing to look — its own problem to explain, not the customer's to
+fix. That is exactly the FAIL/UNKNOWN line the rule algebra already draws,
+carried up to the one screen where somebody is told whether their work counted.
+Telling a customer who has done the work that their fix failed, when the
+evidence never arrived, is the same overclaim as a PASS nobody earned, pointed
+at the person instead of the environment. A verification that once saw a
+definite FAIL settles as STILL_FAILING even if later attempts went blind: having
+seen the check fail is the stronger and truer statement.
+
+**A scan settles only what it read.** Spending an attempt on a subscription the
+scan never opened would burn the customer's answer on a reading that never
+looked at their fix. A pending verification the scan reached no verdict on
+*does* count as an attempt, recorded as UNKNOWN — the scan covered the scope and
+said nothing about that asset, usually because the asset is no longer there, and
+without that a verification whose asset vanished would stay pending for ever
+with the scheduler starting scans to settle it.
+
+**Not done:** targeted collection. A verification scan could collect only the
+evidence its rule needs — the planner (§16) is the seam for it — but a scan
+narrowed that way must also evaluate only what it collected fresh, or it would
+re-assert stale verdicts about every rule it did not look at. That is a rule
+about what a narrowed scan may conclude, not a planning decision, and it is the
+next thing here rather than part of this.
+
 ---
 
 ## Open items carried forward

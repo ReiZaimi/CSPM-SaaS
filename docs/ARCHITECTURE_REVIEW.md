@@ -833,9 +833,27 @@ on the reaper.
     are a later migration rather than a nullable column nothing writes, and a
     declaration deliberately does not rescore stored findings on the spot — a
     score is what a scan concluded. See `DECISIONS.md` §17.
-12. A verification engine: expected-state records, targeted plans, backoff for
-    eventual consistency, and `INSUFFICIENT_EVIDENCE` as an outcome distinct
-    from `STILL_FAILING`.
+12. **Done, except the targeted plans.** `remediation_verifications` (migration
+    0017) records the expectation the moment a customer marks work done — this
+    rule, on this asset, should now PASS — and `app/services/verification.py`
+    settles it from whatever any scan observes. A beat task looks again on a
+    widening backoff (5m, 15m, 1h, 4h) because a cloud applies a change before
+    every read path agrees about it, so an early FAIL is the environment not
+    having caught up rather than a failed fix.
+
+    `INSUFFICIENT_EVIDENCE` and `STILL_FAILING` are separate outcomes, which is
+    the FAIL/UNKNOWN line carried up to the one screen where somebody is told
+    whether their work counted; a verification that once saw a definite FAIL
+    settles as STILL_FAILING even if later attempts went blind. The finding
+    detail returns the verification, so "checking, it has not appeared yet" is
+    something the customer can read rather than infer from a finding that has
+    not moved.
+
+    Targeted plans are deliberately still open. A verification scan could
+    collect only its rule's evidence, but a scan narrowed that way must also
+    evaluate only what it collected fresh or it re-asserts stale verdicts about
+    everything it did not look at — a rule about what a narrowed scan may
+    conclude rather than a planning decision. See `DECISIONS.md` §18.
 
 ### Phase 3 — analysis depth
 

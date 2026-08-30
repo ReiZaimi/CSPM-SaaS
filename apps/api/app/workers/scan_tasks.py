@@ -15,13 +15,18 @@ import asyncio
 from functools import lru_cache
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
 from app.core.db import dispose_engines, service_session
 from app.core.enums import ScanStatus, ScanStepKind, ScanTrigger
 from app.core.logging import configure_logging, get_logger
+from app.models.cloud_account import CloudAccount
 from app.models.scan import Scan
 from app.services import orchestrator
 from app.services import scans as scans_service
+from app.services import verification as verification_service
 from app.services.scanner import ScanPipeline
 from app.workers.celery_app import (
     ANALYZE_QUEUE,
@@ -153,6 +158,27 @@ def reap_abandoned_scans(self: object) -> dict:
     return {"reclaimed": len(reclaimed), "closed": len(closed)}
 
 
+@celery_app.task(name="cloudguard.verify_due_remediations", bind=True, max_retries=0)
+def verify_due_remediations(self: object) -> dict:
+    """Look again at the fixes customers have reported.
+
+    The half of verification that used to be the customer's job. Marking work
+    done told them to run a rescan; if they forgot, or ran one too early and
+    saw the old state, the finding stayed open and nothing said why.
+
+    One scan per scope rather than one per verification, because a scan of a
+    subscription settles every claim in it at once -- and a scan already running
+    over that scope is left to do the job rather than queued behind.
+    """
+    configure_logging()
+    started = asyncio.run(_start_verification_scans())
+    if started:
+        log.info("verification.scans_started", count=len(started))
+    for scan_id in started:
+        run_scan.delay(str(scan_id))
+    return {"started": len(started)}
+
+
 @celery_app.task(name="cloudguard.start_due_scans", bind=True, max_retries=0)
 def start_due_scans(self: object) -> dict:
     """Start scans for connections whose environment is overdue a reading.
@@ -240,6 +266,101 @@ async def _run_step(scan_id: UUID, step_id: UUID) -> str:
         return (await ScanPipeline(scan_id).run_step(step_id)).value
     finally:
         await dispose_engines()
+
+
+async def _start_verification_scans() -> list[UUID]:
+    """Queue the cheapest scan that could settle each due verification.
+
+    Grouped by scope first. A tenant with eight claimed fixes in one
+    subscription is one scan, not eight -- and every one of those claims is
+    settled by it, because a scan settles every verification whose scope it
+    read rather than the one it was started for.
+
+    A verification with no scope at all is skipped rather than served: nothing
+    can be read to settle it, and a scan started anyway would spend an attempt
+    without looking at the right thing.
+    """
+    started: list[UUID] = []
+    try:
+        async with service_session() as session:
+            due = await verification_service.due(session)
+            scopes: list[tuple[UUID, UUID | None, UUID | None]] = []
+            for verification in due:
+                account_id = verification.cloud_account_id
+                connection_id = verification.connection_id
+                if account_id is None and connection_id is None:
+                    continue
+                scope = (verification.organization_id, connection_id, account_id)
+                if scope not in scopes:
+                    scopes.append(scope)
+
+        for org_id, connection_id, account_id in scopes:
+            async with service_session() as session:
+                if account_id is None:
+                    # A directory finding belongs to the tenant. Any scannable
+                    # subscription under the connection reads the directory
+                    # once through it, so the cheapest scan available still
+                    # looks at the thing being verified.
+                    account_id = await _any_scannable_account(
+                        session, org_id, connection_id
+                    )
+                    if account_id is None:
+                        continue
+                    account = await session.get(CloudAccount, account_id)
+                    connection_id = account.connection_id if account else connection_id
+
+                await scans_service.lock_scan_target(
+                    session, org_id, connection_id, account_id
+                )
+                if await scans_service.scan_in_flight(
+                    session, org_id, connection_id, account_id
+                ):
+                    # Already being read. That scan settles these claims when it
+                    # analyzes, so starting another would spend an attempt on a
+                    # duplicate reading of the same environment.
+                    continue
+
+                scan = Scan(
+                    organization_id=org_id,
+                    cloud_account_id=account_id,
+                    status=ScanStatus.QUEUED,
+                    trigger=ScanTrigger.VERIFICATION,
+                )
+                session.add(scan)
+                await session.commit()
+                started.append(scan.id)
+        return started
+    finally:
+        await dispose_engines()
+
+
+async def _any_scannable_account(
+    session: AsyncSession, org_id: UUID, connection_id: UUID | None
+) -> UUID | None:
+    """Any subscription under this connection a scan could run against.
+
+    ``is_scannable`` is a property over four columns rather than a column, so it
+    is applied here rather than in the query -- the same way the API and the
+    pipeline resolve their own scopes.
+    """
+    if connection_id is None:
+        return None
+    rows = (
+        (
+            await session.execute(
+                select(CloudAccount)
+                .where(
+                    CloudAccount.organization_id == org_id,
+                    CloudAccount.connection_id == connection_id,
+                )
+                .order_by(CloudAccount.display_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    account = next((a for a in rows if a.is_scannable), None)
+    return account.id if account else None
 
 
 async def _start_due() -> list[UUID]:

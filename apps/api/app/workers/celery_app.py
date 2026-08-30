@@ -51,6 +51,15 @@ celery_app.conf.beat_schedule = {
         "task": "cloudguard.start_due_scans",
         "schedule": 300.0,
     },
+    # A minute, because the first attempt is owed five minutes after a customer
+    # says they have fixed something and a coarse tick would double that. The
+    # sweep is a bounded query against a partial index over pending rows, so
+    # looking often costs almost nothing and waiting costs the customer the one
+    # answer they are actually sitting there waiting for.
+    "verify-due-remediations": {
+        "task": "cloudguard.verify_due_remediations",
+        "schedule": 60.0,
+    },
 }
 
 celery_app.conf.update(

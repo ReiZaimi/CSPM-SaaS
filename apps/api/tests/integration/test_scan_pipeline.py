@@ -29,19 +29,23 @@ from app.core.enums import (
     Level,
     Provider,
     RiskStatus,
+    RuleState,
     ScanStatus,
     ScanStepKind,
     ScanStepStatus,
     ScanTrigger,
     TaskOutcome,
+    VerificationStatus,
 )
 from app.models.cloud_account import CloudAccount
 from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
 from app.models.scan import Scan, ScanStep
+from app.models.verification import RemediationVerification
 from app.services import orchestrator
 from app.services import scanner as scanner_module
 from app.services import scans as scans_service
+from app.services import verification as verification_service
 from app.services.scanner import ScanPipeline
 from app.services.scans import DIRECTORY_LABEL
 from tests.integration.conftest import create_org_as
@@ -2663,3 +2667,159 @@ class TestDeclaredContext:
 
         contexts = await self._context_of(account_id)
         assert not any(source == "inherited" for _, source in contexts.values())
+
+
+class TestVerification:
+    """A claimed fix, and whether CloudGuard can honestly confirm it.
+
+    The auto-resolve tests above prove a scan closes a finding it saw fixed.
+    These prove the other half, which is what a customer actually experiences:
+    that a claim is recorded, that an early failure is not reported as a failed
+    fix, and that failing to look is never dressed up as looking and
+    disagreeing.
+    """
+
+    async def _claim(self, org_id, finding_id, *, attempts: int = 0):
+        async with service_session() as session:
+            finding = await session.get(Finding, finding_id)
+            verification = await verification_service.open_verification(
+                session, organization_id=org_id, finding=finding
+            )
+            # Fast-forwarding the backoff rather than sleeping through it: the
+            # schedule itself is covered by unit tests, and what these need is
+            # the state a verification reaches after its attempts run out.
+            verification.attempts = attempts
+            await session.commit()
+            return verification.id
+
+    async def _verification(self, verification_id):
+        async with service_session() as session:
+            return await session.get(RemediationVerification, verification_id)
+
+    async def _open_finding(self, org_id, rule_id: str = "AZ-NET-001"):
+        rows = await fetch(
+            "SELECT id FROM findings WHERE organization_id = :o AND rule_id = :r",
+            {"o": org_id, "r": rule_id},
+        )
+        return rows[0][0]
+
+    def _fix_rdp(self, replay) -> None:
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+
+    async def test_a_pass_verifies_the_claim(self, replay, connected_account) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id, await self._open_finding(org_id)
+        )
+
+        self._fix_rdp(replay)
+        scan_2 = await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.VERIFIED
+        assert verification.verified_by_scan_id == scan_2
+        assert verification.next_attempt_at is None
+
+    async def test_an_unfixed_check_spends_an_attempt_rather_than_failing_it(
+        self, replay, connected_account
+    ) -> None:
+        """The environment is read and still says the same thing. That is not
+        yet an answer -- a change reaches a cloud's read paths in its own
+        time -- so the claim stays open with another look scheduled."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id, await self._open_finding(org_id)
+        )
+
+        await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.PENDING
+        assert verification.attempts == 1
+        assert verification.last_state == RuleState.FAIL
+        assert verification.next_attempt_at is not None
+
+    async def test_the_answer_arrives_once_the_attempts_run_out(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id,
+            await self._open_finding(org_id),
+            attempts=len(verification_service.ATTEMPT_SCHEDULE) - 1,
+        )
+
+        await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.STILL_FAILING
+        assert verification.settled_at is not None
+        assert verification.next_attempt_at is None
+
+    async def test_a_scan_that_could_not_look_says_so_rather_than_failing_the_fix(
+        self, replay, connected_account
+    ) -> None:
+        """The distinction the whole outcome vocabulary exists for.
+
+        A collection gap degrades the rule to UNKNOWN, and a customer who has
+        done the work must not be told their fix failed because CloudGuard could
+        not read the environment.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id,
+            await self._open_finding(org_id),
+            attempts=len(verification_service.ATTEMPT_SCHEDULE) - 1,
+        )
+
+        blind = load_raw()
+        blind["errors"] = {"network": "the network API could not be read"}
+        blind["gaps"] = {
+            "network_security_groups": "the network API could not be read",
+            "network_interfaces": "the network API could not be read",
+        }
+        replay["payload"] = blind
+        await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.INSUFFICIENT_EVIDENCE
+        assert "not a failed fix" in verification.detail
+
+    async def test_a_claim_in_another_subscription_is_left_alone(
+        self, replay, connected_tenant
+    ) -> None:
+        """A scan settles what it read and nothing else.
+
+        Spending an attempt on a subscription this scan never opened would burn
+        the customer's answer on a reading that never looked at their fix.
+        """
+        org_id, connection_id = connected_tenant
+        await run_connection_scan(org_id, connection_id)
+
+        accounts = await fetch(
+            "SELECT id FROM cloud_accounts WHERE organization_id = :o ORDER BY "
+            "display_name",
+            {"o": org_id},
+        )
+        first, second = accounts[0][0], accounts[1][0]
+        rows = await fetch(
+            "SELECT f.id FROM findings f JOIN cloud_resources r ON r.id = f.resource_id "
+            "WHERE f.organization_id = :o AND r.cloud_account_id = :a LIMIT 1",
+            {"o": org_id, "a": second},
+        )
+        verification_id = await self._claim(org_id, rows[0][0])
+
+        await run_scan(org_id, first)
+
+        verification = await self._verification(verification_id)
+        assert verification.attempts == 0, "a scan of another subscription observed it"
+        assert verification.status == VerificationStatus.PENDING
