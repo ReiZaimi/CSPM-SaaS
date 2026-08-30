@@ -50,6 +50,14 @@ export interface Asset extends ResourceSummary {
 
 export interface Risk {
   id: string;
+  /**
+   * Whether this is one observation scored for its asset, or several of them
+   * seen as a route. Both rank in the same list — a combination outranking its
+   * parts is only visible where they are listed together.
+   */
+  kind: "FINDING" | "ATTACK_PATH";
+  /** The route, hop by hop. Empty for a finding risk, which has none. */
+  path: AttackPathStep[];
   title: string;
   description: string;
   risk_score: number;
@@ -61,7 +69,17 @@ export interface Risk {
   exploitability: number;
   business_impact: number;
   score_breakdown: {
+    /** Present on a finding risk: the six weighted components. */
     components?: Record<string, { value: number; weight: number; contribution: number }>;
+    /**
+     * Present on a scenario risk instead. The floor is the worst member's
+     * score, so the number is visibly built on evidence rather than decided.
+     * `uncapped` exists so a score of 100 can explain why it is not 101.
+     */
+    worst_member?: number;
+    amplifier?: number;
+    hops?: number;
+    uncapped?: number;
     total?: number;
   };
 }

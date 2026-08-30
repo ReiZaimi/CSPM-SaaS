@@ -855,6 +855,15 @@ on the reaper.
     four times, and even once would charge the customer twice for one problem.
     A scenario re-ranks and explains; it does not add a fault to the tally.
 
+    On the risks page both kinds share one list, because a route outranking the
+    findings inside it is only visible where they are ranked together — on a
+    page of its own it would be a second opinion nobody compares. A scenario
+    renders as its own shape rather than as a finding risk with extra fields:
+    it shows the route and the arithmetic that lifted it above its worst
+    member, and deliberately omits exploitability and asset criticality, which
+    are inputs to the *finding* formula and were never used here. Showing them
+    would be showing working that was never done.
+
     Risk history — score over time, "did risk increase" — is still §2.10 and
     still unbuilt.
 

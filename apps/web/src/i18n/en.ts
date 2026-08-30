@@ -276,7 +276,23 @@ export const en = {
     compliance: "Related controls",
   },
   assets: { title: "Assets", empty: "No assets discovered yet.", openFindings: "Open findings" },
-  risks: { title: "Risks", empty: "No risks recorded yet." },
+  risks: {
+    title: "Risks",
+    empty: "No risks recorded yet.",
+    // A scenario is not a louder finding. It is several of them seen as one
+    // thing, and the label has to carry that or it reads as duplication.
+    scenarioBadge: "Attack path",
+    scenarioIntro: "Several findings, seen as one route",
+    routeLabel: "The route",
+    cutLabel: "Severing it",
+    // The scoring, said in the terms the breakdown actually stores. A customer
+    // asking "why is this above the finding inside it" gets an answer rather
+    // than a number.
+    worstMember: "Worst finding on the route",
+    amplifier: "Added for the route itself",
+    cappedNote: "Capped at 100.",
+    memberCount: "findings on this route",
+  },
   attackPaths: {
     title: "Attack paths",
     intro:
