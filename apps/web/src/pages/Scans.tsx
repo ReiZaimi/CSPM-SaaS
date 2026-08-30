@@ -320,9 +320,18 @@ function ScanDetailPanel({ scanId }: { scanId: string }) {
               and revoke — not an internal reference. */}
           <Row label="Service principal" value={scope.service_principal_object_id} />
           <Row label="Role" value={scope.role_version ? `Scanner ${scope.role_version}` : null} />
+          {/* Read from `trigger`, not inferred from a missing user. Before
+              scans could start themselves, a NULL user meant "scheduled" by
+              elimination; now it can equally mean a manual scan whose user
+              record has gone, and labelling that one "Scheduled" is a plain
+              untruth about who asked. */}
           <Row
             label={t.scans.initiator}
-            value={detail.data.triggered_by_user_id ?? t.scans.scheduled}
+            value={
+              detail.data.trigger === "SCHEDULED"
+                ? t.scans.scheduled
+                : (detail.data.triggered_by_user_id ?? t.scans.manualUnknownUser)
+            }
           />
         </dl>
       </div>

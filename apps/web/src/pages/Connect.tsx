@@ -9,8 +9,16 @@ import type {
   RevocationCheck,
 } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Button, Card, EmptyState, ErrorNote, Spinner, StatusPill } from "@/components/ui";
-import { formatDateTime } from "@/lib/format";
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorNote,
+  Select,
+  Spinner,
+  StatusPill,
+} from "@/components/ui";
+import { cn, formatDateTime } from "@/lib/format";
 import { ConnectionForm } from "@/components/ConnectWizard";
 
 /**
@@ -392,6 +400,14 @@ function ConnectionCard({
         </div>
       )}
 
+      {/* And the answer to "do I have to remember to do that?". Placed after
+          the scan button rather than beside it: the first scan is the thing to
+          do now, and the schedule is the thing that stops there being a next
+          time somebody forgets. */}
+      {connection.is_verified && scoped.length > 0 && (
+        <ScheduleControl connection={connection} onError={setError} />
+      )}
+
       {cancelled && (
         <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
           <p className="text-sm font-medium text-stone-800">
@@ -443,6 +459,130 @@ function ConnectionCard({
     </Card>
   );
 }
+
+/**
+ * How often this environment is re-read.
+ *
+ * The values are the ones a customer actually asks for, not the range the API
+ * accepts. An hourly option is technically valid and would mostly produce a
+ * scan that is still running when the next is due; a free-number input invites
+ * exactly that, so the choice is a short list of intervals that make sense for
+ * a posture report.
+ *
+ * Saving is immediate rather than behind a Save button. There is one value and
+ * changing it is reversible in a click, so a staging step would be ceremony
+ * around a dropdown.
+ */
+export function ScheduleControl({
+  connection,
+  onError,
+}: {
+  connection: CloudConnection;
+  onError: (message: string) => void;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [saved, setSaved] = useState(false);
+
+  const options: { value: string; label: string }[] = [
+    { value: "", label: t.connection.scheduleManual },
+    { value: "6", label: t.connection.scheduleEvery6Hours },
+    { value: "24", label: t.connection.scheduleDaily },
+    { value: "72", label: t.connection.scheduleEvery3Days },
+    { value: "168", label: t.connection.scheduleWeekly },
+  ];
+
+  const save = useMutation({
+    mutationFn: (hours: number | null) =>
+      api.patch<CloudConnection>(
+        `/api/v1/cloud-connections/${connection.id}/schedule`,
+        { scan_interval_hours: hours },
+      ),
+    onSuccess: () => {
+      // Confirmation for a control that has no Save button: without it, a
+      // dropdown that writes silently gives no evidence it wrote at all.
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ["cloud-connection", connection.id] });
+      queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
+    },
+    onError: (err) =>
+      onError(
+        err instanceof Error ? err.message : "Could not change the scan schedule",
+      ),
+  });
+
+  const current = connection.scan_interval_hours;
+  // An interval the list does not offer -- set through the API, or offered by
+  // an older build. Shown rather than silently reset to "manual", which would
+  // turn scheduled scanning off for somebody who never asked.
+  const known = options.some((o) => o.value === String(current ?? ""));
+
+  return (
+    <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-stone-900">
+            {t.connection.scheduleTitle}
+          </p>
+          <p className="mt-1 max-w-prose text-xs leading-relaxed text-stone-600">
+            {t.connection.scheduleHelp}
+          </p>
+        </div>
+        {/* Not a `Badge`: that primitive maps a *severity* level through
+            `levelStyle`, and scheduling being on is not a severity. Borrowing
+            the scale would tint an ordinary setting with the colours the rest
+            of the product reserves for how bad a finding is. */}
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+            current === null
+              ? "border-stone-200 bg-white text-stone-600"
+              : "border-ok-border bg-ok-bg text-ok",
+          )}
+        >
+          {current === null ? t.connection.scheduleOff : t.connection.scheduleOn}
+        </span>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <Select
+          aria-label={t.connection.scheduleLabel}
+          value={known ? String(current ?? "") : String(current)}
+          disabled={save.isPending}
+          onChange={(e) =>
+            save.mutate(e.target.value === "" ? null : Number(e.target.value))
+          }
+        >
+          {!known && current !== null && (
+            <option value={String(current)}>{current} h</option>
+          )}
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </Select>
+        {save.isPending && (
+          <span className="text-xs text-stone-500">{t.connection.scheduleSaving}</span>
+        )}
+        {saved && !save.isPending && (
+          <span className="text-xs text-ok">{t.connection.scheduleSaved}</span>
+        )}
+      </div>
+
+      <p className="mt-2 text-xs leading-relaxed text-stone-500">
+        {t.connection.scheduleFloorNote}
+      </p>
+      {current !== null && (
+        <p className="mt-1 text-xs leading-relaxed text-stone-500">
+          {t.connection.scheduleFirstRunNote}
+        </p>
+      )}
+    </div>
+  );
+}
+
 
 function RemoveConfirm({
   connectionId,

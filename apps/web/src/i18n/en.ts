@@ -125,6 +125,30 @@ export const en = {
     resumeSetup: "Resume setup",
     setupCancelled: "Setup cancelled",
     readyToScan: "Ready to scan",
+
+    // Scheduling. Off by default, and the copy says why rather than leaving a
+    // dropdown to explain itself: a customer choosing an interval is choosing
+    // a recurring cost on their own Azure bill.
+    scheduleTitle: "Automatic scanning",
+    scheduleHelp:
+      "A security report ages the moment it is written \u2014 cloud environments change daily, and a scan from last month describes an environment that has moved on. Choose how often CloudGuard should re-read this one.",
+    scheduleLabel: "Re-read this environment",
+    scheduleManual: "Only when I ask",
+    scheduleEvery6Hours: "Every 6 hours",
+    scheduleDaily: "Every day",
+    scheduleEvery3Days: "Every 3 days",
+    scheduleWeekly: "Every week",
+    scheduleSaving: "Saving\u2026",
+    scheduleSaved: "Saved",
+    scheduleOn: "Scanning automatically",
+    scheduleOff: "Manual scanning only",
+    scheduleFirstRunNote:
+      "The first automatic scan starts within a few minutes; after that it runs on the interval you chose.",
+    scheduleNotReady:
+      "This connection cannot scan yet, so there is nothing to schedule. Finish the two grants above first.",
+    scheduleFloorNote:
+      "An interval rather than a time of day: CloudGuard promises to read this environment at least this often, not to start at a particular minute.",
+
     noSubscriptionsTitle: "No subscriptions found yet",
     noSubscriptionsBody:
       "Both grants are working, but CloudGuard cannot see any subscription to scan. A role assigned moments ago can take a few minutes to show up, and a role deployed to the wrong scope will never show up at all.",
@@ -269,6 +293,10 @@ export const en = {
     identity: "Identity used",
     initiator: "Started by",
     scheduled: "Scheduled",
+    // A manual scan whose user record is gone. Distinct from
+    // "Scheduled": somebody did ask for this one, and we no longer
+    // know who.
+    manualUnknownUser: "Started by hand",
     breakdown: "Open findings from this scan",
     deleteScan: "Delete",
     deleting: "Deleting\u2026",

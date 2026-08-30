@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import ScanStatus
+from app.core.enums import ScanStatus, ScanTrigger
 
 
 class ScanCreate(BaseModel):
@@ -32,6 +32,10 @@ class ScanOut(BaseModel):
     stuck_in_queue: bool = False
 
     triggered_by_user_id: UUID | None = None
+    # Why it ran. A NULL user stopped being able to carry this once scans could
+    # start themselves: an old manual scan whose user record had gone looked
+    # exactly like a scheduled one.
+    trigger: ScanTrigger = ScanTrigger.MANUAL
     # Set when this run re-evaluated an earlier scan's snapshot rather than
     # collecting. ``evaluation_only`` says it re-evaluated a capture that is no
     # longer current, so its counts describe what the rules would have found and

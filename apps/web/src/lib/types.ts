@@ -109,6 +109,12 @@ export interface Scan {
   /** Queued long enough that no worker is likely running. */
   stuck_in_queue?: boolean;
   triggered_by_user_id?: string | null;
+  /**
+   * Why this scan ran. Read this rather than inferring it from a missing user:
+   * an old manual scan whose user record has gone also has no
+   * `triggered_by_user_id`, and calling that one "Scheduled" is simply wrong.
+   */
+  trigger?: "MANUAL" | "SCHEDULED";
   progress_done?: number;
   progress_total?: number;
   /** Live while running, fixed once finished. */
@@ -236,6 +242,12 @@ export interface CloudConnection {
   status: "PENDING" | "ACTIVE" | "ERROR" | "DISABLED";
   status_detail: string | null;
   last_discovery_at: string | null;
+  /**
+   * How often this environment is re-read, in hours. `null` means manual only,
+   * which is where every connection starts: scheduling a customer's cloud
+   * without being asked is a recurring cost on their Azure bill.
+   */
+  scan_interval_hours: number | null;
   created_at: string;
   is_verified: boolean;
   is_ready_to_scan: boolean;

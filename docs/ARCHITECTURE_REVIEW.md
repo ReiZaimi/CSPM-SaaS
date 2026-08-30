@@ -826,8 +826,11 @@ on the reaper.
     is measured from when the last scan *started*, so a slow scan does not drift
     the schedule later every time.
 
-    Still to do: the frontend control to set it, and change-triggered scans via
-    Azure Event Grid.
+    The control to set it lives on the connection card, after the "run a scan"
+    button rather than beside it: the first scan is the thing to do now, and
+    the schedule is what stops there being a next time somebody forgets.
+
+    Still to do: change-triggered scans via Azure Event Grid.
 20. Remediation as data: `expected_state` and `verification_spec` beside the
     human text, with IaC and Policy snippets generated from the same
     declaration that generates the RBAC artifact — the `rbac.py` pattern
