@@ -8,7 +8,6 @@ from app.core.deps import DbSession, Tenant
 from app.core.enums import FindingStatus, RemediationStatus
 from app.core.errors import NotFound, ValidationFailed, envelope
 from app.models.remediation import RemediationTask
-from app.models.risk import RiskFinding
 from app.models.rule import Rule
 from app.risk.scorer import default_scorer
 from app.schemas.finding import RemediationCreate, RemediationOut, RemediationUpdate
@@ -42,16 +41,15 @@ async def create_task(
     effort = rule.estimated_effort_minutes if rule else 30
     score = float(finding.risk_score) if finding.risk_score is not None else 0.0
 
-    link = (
-        await session.execute(
-            select(RiskFinding).where(RiskFinding.finding_id == finding.id)
-        )
-    ).scalar_one_or_none()
+    # The finding's own risk, not any route it happens to be part of. A
+    # remediation task attached to an attack path would be a job nobody can
+    # close: the route is severed by fixing one of its members.
+    risk = await findings_service.own_risk(session, finding)
 
     task = RemediationTask(
         organization_id=tenant.organization_id,
         finding_id=finding.id,
-        risk_id=link.risk_id if link else None,
+        risk_id=risk.id if risk else None,
         assigned_to=payload.assigned_to,
         status=RemediationStatus.TODO,
         # Effort-aware, so a fifteen-minute firewall change outranks a redesign

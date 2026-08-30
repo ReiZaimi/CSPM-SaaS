@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import FindingStatus, Level, RiskKind, ScanStatus
+from app.core.enums import FindingStatus, Level, RiskKind, RiskStatus, ScanStatus
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding, RiskHistory
@@ -71,16 +71,34 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
     ).all()
     status_counts = {str(st): int(count) for st, count in status_rows}
 
+    # What is live, whichever kind it is. A finding risk counts while its
+    # finding is open; a scenario counts until the route closes.
+    #
+    # ``distinct`` is load-bearing rather than defensive. The join fans a risk
+    # out across its findings, which was harmless while every risk had exactly
+    # one -- and a scenario grouping four findings would otherwise fill four of
+    # the five places in this list with itself.
+    live_finding_risks = (
+        select(Risk.id)
+        .join(RiskFinding, RiskFinding.risk_id == Risk.id)
+        .join(Finding, Finding.id == RiskFinding.finding_id)
+        .where(
+            Risk.organization_id == organization_id,
+            Risk.kind == RiskKind.FINDING,
+            Finding.status.in_(open_statuses),
+        )
+    )
+    live_scenarios = select(Risk.id).where(
+        Risk.organization_id == organization_id,
+        Risk.kind == RiskKind.ATTACK_PATH,
+        Risk.status != RiskStatus.RESOLVED,
+    )
+
     top_risks = (
         (
             await session.execute(
                 select(Risk)
-                .join(RiskFinding, RiskFinding.risk_id == Risk.id)
-                .join(Finding, Finding.id == RiskFinding.finding_id)
-                .where(
-                    Risk.organization_id == organization_id,
-                    Finding.status.in_(open_statuses),
-                )
+                .where(Risk.id.in_(live_finding_risks.union(live_scenarios)))
                 .order_by(Risk.risk_score.desc())
                 .limit(5)
             )

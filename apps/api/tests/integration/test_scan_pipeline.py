@@ -462,7 +462,13 @@ class TestFirstScan:
                             "FROM risks r "
                             "JOIN risk_findings rf ON rf.risk_id = r.id "
                             "JOIN findings f ON f.id = rf.finding_id "
-                            "WHERE r.organization_id = :o"
+                            # Finding risks. A scenario is also joined to its
+                            # members through this junction and is scored by a
+                            # different formula -- floored at its worst member
+                            # rather than weighted across six components -- so
+                            # asserting the components on one would be checking
+                            # working that was never done.
+                            "WHERE r.organization_id = :o AND r.kind = 'FINDING'"
                         ),
                         {"o": org_id},
                     )
@@ -2344,6 +2350,64 @@ class TestScenarioRisk:
 
         assert before["security_score"] == after["security_score"]
 
+
+    async def test_a_finding_on_a_route_still_has_its_own_risk(
+        self, replay, connected_account
+    ) -> None:
+        """The regression a scenario introduced, and the one that crashed.
+
+        A finding used to have at most one risk, so every lookup read the
+        junction with ``scalar_one_or_none``. A finding on an attack path is
+        linked twice — to its own risk and to the route — so those lookups
+        began raising ``MultipleResultsFound`` on exactly the findings the graph
+        had found something interesting about: the finding detail page, accepting
+        a risk, and creating a remediation task.
+        """
+        from app.models.finding import Finding as FindingModel
+        from app.services.findings import own_risk
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        # A finding that is genuinely a member of a route.
+        member_ids = await fetch(
+            "SELECT rf.finding_id FROM risk_findings rf "
+            "JOIN risks r ON r.id = rf.risk_id "
+            "WHERE r.organization_id = :o AND r.kind = 'ATTACK_PATH'",
+            {"o": org_id},
+        )
+        assert member_ids, "the recorded environment should put findings on a route"
+
+        async with service_session() as session:
+            finding = await session.get(FindingModel, member_ids[0][0])
+            links = await fetch(
+                "SELECT count(*) FROM risk_findings WHERE finding_id = :f",
+                {"f": finding.id},
+            )
+            assert links[0][0] > 1, "this finding is on a route as well as its own risk"
+
+            risk = await own_risk(session, finding)
+
+        assert risk is not None
+        assert risk.kind.value == "FINDING", "its own risk, not the route it is on"
+
+    async def test_the_top_risks_list_is_not_filled_by_one_scenario(
+        self, replay, connected_account
+    ) -> None:
+        """The join fans a risk out across its findings, which was harmless
+        while every risk had exactly one — and would otherwise let a scenario
+        grouping four findings take four of the five places."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            summary = await build_dashboard(session, org_id)
+
+        ids = [risk["id"] for risk in summary["top_risks"]]
+        assert len(ids) == len(set(ids)), f"a risk appears more than once: {ids}"
+
     async def test_a_route_that_closes_is_resolved_not_deleted(
         self, replay, connected_account
     ) -> None:
@@ -2354,16 +2418,16 @@ class TestScenarioRisk:
         assert await self._risks(org_id, "ATTACK_PATH")
 
         # Sever the route at its first hop, which is what the product tells the
-        # customer to do.
-        async with service_session() as session:
-            await session.execute(
-                text(
-                    "DELETE FROM resource_relationships "
-                    "WHERE organization_id = :o AND relationship_type = 'has_identity'"
-                ),
-                {"o": org_id},
-            )
-            await session.commit()
+        # customer to do: detach the managed identity from the host.
+        #
+        # Changed in the *environment*, not in the database. Deleting the stored
+        # edge proves nothing -- the next scan re-normalizes the same capture
+        # and puts it straight back, which is what this test originally did and
+        # why it failed.
+        severed = load_raw()
+        for vm in severed["data"]["virtual_machines"]:
+            vm.pop("identity", None)
+        replay["payload"] = severed
 
         await run_scan(org_id, account_id)
 
