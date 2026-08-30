@@ -907,8 +907,45 @@ on the reaper.
     mean inventing a severity no rule assigned. And a route that closes is
     **resolved, not deleted**, exactly as a fixed finding is.
 
-    The other two templates in this item — privilege escalation chains,
-    unmonitored critical assets — need edges the graph does not yet have.
+    **Privilege escalation chains are now built.** They needed one edge the
+    graph did not have: `CAN_GRANT_ROLES`, drawn beside `GRANTS_ROLE` when a
+    principal's role definition permits
+    `Microsoft.Authorization/roleAssignments/write`. Read from the definition
+    rather than the role name, and that is the whole difficulty — **Owner and
+    Contributor both carry `actions: ["*"]`**, and only Contributor excludes
+    `Microsoft.Authorization/*/Write` in its `notActions`. Matching on names
+    would report every Contributor assignment in existence as an escalation
+    path, which is the kind of false alarm that gets a feature switched off
+    rather than fixed. Reading the definition also finds the case a name list
+    never could: a tenant's own custom role granting exactly that one action.
+
+    `AssetGraph.escalation_chains()` answers the resulting question, and it is
+    a different one from `attack_paths()` rather than a variation on it — not
+    what an attacker reaches, but what they could be *given* once they arrive.
+    A route ends at the **scope**, because the scope is the size of the answer:
+    "this VM runs as an identity that can grant itself Owner" is alarming, and
+    naming the subscription it can do that over is what makes it actionable.
+    An entry point is required, deliberately — a directory administrator who
+    can hand out roles is over-privileged and is not a chain, and reporting one
+    would invent the half of the story that makes it urgent.
+
+    Both templates share `_correlate_template`, so the same discipline applies
+    to each: a route with no failing check on it creates no risk, a route that
+    closes is resolved rather than deleted, and a route seen again keeps the
+    risk it had. Scoring differs in one input — an escalation's
+    `target_sensitivity` is the most sensitive thing *under* the scope, taken
+    over known levels only, because that is what the escalation would be an
+    escalation to.
+
+    **Unmonitored critical assets are deliberately not a template.** The
+    conjunction is one finding (AZ-LOG-001, missing diagnostic settings) on one
+    asset whose criticality the finding formula already multiplies by — so a
+    scenario for it would be a second opinion on a single finding rather than
+    several findings seen as one thing, and would charge the customer twice for
+    one problem. That is the same argument item 16 makes for keeping scenario
+    risks out of the security score. It becomes worth building if a template
+    ever spans several assets; as one asset and one rule, it is what the risk
+    score already says.
 
 16. **Done for scenario risk; history still open.** `scenario_score` floors at
     the worst member and adds a bounded amplifier that is mostly about

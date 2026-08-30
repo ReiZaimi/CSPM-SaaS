@@ -43,6 +43,31 @@ class Level(StrEnum):
     CRITICAL = "CRITICAL"
     UNKNOWN = "UNKNOWN"
 
+    @property
+    def is_known(self) -> bool:
+        return self is not Level.UNKNOWN
+
+    @property
+    def rank(self) -> int:
+        """Where this sits on the scale, with UNKNOWN below all of it.
+
+        Not an ordering of severity -- UNKNOWN outranks LOW everywhere a *score*
+        is computed, deliberately, because missing context must not read as
+        safe. This is for the different question of which of two *claims* about
+        an asset is the stronger one, where an absence is not a claim at all.
+        Anything comparing risk should use the scorer's level scores instead.
+        """
+        return _LEVEL_RANK[self]
+
+
+_LEVEL_RANK: dict[Level, int] = {
+    Level.UNKNOWN: 0,
+    Level.LOW: 1,
+    Level.MEDIUM: 2,
+    Level.HIGH: 3,
+    Level.CRITICAL: 4,
+}
+
 
 class ContextSource(StrEnum):
     """Where a piece of asset context came from.
@@ -277,6 +302,12 @@ class RiskKind(StrEnum):
 
     FINDING = "FINDING"
     ATTACK_PATH = "ATTACK_PATH"
+    # A route from somewhere an attacker could start to an identity that can
+    # grant itself more. Distinct from ATTACK_PATH because it answers a
+    # different question: not "what can be reached" but "what could be *given*
+    # once something is reached", which is the difference between a blast
+    # radius and one that grows.
+    ESCALATION = "ESCALATION"
 
 
 class RiskStatus(StrEnum):
@@ -422,6 +453,11 @@ class RelationshipType(StrEnum):
     # This identity holds a role over that scope. The hop that turns a foothold
     # into a blast radius.
     GRANTS_ROLE = "grants_role"
+    # And this identity's role lets it hand out roles over that scope. Drawn
+    # beside GRANTS_ROLE rather than instead of it, because it is a different
+    # claim about the same pair: the first says what the principal may do now,
+    # the second says the ceiling is whatever it decides to give itself.
+    CAN_GRANT_ROLES = "can_grant_roles"
 
     @property
     def is_capability(self) -> bool:
@@ -431,5 +467,9 @@ class RelationshipType(StrEnum):
         reaches: an NSG protecting a VM is a fact about the VM, not a way to get
         anywhere from the NSG.
         """
-        return self in {RelationshipType.HAS_IDENTITY, RelationshipType.GRANTS_ROLE,
-                        RelationshipType.CONTAINS}
+        return self in {
+            RelationshipType.HAS_IDENTITY,
+            RelationshipType.GRANTS_ROLE,
+            RelationshipType.CAN_GRANT_ROLES,
+            RelationshipType.CONTAINS,
+        }

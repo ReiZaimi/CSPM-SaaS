@@ -14,6 +14,7 @@ which is read off the configuration in the capture rather than inferred from
 labels — a public IP is attached or it is not.
 """
 
+from fnmatch import fnmatch
 from typing import Any
 
 from app.connectors.base import NormalizedState, RawSnapshot
@@ -80,6 +81,52 @@ def _role_summary(definition: dict[str, Any] | None) -> str:
     if not definition:
         return "Unknown role"
     return str(_first(definition, "properties", "roleName", default="Unknown role"))
+
+
+# The action that turns access into more access. A principal that may write role
+# assignments over a scope can give itself anything at that scope, so its
+# effective permission is not the role it holds but the highest role that
+# exists.
+ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
+
+
+def _action_matches(pattern: str, action: str) -> bool:
+    """Whether an ARM action pattern covers a specific action.
+
+    ARM patterns are segment-wise globs -- ``*``, ``Microsoft.Authorization/*``,
+    ``Microsoft.Authorization/*/Write`` -- and matching them by equality would
+    miss every built-in role, since the interesting ones are written with
+    wildcards. Case-insensitive because ARM is: ``/Write`` and ``/write`` are the
+    same action, and Azure's own definitions use both.
+    """
+    return fnmatch(action.lower(), pattern.lower())
+
+
+def _grants_role_assignment(definition: dict[str, Any] | None) -> bool:
+    """Whether this role definition lets its holder hand out roles.
+
+    The distinction that makes this worth computing rather than pattern-matching
+    on role names: **Owner and Contributor both carry ``actions: ["*"]``**, and
+    only Contributor excludes ``Microsoft.Authorization/*/Write`` in its
+    ``notActions``. Reading the name would call every Contributor an escalation
+    path, on nearly every subscription in existence, which is the kind of false
+    alarm that gets a whole feature switched off.
+
+    Custom roles are the reason this is read from the definition at all. A
+    tenant's own role granting exactly this one action is invisible to any list
+    of well-known role names, and is precisely the thing worth finding.
+    """
+    if not definition:
+        return False
+    for permission in _first(definition, "properties", "permissions", default=[]) or []:
+        actions = permission.get("actions") or []
+        not_actions = permission.get("notActions") or []
+        if not any(_action_matches(p, ROLE_ASSIGNMENT_WRITE) for p in actions):
+            continue
+        if any(_action_matches(p, ROLE_ASSIGNMENT_WRITE) for p in not_actions):
+            continue
+        return True
+    return False
 
 
 def _first(value: Any, *path: str, default: Any = None) -> Any:
@@ -236,7 +283,9 @@ class AzureNormalizer:
             if not principal_id or not scope:
                 continue
 
-            role = _role_summary(definitions.get(props.get("roleDefinitionId", "")))
+            definition = definitions.get(props.get("roleDefinitionId", ""))
+            role = _role_summary(definition)
+            escalates = _grants_role_assignment(definition)
             principal_node = _principal_node(principal_id, known)
 
             if principal_node not in known and principal_node not in nodes:
@@ -257,6 +306,13 @@ class AzureNormalizer:
             # a node that does not exist would be describing it anyway.
             if scope in known or scope in nodes:
                 edges.append((principal_node, RelationshipType.GRANTS_ROLE, scope))
+                # Beside it, never instead of it. The reach is the same pair of
+                # nodes; this says the reach has no ceiling, because the holder
+                # can grant itself whatever it does not already have.
+                if escalates:
+                    edges.append(
+                        (principal_node, RelationshipType.CAN_GRANT_ROLES, scope)
+                    )
 
             # Recorded on the node where there is one to record it on. A
             # principal that is also a directory user already has a node built
@@ -266,7 +322,9 @@ class AzureNormalizer:
             existing = nodes.get(principal_node)
             if existing is not None:
                 roles = list(existing.metadata.get("roles", []))
-                roles.append({"role": role, "scope": scope})
+                roles.append(
+                    {"role": role, "scope": scope, "grants_role_assignment": escalates}
+                )
                 existing.metadata["roles"] = roles
 
         # Resources that run as an identity. The first hop of the path.

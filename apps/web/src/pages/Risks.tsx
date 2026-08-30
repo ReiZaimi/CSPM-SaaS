@@ -30,10 +30,10 @@ export function RisksPage() {
             findings inside it is only visible where they are ranked together —
             on a page of its own it would be a second opinion nobody compares. */}
         {data?.map((risk) =>
-          risk.kind === "ATTACK_PATH" ? (
-            <ScenarioCard key={risk.id} risk={risk} />
-          ) : (
+          risk.kind === "FINDING" ? (
             <FindingRiskCard key={risk.id} risk={risk} />
+          ) : (
+            <ScenarioCard key={risk.id} risk={risk} />
           ),
         )}
       </div>
@@ -49,11 +49,17 @@ export function RisksPage() {
  * floored at its worst member and amplified for being short, and showing it
  * under "asset criticality / data sensitivity / exploitability" would invite
  * the reader to check numbers that were never used.
+ *
+ * Both scenario kinds render here, and the default is deliberately this way
+ * round: anything that is not a finding risk was scored by the scenario
+ * formula, so a new template added later shows honest arithmetic rather than
+ * falling through to a card that would display components nobody computed.
  */
 function ScenarioCard({ risk }: { risk: Risk }) {
   const t = useT();
   const breakdown = risk.score_breakdown;
   const capped = (breakdown.uncapped ?? 0) > 100;
+  const escalation = risk.kind === "ESCALATION";
 
   return (
     <Card>
@@ -63,11 +69,13 @@ function ScenarioCard({ risk }: { risk: Risk }) {
             <Badge level={risk.risk_level} />
             <StatusPill status={risk.status} />
             <span className="inline-flex items-center rounded-full border border-stone-300 bg-white px-2 py-0.5 text-xs font-medium text-stone-600">
-              {t.risks.scenarioBadge}
+              {escalation ? t.risks.escalationBadge : t.risks.scenarioBadge}
             </span>
           </div>
           <p className="mt-2 text-sm font-medium text-stone-900">{risk.title}</p>
-          <p className="mt-1 text-xs text-stone-500">{t.risks.scenarioIntro}</p>
+          <p className="mt-1 text-xs text-stone-500">
+            {escalation ? t.risks.escalationIntro : t.risks.scenarioIntro}
+          </p>
         </div>
         <div className="text-right">
           <p className="text-3xl font-semibold tabular-nums text-stone-900">

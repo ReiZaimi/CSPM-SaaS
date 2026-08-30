@@ -312,3 +312,68 @@ def test_an_edge_whose_endpoint_was_deleted_is_dropped_on_load() -> None:
         if s in by_id and t in by_id
     ]
     assert relationships == []
+
+
+# ------------------------------------------------------- privilege escalation
+def escalating_environment() -> AssetGraph:
+    """The same shape, with the identity able to hand out roles.
+
+    Both edges between the identity and the subscription, because they are
+    different claims about the same pair: one says what the principal may do
+    today, the other says the ceiling is whatever it chooses to give itself.
+    """
+    graph = environment()
+    graph._out.setdefault(IDENTITY, []).append(
+        (RelationshipType.CAN_GRANT_ROLES, SUB)
+    )
+    return graph
+
+
+def test_a_chain_ends_at_the_scope_that_could_be_taken() -> None:
+    """Not at the identity. "This VM runs as something that can grant itself
+    Owner" is alarming; naming what it can do that over is what makes it
+    actionable."""
+    chains = escalating_environment().escalation_chains()
+
+    assert len(chains) == 1
+    chain = chains[0]
+    assert chain.entry.provider_resource_id == VM
+    assert chain.target.provider_resource_id == SUB
+    assert chain.describe()[-1] == "mi-jump-01 can grant itself any role over sub-1"
+
+
+def test_an_identity_that_only_holds_a_role_is_no_chain() -> None:
+    """Holding Contributor is reach. Being able to assign roles is reach with no
+    ceiling, and only the second is what this template is about."""
+    assert environment().escalation_chains() == []
+
+
+def test_an_unreachable_administrator_is_not_a_chain() -> None:
+    """Over-privileged, certainly. But there is no route from outside to them
+    here, and reporting one would invent the half that makes it urgent."""
+    graph = AssetGraph.build(
+        [
+            node(SUB, ResourceType.SUBSCRIPTION),
+            node(IDENTITY, ResourceType.SERVICE_PRINCIPAL),
+        ],
+        [(IDENTITY, RelationshipType.CAN_GRANT_ROLES, SUB)],
+    )
+    assert graph.escalation_chains() == []
+
+
+def test_the_break_to_make_is_the_escalating_assignment_when_it_is_first() -> None:
+    chain = escalating_environment().escalation_chains()[0]
+    step = chain.cheapest_break()
+
+    assert step is not None
+    # The earliest capability hop: detaching the identity from the host closes
+    # the way in, which beats arguing about the role afterwards.
+    assert step.relationship is RelationshipType.HAS_IDENTITY
+
+
+def test_a_scope_reports_what_it_holds() -> None:
+    """What an escalation over it would be an escalation to. Scopes themselves
+    are excluded, the same way a folder is not a file."""
+    held = {r.provider_resource_id for r in environment().contained_by(SUB)}
+
+    assert held == {VM, STORAGE, QUIET_VM}

@@ -419,6 +419,50 @@ re-assert stale verdicts about every rule it did not look at. That is a rule
 about what a narrowed scan may conclude, not a planning decision, and it is the
 next thing here rather than part of this.
 
+## 19. Privilege escalation is read from role definitions, never from role names
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §12 item 15 — the second correlation
+template, which "needs edges the graph does not yet have".
+
+The edge is `CAN_GRANT_ROLES`, drawn beside `GRANTS_ROLE` rather than instead of
+it: they are different claims about the same pair of nodes, one saying what a
+principal may do today and the other that the ceiling is whatever it decides to
+give itself.
+
+Whether to draw it is decided by the role *definition*, and that is the entire
+difficulty of this feature. **Owner and Contributor both carry
+`actions: ["*"]`.** The only thing separating them is that Contributor excludes
+`Microsoft.Authorization/*/Write` in its `notActions`. A check that matched role
+names, or that read `actions` without honouring the exclusions, would report
+every Contributor assignment in existence as a privilege escalation path — one
+false alarm per subscription, on the feature whose whole value is that it finds
+the thing no rule can. Reading the definition also catches what a name list
+never could: a tenant's own custom role granting exactly that one action, which
+is precisely the case worth finding.
+
+Matching is segment-wise and case-insensitive, because ARM patterns are
+(`Microsoft.Authorization/*`, `*/read`) and Azure's own definitions mix `/Write`
+and `/write` freely.
+
+**A chain ends at the scope, not at the identity.** The scope is the size of the
+answer — naming the subscription an identity could take over is what turns an
+alarm into something someone can act on. And a chain requires an entry point: a
+directory administrator who can hand out roles is over-privileged, not a chain,
+and reporting one would invent the half of the story that makes it urgent.
+
+**Unmonitored critical assets stay unbuilt, with a reason.** The third template
+the review lists is one finding (missing diagnostic settings) on one asset whose
+criticality the finding formula already multiplies by. A scenario for it would
+be a second opinion on a single finding rather than several findings seen as one
+thing — the same double-count §16 avoids by keeping scenario risks out of the
+security score. It earns a template when it spans several assets; as one rule on
+one asset, the risk score already says it.
+
+The fixture changed with this: `snapshot_mixed.json` described a role called
+Contributor carrying Owner's permissions, which was never a real Azure role. It
+now carries the real exclusions, so the fixture proves the distinction rather
+than sidestepping it.
+
 ---
 
 ## Open items carried forward

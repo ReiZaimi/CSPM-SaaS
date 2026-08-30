@@ -176,4 +176,25 @@ describe("RisksPage", () => {
     await waitFor(() => expect(screen.getByText("Attack path")).toBeInTheDocument());
     expect(screen.queryByText("Capped at 100.")).not.toBeInTheDocument();
   });
+
+  it("renders a privilege escalation as a route, with its own name", async () => {
+    // Scored by the scenario formula, so it must not fall through to the
+    // finding card — that would show asset criticality and exploitability,
+    // which this score was never built from. And it is not an attack path: one
+    // says what can be reached, the other what could be granted.
+    mount([
+      scenarioRisk({
+        id: "r-escalation",
+        kind: "ESCALATION",
+        title: "jump-01 leads to control of sub-1",
+      }),
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Privilege escalation")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("jump-01 leads to control of sub-1")).toBeInTheDocument();
+    expect(screen.getByText("The route")).toBeInTheDocument();
+    expect(screen.queryByText("Attack path")).not.toBeInTheDocument();
+  });
 });

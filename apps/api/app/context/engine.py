@@ -58,18 +58,6 @@ DATA_HOLDING_TYPES = {
     ResourceType.STORAGE_ACCOUNT,
 }
 
-# How the levels compare when two sources claim different things. UNKNOWN is
-# deliberately absent: it is not the bottom of this scale, it is the absence of
-# a reading, and treating it as a low value is exactly the quiet downgrade the
-# whole four-state discipline exists to prevent.
-_LEVEL_ORDER = {
-    Level.LOW: 1,
-    Level.MEDIUM: 2,
-    Level.HIGH: 3,
-    Level.CRITICAL: 4,
-}
-
-
 class ContextFields(TypedDict):
     """The context keyword arguments a :class:`CloudResource` takes.
 
@@ -333,10 +321,10 @@ def _stronger(
     if value is Level.UNKNOWN:
         return other, other_source
 
-    if _LEVEL_ORDER[other] > _LEVEL_ORDER[value]:
+    if other.rank > value.rank:
         return other, other_source
     if (
-        _LEVEL_ORDER[other] == _LEVEL_ORDER[value]
+        other.rank == value.rank
         and other_source.confidence > source.confidence
     ):
         return other, other_source

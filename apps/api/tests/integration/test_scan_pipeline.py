@@ -2823,3 +2823,114 @@ class TestVerification:
         verification = await self._verification(verification_id)
         assert verification.attempts == 0, "a scan of another subscription observed it"
         assert verification.status == VerificationStatus.PENDING
+
+
+class TestEscalationChains:
+    """A route to an identity that can hand out roles.
+
+    A different question from the attack-path template rather than a variation
+    on it: not what an attacker reaches, but what they could be *given* once
+    they arrive. Fixing the reachable host does not shrink that -- only the
+    assignment does.
+    """
+
+    def _can_assign_roles(self, replay) -> None:
+        """Turn the fixture's Contributor into a role that can grant roles.
+
+        By removing the exclusions rather than renaming the role, because the
+        exclusions are the whole distinction: Contributor and Owner both carry
+        ``actions: ["*"]``, and only one of them may write role assignments.
+        """
+        escalating = load_raw()
+        for definition in escalating["data"]["role_definitions"]:
+            for permission in definition["properties"]["permissions"]:
+                permission["notActions"] = []
+        replay["payload"] = escalating
+
+    async def _risks(self, org_id) -> list:
+        return await fetch(
+            "SELECT id, title, risk_score, status, path FROM risks "
+            "WHERE organization_id = :o AND kind = 'ESCALATION'",
+            {"o": org_id},
+        )
+
+    async def test_a_contributor_is_not_an_escalation_path(
+        self, replay, connected_account
+    ) -> None:
+        """The case that decides whether this template is usable.
+
+        Contributor holds ``*`` and is excluded from writing role assignments.
+        It is on nearly every subscription in existence, and reporting it here
+        would bury the real ones under a false alarm per tenant.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        assert await self._risks(org_id) == []
+
+    async def test_a_role_that_can_assign_roles_raises_one(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+
+        risks = await self._risks(org_id)
+        assert len(risks) == 1
+        title, path = risks[0][1], risks[0][4]
+        assert "leads to control of" in title
+        # The route ends at the scope, because the scope is the size of the
+        # answer -- naming what the identity could take over is what makes the
+        # alarm actionable.
+        assert path[-1]["relationship"] == "can_grant_roles"
+
+    async def test_the_chain_outranks_the_findings_it_groups(
+        self, replay, connected_account
+    ) -> None:
+        """Same floor as any scenario: it cannot rank below its own evidence."""
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+
+        risks = await self._risks(org_id)
+        worst_member = await fetch(
+            "SELECT max(f.risk_score) FROM findings f "
+            "JOIN risk_findings rf ON rf.finding_id = f.id "
+            "WHERE rf.risk_id = :r",
+            {"r": risks[0][0]},
+        )
+        assert float(risks[0][2]) >= float(worst_member[0][0])
+
+    async def test_revoking_the_assignment_resolves_it_rather_than_deleting_it(
+        self, replay, connected_account
+    ) -> None:
+        """A closed route is the record of a fix, exactly as a resolved finding
+        is. Deleting it would erase the evidence that the remediation worked."""
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+        assert await self._risks(org_id)
+
+        revoked = load_raw()
+        revoked["data"]["role_assignments"] = []
+        replay["payload"] = revoked
+        await run_scan(org_id, account_id)
+
+        risks = await self._risks(org_id)
+        assert len(risks) == 1, "the scenario was deleted rather than resolved"
+        assert risks[0][3] == RiskStatus.RESOLVED
+
+    async def test_it_does_not_displace_the_route_to_the_data(
+        self, replay, connected_account
+    ) -> None:
+        """Both templates describe the same environment and neither replaces the
+        other: one says what can be reached, the other what could be granted."""
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+
+        kinds = await fetch(
+            "SELECT DISTINCT kind FROM risks WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert {"ATTACK_PATH", "ESCALATION", "FINDING"} <= {k[0] for k in kinds}

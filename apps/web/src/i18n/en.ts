@@ -287,7 +287,9 @@ export const en = {
     // A scenario is not a louder finding. It is several of them seen as one
     // thing, and the label has to carry that or it reads as duplication.
     scenarioBadge: "Attack path",
+    escalationBadge: "Privilege escalation",
     scenarioIntro: "Several findings, seen as one route",
+    escalationIntro: "A route to an identity that can grant itself more",
     routeLabel: "The route",
     cutLabel: "Severing it",
     // The scoring, said in the terms the breakdown actually stores. A customer

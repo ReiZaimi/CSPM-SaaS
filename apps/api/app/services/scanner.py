@@ -2226,22 +2226,6 @@ class ScanPipeline:
         of one environment.
         """
         graph = AssetGraph.build(merged.resources, merged.relationships)
-        paths = graph.attack_paths()
-
-        existing = {
-            risk.scenario_key: risk
-            for risk in (
-                await session.execute(
-                    select(Risk).where(
-                        Risk.organization_id == org_id,
-                        Risk.kind == RiskKind.ATTACK_PATH,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-            if risk.scenario_key
-        }
 
         open_findings = {
             (finding.resource_id): finding
@@ -2260,9 +2244,67 @@ class ScanPipeline:
             if finding.resource_id is not None
         }
 
+        await self._correlate_template(
+            session,
+            org_id,
+            graph,
+            id_map,
+            open_findings,
+            kind=RiskKind.ATTACK_PATH,
+            paths=graph.attack_paths(),
+        )
+        # The second template. A route to an identity that can hand out roles is
+        # a different question from a route to data -- not what an attacker
+        # reaches, but what they could be given once they arrive -- so it is
+        # correlated separately and ranks on its own.
+        await self._correlate_template(
+            session,
+            org_id,
+            graph,
+            id_map,
+            open_findings,
+            kind=RiskKind.ESCALATION,
+            paths=graph.escalation_chains(),
+        )
+        await session.commit()
+
+    async def _correlate_template(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        graph: AssetGraph,
+        id_map: dict[str, UUID],
+        open_findings: dict[UUID, Finding],
+        *,
+        kind: RiskKind,
+        paths: list[Path],
+    ) -> None:
+        """One correlation template: routes of a kind, in and out of existence.
+
+        Shared by both templates rather than written twice, because everything
+        except the sentence and the score is the same discipline -- a route with
+        no failing check on it creates nothing, a route that closes is resolved
+        rather than deleted, and a route seen again keeps the risk it already
+        had.
+        """
+        existing = {
+            risk.scenario_key: risk
+            for risk in (
+                await session.execute(
+                    select(Risk).where(
+                        Risk.organization_id == org_id,
+                        Risk.kind == kind,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if risk.scenario_key
+        }
+
         seen: set[str] = set()
         for path in paths:
-            key = f"{path.entry.provider_resource_id}->{path.target.provider_resource_id}"
+            key = self._scenario_key(kind, path)
             members = self._members_on(path, open_findings, id_map)
             if not members:
                 # Nothing on this route is misconfigured. Real reach, and not a
@@ -2271,28 +2313,51 @@ class ScanPipeline:
                 continue
 
             seen.add(key)
+            # What is at stake at the far end. For a route to data that is the
+            # data; for an escalation it is the most sensitive thing under the
+            # scope being escalated over, because that is what the escalation
+            # would be an escalation *to*. Read from the graph rather than
+            # assumed, and UNKNOWN where the scope holds nothing CloudGuard can
+            # put a level on.
+            target_sensitivity = (
+                path.target.data_sensitivity
+                if kind is RiskKind.ATTACK_PATH
+                else self._sensitivity_under(graph, path.target)
+            )
             scored = default_scorer.scenario_score(
                 [float(m.risk_score or 0) for m in members],
                 hops=path.hops,
                 entry_exposure=path.entry.public_exposure,
-                target_sensitivity=path.target.data_sensitivity,
+                target_sensitivity=target_sensitivity,
             )
             risk = existing.get(key)
             if risk is None:
                 risk = Risk(
                     organization_id=org_id,
-                    kind=RiskKind.ATTACK_PATH,
+                    kind=kind,
                     scenario_key=key,
                 )
                 session.add(risk)
 
             step = path.cheapest_break()
-            risk.title = f"{path.entry.name} can reach {path.target.name}"
-            risk.description = (
-                f"{path.entry.name} is reachable from the internet and, in "
-                f"{path.hops} steps, reaches {path.target.name}. "
-                + (f"Severing it: {step.describe()}." if step else "")
-            )
+            if kind is RiskKind.ATTACK_PATH:
+                risk.title = f"{path.entry.name} can reach {path.target.name}"
+                risk.description = (
+                    f"{path.entry.name} is reachable from the internet and, in "
+                    f"{path.hops} steps, reaches {path.target.name}. "
+                    + (f"Severing it: {step.describe()}." if step else "")
+                )
+            else:
+                risk.title = (
+                    f"{path.entry.name} leads to control of {path.target.name}"
+                )
+                risk.description = (
+                    f"{path.entry.name} is reachable from the internet and, in "
+                    f"{path.hops} steps, reaches an identity that can assign "
+                    f"roles over {path.target.name} -- so whatever it holds "
+                    "today is not the limit of what it could hold. "
+                    + (f"Severing it: {step.describe()}." if step else "")
+                )
             risk.path = [
                 {
                     "source": s.source.name,
@@ -2308,7 +2373,7 @@ class ScanPipeline:
             risk.risk_level = scored.level
             risk.severity = Severity.HIGH.value
             risk.asset_criticality = path.target.criticality
-            risk.data_sensitivity = path.target.data_sensitivity
+            risk.data_sensitivity = target_sensitivity
             risk.internet_exposure = path.entry.public_exposure
             risk.exploitability = 0
             risk.business_impact = scored.business_impact
@@ -2328,7 +2393,35 @@ class ScanPipeline:
                 risk.status = RiskStatus.RESOLVED
                 risk.resolved_at = now
 
-        await session.commit()
+    @staticmethod
+    def _scenario_key(kind: RiskKind, path: Path) -> str:
+        """What makes a route the same route between scans.
+
+        Namespaced per template, except for attack paths, which keep the bare
+        form they were written with. The unique index covers (organization,
+        key) across every kind, so a second template needs its own namespace --
+        and re-keying the first would orphan every scenario risk a customer
+        already has, resolving them all and raising identical new ones with no
+        history.
+        """
+        ends = f"{path.entry.provider_resource_id}->{path.target.provider_resource_id}"
+        return ends if kind is RiskKind.ATTACK_PATH else f"{kind.value.lower()}:{ends}"
+
+    @staticmethod
+    def _sensitivity_under(graph: AssetGraph, scope: CloudResource) -> Level:
+        """The most sensitive thing a scope holds.
+
+        What an escalation over that scope would reach. Taken over known levels
+        only: an UNKNOWN is CloudGuard failing to work out a sensitivity, and
+        letting it win here would score a scope full of unclassified assets
+        above one holding a database everyone agrees is critical.
+        """
+        levels = [
+            asset.data_sensitivity
+            for asset in graph.contained_by(scope.provider_resource_id)
+            if asset.data_sensitivity.is_known
+        ]
+        return max(levels, key=lambda level: level.rank, default=Level.UNKNOWN)
 
     def _members_on(
         self,

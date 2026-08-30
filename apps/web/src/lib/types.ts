@@ -55,7 +55,7 @@ export interface Risk {
    * seen as a route. Both rank in the same list — a combination outranking its
    * parts is only visible where they are listed together.
    */
-  kind: "FINDING" | "ATTACK_PATH";
+  kind: "FINDING" | "ATTACK_PATH" | "ESCALATION";
   /** The route, hop by hop. Empty for a finding risk, which has none. */
   path: AttackPathStep[];
   title: string;
