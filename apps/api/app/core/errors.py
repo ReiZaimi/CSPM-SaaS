@@ -1,8 +1,10 @@
 """The single response envelope and the error taxonomy behind it (API.md section 2)."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -122,10 +124,43 @@ async def http_error_handler(_: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=error_envelope(code, str(exc.detail)))
 
 
+def _describable(errors: Sequence[Any]) -> list[Any]:
+    """Pydantic's error list, with anything unserializable turned into words.
+
+    A validator that raises ``ValueError`` -- the documented way to write one --
+    puts the exception *object* into the error's ``ctx``, and JSON cannot encode
+    that. The symptom is the worst kind: the request was rejected correctly, and
+    then the handler explaining the rejection raised, so the caller got a 500
+    for what was a perfectly ordinary 422.
+
+    Only the exception values are rewritten. The rest of ``ctx`` carries the
+    numbers a constraint failed against -- a limit, a length -- and stringifying
+    those would cost a client the ability to read them.
+    """
+    described: list[Any] = []
+    for error in errors:
+        if not isinstance(error, dict):
+            described.append(jsonable_encoder(error))
+            continue
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            error = {
+                **error,
+                "ctx": {
+                    key: str(value) if isinstance(value, BaseException) else value
+                    for key, value in context.items()
+                },
+            }
+        described.append(jsonable_encoder(error))
+    return described
+
+
 async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content=error_envelope(
-            "VALIDATION_FAILED", "Request validation failed", {"errors": exc.errors()}
+            "VALIDATION_FAILED",
+            "Request validation failed",
+            {"errors": _describable(exc.errors())},
         ),
     )
