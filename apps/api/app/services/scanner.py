@@ -33,7 +33,9 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.connectors.azure.evidence import keys_in
 from app.connectors.base import NormalizedState, RawSnapshot
+from app.connectors.evidence import EvidenceCategory
 from app.connectors.registry import get_connector
 from app.core.db import service_session
 from app.core.enums import (
@@ -205,6 +207,7 @@ class ScanPipeline:
                 directory = await self._collect_directory(
                     session, scan, connection, progress
                 )
+                identity_gap: str | None = None
                 if directory is not None:
                     directory_state, directory_snapshot = directory
                     # Unqualified, unlike a subscription's. A directory failure
@@ -214,7 +217,7 @@ class ScanPipeline:
                     merged.resources.extend(directory_state.resources)
                     merged.relationships.extend(directory_state.relationships)
                 elif connection is not None:
-                    errors["identity"] = (
+                    identity_gap = (
                         "The directory could not be read for this scan, so no "
                         "identity check could reach a verdict."
                     )
@@ -224,11 +227,13 @@ class ScanPipeline:
                     # read the directory through, and saying so is the only
                     # honest answer -- the identity rules degrade to UNKNOWN
                     # rather than passing over a directory nobody looked at.
-                    errors["identity"] = (
+                    identity_gap = (
                         "This subscription is not attached to a cloud connection, "
                         "so CloudGuard has no grant to read its tenant directory. "
                         "Reconnect it from the connections page."
                     )
+                if identity_gap is not None:
+                    errors[EvidenceCategory.IDENTITY.value] = identity_gap
 
                 # --- each subscription --------------------------------------
                 for account in accounts:
@@ -278,8 +283,13 @@ class ScanPipeline:
                 }
                 if directory is not None:
                     merged.collection_errors.update(directory[0].collection_errors)
-                elif "identity" in errors:
-                    merged.collection_errors["identity"] = errors["identity"]
+                elif identity_gap is not None:
+                    # Keyed per evidence key, because that is what the identity
+                    # rules declare. A category name here would match nothing
+                    # and every identity check would PASS over a directory
+                    # nobody read.
+                    for key in keys_in(EvidenceCategory.IDENTITY):
+                        merged.collection_errors[key.value] = identity_gap
                 await session.commit()
 
                 await self._evaluate(
@@ -960,10 +970,21 @@ class ScanPipeline:
 
         behind = degraded_categories(connection)
         for category, explanation in behind.items():
-            if category in snapshot.errors:
-                snapshot.errors[category] = (
-                    f"{explanation} (underlying error: {snapshot.errors[category]})"
+            if category.value in snapshot.errors:
+                snapshot.errors[category.value] = (
+                    f"{explanation} (underlying error: {snapshot.errors[category.value]})"
                 )
+            # And every gap underneath it. ``errors`` is what the scan banner
+            # reads; ``gaps`` is what a rule quotes when it reports UNKNOWN.
+            # Rewriting only the first would leave the customer a useful
+            # sentence on the banner and a bare "Forbidden" against the check
+            # that actually lost its verdict -- which is the one they clicked
+            # into to find out why.
+            for key in keys_in(category):
+                if key.value in snapshot.gaps:
+                    snapshot.gaps[key.value] = (
+                        f"{explanation} (underlying error: {snapshot.gaps[key.value]})"
+                    )
 
         if behind:
             log.info(

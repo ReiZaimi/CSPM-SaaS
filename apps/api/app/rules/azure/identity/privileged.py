@@ -1,5 +1,6 @@
 from typing import ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, RuleScope, Severity
 from app.domain.resource import CloudResource
 from app.rules.azure.identity.mfa import _is_privileged
@@ -26,7 +27,11 @@ class AzurePrivilegedUserRule(SecurityRule):
     exploitability = 3
     scope = RuleScope.AGGREGATE
     applies_to: ClassVar[list[ResourceType]] = []
-    requires_collection: ClassVar[list[str]] = ["identity"]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.USERS,
+        AzureEvidence.DIRECTORY_ROLES,
+        AzureEvidence.USER_ROLE_MAP,
+    )
     estimated_effort_minutes = 60
     rationale = (
         "Standing administrative access widens the blast radius of any single credential "
@@ -58,7 +63,7 @@ class AzurePrivilegedUserRule(SecurityRule):
     def evaluate(
         self, resource: CloudResource | None, context: RuleContext
     ) -> RuleResult | list[RuleResult]:
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Identity data unavailable: {failure}")
 

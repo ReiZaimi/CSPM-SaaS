@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.connectors.evidence import EvidenceCategory, EvidenceKey
 from app.core.enums import TaskOutcome
 from app.core.logging import get_logger
 
@@ -39,28 +40,38 @@ log = get_logger(__name__)
 class CollectionTask:
     """One unit of collection, declared rather than sequenced."""
 
-    # Identifies the task, and names what it contributes to the snapshot.
-    key: str
-    # The gap bucket the rule engine sees. Several tasks may share one, which
-    # is how a category degrades only as far as it actually failed.
-    category: str
+    # Identifies the task, names what it contributes to the snapshot, and is
+    # what a rule declares a dependency on. An ``EvidenceKey`` rather than a
+    # string: the two used to have to agree by hand, and a rule naming evidence
+    # no task produced simply never degraded.
+    key: EvidenceKey
     # Receives everything collected so far, so a dependent task reads its
     # inputs from the run rather than from state shared behind the executor's
     # back. ``diagnostic_settings`` needs the ids the storage and SQL listings
     # produced; this is how it gets them.
     run: Callable[[dict[str, Any]], Awaitable["TaskData"]]
     # Keys that must have produced usable data first.
-    depends_on: tuple[str, ...] = ()
+    depends_on: tuple[EvidenceKey, ...] = ()
     # ARM actions this task needs. Declared here so the permission set, the
     # collector and the rules can be checked against one definition instead of
     # agreeing by hand across three files.
     actions: tuple[str, ...] = ()
 
+    @property
+    def category(self) -> EvidenceCategory:
+        """Derived from the key, never declared beside it.
+
+        A task used to state both, which meant a task could claim a category
+        its key did not belong to -- valid Python, no test, and the only
+        symptom a rule that degraded for the wrong reason or not at all.
+        """
+        return self.key.category
+
 
 @dataclass
 class TaskResult:
-    key: str
-    category: str
+    key: EvidenceKey
+    category: EvidenceCategory
     outcome: TaskOutcome
     detail: str = ""
     item_count: int = 0
@@ -91,28 +102,47 @@ class CoverageReport:
     def untrustworthy(self) -> list[TaskResult]:
         return [r for r in self.results.values() if not r.is_trustworthy]
 
+    def key_problems(self) -> dict[str, str]:
+        """Evidence key -> why that one piece of evidence cannot be relied on.
+
+        What the rules degrade on, and finer than the category view below on
+        purpose. A subscription whose PostgreSQL listing failed has read its SQL
+        servers perfectly well, and the SQL rule going UNKNOWN over a sibling
+        listing is a gap CloudGuard invented rather than one it found.
+
+        PARTIAL lands here alongside FAILED deliberately: a truncated listing is
+        treated exactly as an unreachable API, because "none of them are public"
+        is not a conclusion a list missing an unknown number of entries can
+        support.
+        """
+        return {
+            result.key.value: result.detail or result.outcome.value.lower()
+            for result in self.results.values()
+            if not result.is_trustworthy
+        }
+
     def category_problems(self) -> dict[str, str]:
         """Category -> why its data cannot be relied on.
 
-        Shaped to drop straight into ``RawSnapshot.errors``, which is what
-        already drives ``requires_collection`` degradation. PARTIAL lands here
-        alongside FAILED deliberately: the existing machinery then treats a
-        truncated listing exactly as it treats an unreachable API, with no rule
-        needing to learn a new state.
+        The customer-facing view, and a different question from
+        :meth:`key_problems` rather than a coarser copy of it. This is what the
+        scan banner shows and what a stale role deployment explains, both of
+        which are about a *permission* -- and permissions are granted per
+        category, never per listing.
         """
         problems: dict[str, list[str]] = {}
         for result in self.results.values():
             if result.is_trustworthy:
                 continue
-            problems.setdefault(result.category, []).append(
-                f"{result.key}: {result.detail or result.outcome.value.lower()}"
+            problems.setdefault(result.category.value, []).append(
+                f"{result.key.value}: {result.detail or result.outcome.value.lower()}"
             )
         return {category: "; ".join(reasons) for category, reasons in problems.items()}
 
     def to_json(self) -> dict[str, Any]:
         return {
             key: {
-                "category": r.category,
+                "category": r.category.value,
                 "outcome": r.outcome.value,
                 "detail": r.detail,
                 "item_count": r.item_count,

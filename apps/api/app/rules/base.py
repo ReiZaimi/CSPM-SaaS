@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from app.connectors.evidence import EvidenceKey
 from app.core.enums import Provider, ResourceType, RuleScope, RuleState, Severity
 from app.domain.resource import CloudResource
 
@@ -62,8 +63,14 @@ class RuleContext:
     resources: list[CloudResource] = field(default_factory=list)
     # (source_id, relationship_type) -> [target_id]
     relationships: dict[tuple[str, str], list[str]] = field(default_factory=dict)
-    # Collection categories that failed this scan, e.g. {"storage": "timeout"}.
-    # Rules whose data is missing degrade to UNKNOWN instead of guessing.
+    # Evidence keys that could not be relied on this scan, e.g.
+    # {"storage_accounts": "timeout"}. Rules whose evidence is missing degrade
+    # to UNKNOWN instead of guessing.
+    #
+    # Keyed per evidence key rather than per category, which is finer than it
+    # sounds: a subscription whose PostgreSQL listing failed has read its SQL
+    # servers perfectly well, and degrading the SQL rule over its sibling would
+    # be a gap CloudGuard invented rather than one it found.
     collection_errors: dict[str, str] = field(default_factory=dict)
 
     _by_id: dict[str, CloudResource] = field(default_factory=dict, init=False, repr=False)
@@ -105,10 +112,19 @@ class RuleContext:
         ids = self._inverse.get((resource.provider_resource_id, relationship_type), [])
         return [self._by_id[i] for i in ids if i in self._by_id]
 
-    def has_collection_error(self, *categories: str) -> str | None:
-        for category in categories:
-            if category in self.collection_errors:
-                return self.collection_errors[category]
+    def has_collection_error(self, *keys: EvidenceKey) -> str | None:
+        """Why one of these pieces of evidence cannot be relied on, if any.
+
+        Takes evidence keys rather than strings. That is the whole point of the
+        typed keys: the previous signature accepted anything, so
+        ``has_collection_error("identity", "mfa")`` was a perfectly valid call
+        that half checked nothing -- no task has ever produced ``mfa`` -- and
+        the symptom was a rule that would not have degraded if that evidence
+        had gone missing.
+        """
+        for key in keys:
+            if key.value in self.collection_errors:
+                return self.collection_errors[key.value]
         return None
 
     def for_provider(self, provider: Provider) -> "RuleContext":
@@ -159,9 +175,15 @@ class SecurityRule(ABC):
     estimated_effort_minutes: int = 30
     # Data-driven only. No rule ever branches on a framework name.
     compliance_mappings: ClassVar[dict[str, list[str]]] = {}
-    # Collection categories this rule depends on; if one failed, the engine
-    # degrades the rule to UNKNOWN rather than letting it evaluate blind.
-    requires_collection: ClassVar[list[str]] = []
+    # The evidence this rule reads. If any of it could not be relied on, the
+    # rule degrades to UNKNOWN rather than evaluating blind.
+    #
+    # Declared as keys rather than category names so the dependency is exact.
+    # A rule that named a whole category lost its verdict whenever any listing
+    # in that category failed, including ones it never read -- CloudGuard
+    # reporting a gap it had invented, which is the same overclaim as a PASS
+    # nobody earned, pointed the other way.
+    requires_evidence: ClassVar[tuple[EvidenceKey, ...]] = ()
 
     @abstractmethod
     def evaluate(

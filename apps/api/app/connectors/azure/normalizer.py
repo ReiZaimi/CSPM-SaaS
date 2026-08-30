@@ -112,7 +112,8 @@ def _first(value: Any, *path: str, default: Any = None) -> Any:
 
 class AzureNormalizer:
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
-        state = NormalizedState(collection_errors=dict(snapshot.errors))
+        # Keyed by evidence key, not category: that is what rules declare.
+        state = NormalizedState(collection_errors=dict(snapshot.gaps))
         data = snapshot.data
 
         diagnostics = data.get("diagnostic_settings", {}) or {}

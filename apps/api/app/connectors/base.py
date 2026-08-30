@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.enums import CollectionScope, Provider, RelationshipType
+from app.core.enums import CollectionScope, Provider, RelationshipType, TaskOutcome
 from app.domain.resource import CloudResource
 
 
@@ -58,9 +58,18 @@ class RawSnapshot:
     version: str = "1.0"
     # category -> provider payload, e.g. {"network_security_groups": [...]}
     data: dict[str, Any] = field(default_factory=dict)
-    # category -> error message. A storage timeout must not fail the whole scan;
-    # it degrades that category's rules to UNKNOWN (AZURE_INTEGRATION.md section 5).
+    # category -> error message. The customer-facing view: what the scan banner
+    # shows and what a stale role deployment explains, because a permission is
+    # granted per category and never per listing
+    # (AZURE_INTEGRATION.md section 5).
     errors: dict[str, str] = field(default_factory=dict)
+    # evidence key -> error message. The view the *rules* degrade on, and finer
+    # than ``errors`` rather than a copy of it. A subscription whose PostgreSQL
+    # listing failed has read its SQL servers perfectly well; degrading the SQL
+    # rule over a sibling listing would be a gap CloudGuard invented rather than
+    # one it found. Both are derived from the same coverage report, so they
+    # cannot disagree about what happened -- only about how finely to say it.
+    gaps: dict[str, str] = field(default_factory=dict)
     # Per-task outcome from the collection run: what was read completely, what
     # came back partial, what failed, what was skipped. ``errors`` above is
     # derived from this and drives rule degradation; this is the detail behind
@@ -77,6 +86,7 @@ class RawSnapshot:
             "version": self.version,
             "data": self.data,
             "errors": self.errors,
+            "gaps": self.gaps,
             "coverage": self.coverage,
         }
 
@@ -102,12 +112,34 @@ class RawSnapshot:
             version=payload.get("version", "1.0"),
             data=dict(payload.get("data") or {}),
             errors=dict(payload.get("errors") or {}),
+            # Absent on snapshots taken before rules degraded per evidence key.
+            # Derived from ``coverage`` when it is, so an old capture replays
+            # with the same gaps it originally had rather than with none.
+            gaps=dict(payload.get("gaps") or cls._gaps_from_coverage(payload)),
             # Absent on snapshots taken before coverage was recorded. Empty is
             # the honest reading: those runs cannot say what they saw in full,
             # and inventing a COMPLETE for them would be the exact overclaim
             # the field was added to prevent.
             coverage=dict(payload.get("coverage") or {}),
         )
+
+    @staticmethod
+    def _gaps_from_coverage(payload: dict[str, Any]) -> dict[str, str]:
+        """Per-key gaps reconstructed from a snapshot that predates them.
+
+        The coverage report already recorded every task's outcome, so an older
+        capture carries the facts even though it never carried this shape. A
+        replay of one has to degrade exactly the rules the original run degraded
+        -- an old snapshot silently replaying with no gaps would turn every
+        UNKNOWN it earned into a PASS the second time around, which is the one
+        thing replay must never do.
+        """
+        gaps: dict[str, str] = {}
+        for key, entry in (payload.get("coverage") or {}).items():
+            outcome = str(entry.get("outcome", ""))
+            if outcome and outcome != TaskOutcome.COMPLETE.value:
+                gaps[key] = entry.get("detail") or outcome.lower()
+        return gaps
 
 
 @dataclass
@@ -116,6 +148,8 @@ class NormalizedState:
 
     resources: list[CloudResource] = field(default_factory=list)
     relationships: list[tuple[str, RelationshipType, str]] = field(default_factory=list)
+    # Evidence key -> why it cannot be relied on. Carried through to
+    # ``RuleContext``, which is where it decides between UNKNOWN and a verdict.
     collection_errors: dict[str, str] = field(default_factory=dict)
 
 

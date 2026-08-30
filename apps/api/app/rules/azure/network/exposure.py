@@ -9,6 +9,7 @@ All three read normalized NSG rules of the shape produced by
 
 from typing import Any, ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.rules.base import RuleContext, RuleResult, SecurityRule
@@ -94,7 +95,10 @@ class _PublicPortRule(SecurityRule):
     port: int
     protocols: ClassVar[set[str]] = {"tcp"}
     service: str = ""
-    requires_collection: ClassVar[list[str]] = ["network"]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.NETWORK_SECURITY_GROUPS,
+        AzureEvidence.NETWORK_INTERFACES,
+    )
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.NETWORK_SECURITY_GROUP]
 
     def evaluate(
@@ -103,7 +107,7 @@ class _PublicPortRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Network configuration unavailable: {failure}")
 
@@ -224,7 +228,10 @@ class AzureOpenNsgRule(SecurityRule):
     severity = Severity.HIGH
     exploitability = 4
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.NETWORK_SECURITY_GROUP]
-    requires_collection: ClassVar[list[str]] = ["network"]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.NETWORK_SECURITY_GROUPS,
+        AzureEvidence.NETWORK_INTERFACES,
+    )
     estimated_effort_minutes = 30
     rationale = (
         "Management and database ports open to the internet give an attacker a direct path to "
@@ -270,7 +277,7 @@ class AzureOpenNsgRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Network configuration unavailable: {failure}")
 

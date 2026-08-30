@@ -1,5 +1,6 @@
 """AZ-ID-001 / AZ-ID-002."""
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import RuleState
 from app.rules.azure.identity.mfa import AzureMfaRule
 from app.rules.azure.identity.privileged import AzurePrivilegedUserRule
@@ -47,7 +48,7 @@ class TestMfaRule:
 
     def test_unknown_when_identity_collection_failed(self) -> None:
         user = resource_from("vulnerable", "user_admin_no_mfa")
-        ctx = make_context(user, collection_errors={"identity": "Graph 403"})
+        ctx = make_context(user, collection_errors={AzureEvidence.USERS: "Graph 403"})
         assert self.rule.evaluate(user, ctx).state == RuleState.UNKNOWN
 
 
@@ -100,5 +101,8 @@ class TestPrivilegedUserRule:
         assert self.rule.evaluate(None, make_context()).state == RuleState.UNKNOWN
 
     def test_unknown_when_identity_collection_failed(self) -> None:
-        ctx = make_context(*self._admins(6), collection_errors={"identity": "Graph timeout"})
+        ctx = make_context(
+            *self._admins(6),
+            collection_errors={AzureEvidence.USERS: "Graph timeout"},
+        )
         assert self.rule.evaluate(None, ctx).state == RuleState.UNKNOWN

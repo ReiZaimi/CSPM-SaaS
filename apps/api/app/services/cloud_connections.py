@@ -32,6 +32,7 @@ from app.connectors.azure.rbac import (
     role_is_current,
 )
 from app.connectors.base import ConnectionCheck
+from app.connectors.evidence import EvidenceCategory
 from app.core.config import settings
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
@@ -512,7 +513,7 @@ def role_upgrade_available(connection: CloudConnection) -> bool:
     )
 
 
-def degraded_categories(connection: CloudConnection) -> dict[str, str]:
+def degraded_categories(connection: CloudConnection) -> dict[EvidenceCategory, str]:
     """Collection categories this connection's role cannot fully serve.
 
     Returns category -> the sentence to show the customer. Empty when the role

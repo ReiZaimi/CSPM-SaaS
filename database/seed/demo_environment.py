@@ -33,8 +33,10 @@ sys.path.insert(0, "/srv/apps/api")
 
 from sqlalchemy import text
 
+from app.connectors.azure.evidence import keys_in
 from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
+from app.connectors.evidence import EvidenceCategory
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.enums import (
@@ -105,6 +107,16 @@ class ReplayConnector(CloudConnector):
                 category: reason
                 for category, reason in self.payload["errors"].items()
                 if (category == "identity") is directory
+            },
+            # The rules degrade per evidence key, so a recorded category error
+            # has to reach the keys under it. Without this the demo would show
+            # a degraded banner and rules that passed regardless -- the exact
+            # contradiction the coverage ledger exists to prevent.
+            gaps={
+                key.value: reason
+                for category, reason in self.payload["errors"].items()
+                if (category == "identity") is directory
+                for key in keys_in(EvidenceCategory(category))
             },
         )
 

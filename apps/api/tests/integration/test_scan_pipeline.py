@@ -81,16 +81,12 @@ class ReplayConnector(CloudConnector):
     async def collect(self, on_progress=None) -> RawSnapshot:
         if on_progress:
             await on_progress(1, 1)
-        snapshot = self._slice(directory=False)
-        self._align_coverage(snapshot)
-        return snapshot
+        return self._slice(directory=False)
 
     async def collect_directory(self, on_progress=None) -> RawSnapshot:
         if on_progress:
             await on_progress(1, 1)
-        snapshot = self._slice(directory=True)
-        self._align_coverage(snapshot)
-        return snapshot
+        return self._slice(directory=True)
 
     def _slice(self, *, directory: bool) -> RawSnapshot:
         snapshot = RawSnapshot.from_json(copy.deepcopy(self.payload))
@@ -115,6 +111,17 @@ class ReplayConnector(CloudConnector):
         if directory:
             snapshot.subscription_id = None
             snapshot.scope = CollectionScope.DIRECTORY
+
+        self._align_coverage(snapshot)
+        # Derived last, from the coverage this slice actually kept -- the same
+        # order a real run uses. Tests inject a category error and expect the
+        # rules under it to degrade, which only happens if the per-key gaps are
+        # rebuilt after the injection rather than inherited from the recording.
+        snapshot.gaps = {
+            key: entry.get("detail") or entry["outcome"].lower()
+            for key, entry in snapshot.coverage.items()
+            if entry["outcome"] != TaskOutcome.COMPLETE.value
+        }
         return snapshot
 
     @staticmethod

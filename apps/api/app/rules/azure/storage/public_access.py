@@ -2,6 +2,7 @@
 
 from typing import ClassVar
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.rules.base import RuleContext, RuleResult, SecurityRule
@@ -19,7 +20,9 @@ class AzurePublicStorageRule(SecurityRule):
     severity = Severity.HIGH
     exploitability = 5
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.STORAGE_ACCOUNT]
-    requires_collection: ClassVar[list[str]] = ["storage"]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.STORAGE_ACCOUNTS,
+    )
     estimated_effort_minutes = 20
     rationale = (
         "Publicly readable storage is the single most common source of large cloud data "
@@ -50,7 +53,7 @@ class AzurePublicStorageRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Storage configuration unavailable: {failure}")
 
@@ -100,7 +103,9 @@ class AzureStorageEncryptionRule(SecurityRule):
     severity = Severity.HIGH
     exploitability = 2
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.STORAGE_ACCOUNT]
-    requires_collection: ClassVar[list[str]] = ["storage"]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.STORAGE_ACCOUNTS,
+    )
     estimated_effort_minutes = 20
     rationale = (
         "Without enforced HTTPS and a current TLS version, credentials and data can be read "
@@ -133,7 +138,7 @@ class AzureStorageEncryptionRule(SecurityRule):
         if resource is None:
             return RuleResult.not_applicable("Rule is per-resource")
 
-        failure = context.has_collection_error(*self.requires_collection)
+        failure = context.has_collection_error(*self.requires_evidence)
         if failure:
             return RuleResult.unknown(f"Storage configuration unavailable: {failure}")
 

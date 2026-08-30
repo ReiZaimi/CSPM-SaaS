@@ -40,6 +40,7 @@ from app.connectors.azure.client import (
     RequestLimiter,
     ResourceGraphClient,
 )
+from app.connectors.azure.evidence import AzureEvidence
 from app.connectors.collection import CollectionTask, TaskData
 from app.core.logging import get_logger
 
@@ -81,11 +82,10 @@ class AzurePlanBuilder:
     # ------------------------------------------------------------- plumbing
     def _arm_task(
         self,
-        key: str,
-        category: str,
+        key: AzureEvidence,
         actions: tuple[str, ...],
         call: Callable[[ArmClient], Awaitable[dict[str, Any]]],
-        depends_on: tuple[str, ...] = (),
+        depends_on: tuple[AzureEvidence, ...] = (),
     ) -> CollectionTask:
         """Wrap one ARM listing, turning truncation into a PARTIAL result.
 
@@ -109,7 +109,7 @@ class AzurePlanBuilder:
             return TaskData(data)
 
         return CollectionTask(
-            key=key, category=category, run=run, depends_on=depends_on, actions=actions
+            key=key, run=run, depends_on=depends_on, actions=actions
         )
 
     async def _gather_limited(self, coros: list[Awaitable[Any]]) -> list[Any]:
@@ -176,38 +176,32 @@ class AzurePlanBuilder:
 
         tasks = [
             self._arm_task(
-                "network_security_groups",
-                "network",
+                AzureEvidence.NETWORK_SECURITY_GROUPS,
                 ("Microsoft.Network/networkSecurityGroups/read",),
                 nsgs,
             ),
             self._arm_task(
-                "network_interfaces",
-                "network",
+                AzureEvidence.NETWORK_INTERFACES,
                 ("Microsoft.Network/networkInterfaces/read",),
                 nics,
             ),
             self._arm_task(
-                "public_ip_addresses",
-                "network",
+                AzureEvidence.PUBLIC_IP_ADDRESSES,
                 ("Microsoft.Network/publicIPAddresses/read",),
                 public_ips,
             ),
             self._arm_task(
-                "virtual_machines",
-                "compute",
+                AzureEvidence.VIRTUAL_MACHINES,
                 ("Microsoft.Compute/virtualMachines/read",),
                 vms,
             ),
             self._arm_task(
-                "storage_accounts",
-                "storage",
+                AzureEvidence.STORAGE_ACCOUNTS,
                 ("Microsoft.Storage/storageAccounts/read",),
                 storage,
             ),
             self._arm_task(
-                "sql_servers",
-                "database",
+                AzureEvidence.SQL_SERVERS,
                 (
                     "Microsoft.Sql/servers/read",
                     "Microsoft.Sql/servers/firewallRules/read",
@@ -215,8 +209,7 @@ class AzurePlanBuilder:
                 sql,
             ),
             self._arm_task(
-                "postgresql_servers",
-                "database",
+                AzureEvidence.POSTGRESQL_SERVERS,
                 ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
                 postgres,
             ),
@@ -276,8 +269,7 @@ class AzurePlanBuilder:
             return TaskData(data)
 
         return CollectionTask(
-            key="resources",
-            category="resources",
+            key=AzureEvidence.RESOURCES,
             run=run,
             actions=(
                 "Microsoft.Resources/subscriptions/read",
@@ -294,7 +286,11 @@ class AzurePlanBuilder:
         storage, SQL and NSG listings produce. That used to be expressed as
         "call it fifth".
         """
-        sources = ("storage_accounts", "sql_servers", "network_security_groups")
+        sources = (
+            AzureEvidence.STORAGE_ACCOUNTS,
+            AzureEvidence.SQL_SERVERS,
+            AzureEvidence.NETWORK_SECURITY_GROUPS,
+        )
 
         async def run(collected: dict[str, Any]) -> TaskData:
             arm = ArmClient(self.tokens, self._http, limiter=self._limiter)
@@ -332,8 +328,7 @@ class AzurePlanBuilder:
             return TaskData(data)
 
         return CollectionTask(
-            key="diagnostic_settings",
-            category="logging",
+            key=AzureEvidence.DIAGNOSTIC_SETTINGS,
             run=run,
             depends_on=sources,
             actions=("Microsoft.Insights/diagnosticSettings/read",),
@@ -395,13 +390,12 @@ class AzurePlanBuilder:
             return TaskData({"directory_roles": found})
 
         return [
-            CollectionTask(key="users", category="identity", run=users),
-            CollectionTask(key="directory_roles", category="identity", run=roles),
+            CollectionTask(key=AzureEvidence.USERS, run=users),
+            CollectionTask(key=AzureEvidence.DIRECTORY_ROLES, run=roles),
             CollectionTask(
-                key="user_role_map",
-                category="identity",
+                key=AzureEvidence.USER_ROLE_MAP,
                 run=self._role_membership,
-                depends_on=("users", "directory_roles"),
+                depends_on=(AzureEvidence.USERS, AzureEvidence.DIRECTORY_ROLES),
             ),
         ]
 

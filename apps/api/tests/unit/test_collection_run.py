@@ -16,21 +16,58 @@ from app.connectors.collection import (
     TaskData,
     TaskOutcome,
 )
+from app.connectors.evidence import EvidenceCategory, EvidenceKey
 
 
-def task(key, category="things", depends_on=(), *, data=None, partial=None, boom=None):
+class Evidence(EvidenceKey):
+    """Keys for this test, not Azure's.
+
+    The executor is provider-neutral and these prove it: it is handed an
+    ``EvidenceKey`` implementation it has never seen, with categories chosen
+    here, and it sorts, skips and degrades them exactly as it does Azure's.
+    """
+
+    A = "a"
+    B = "b"
+    C = "c"
+    SOURCE = "source"
+    DEPENDENT = "dependent"
+    EARLY = "early"
+    LATE = "late"
+    NSGS = "nsgs"
+    NICS = "nics"
+    PUBLIC_IPS = "public_ips"
+    STORAGE_ACCOUNTS = "storage_accounts"
+    DIAGNOSTIC_SETTINGS = "diagnostic_settings"
+    READER = "reader"
+
+    @property
+    def category(self) -> EvidenceCategory:
+        if self in (Evidence.NSGS, Evidence.NICS, Evidence.PUBLIC_IPS):
+            return EvidenceCategory.NETWORK
+        if self is Evidence.STORAGE_ACCOUNTS:
+            return EvidenceCategory.STORAGE
+        if self is Evidence.DIAGNOSTIC_SETTINGS:
+            return EvidenceCategory.LOGGING
+        return EvidenceCategory.RESOURCES
+
+
+def task(key, depends_on=(), *, data=None, partial=None, boom=None):
     async def run(collected: dict) -> TaskData:
         if boom:
             raise RuntimeError(boom)
-        return TaskData(data if data is not None else {key: [key]}, partial_reason=partial)
+        return TaskData(
+            data if data is not None else {key.value: [key.value]},
+            partial_reason=partial,
+        )
 
-    return CollectionTask(key=key, category=category, run=run, depends_on=depends_on)
+    return CollectionTask(key=key, run=run, depends_on=depends_on)
 
 
 # ----------------------------------------------------------------- the happy path
 async def test_every_task_contributes_to_the_collected_data() -> None:
     data: dict = {}
-    report = await CollectionRun([task("a"), task("b")]).execute(data)
+    report = await CollectionRun([task(Evidence.A), task(Evidence.B)]).execute(data)
 
     assert data == {"a": ["a"], "b": ["b"]}
     assert report.is_complete
@@ -38,18 +75,18 @@ async def test_every_task_contributes_to_the_collected_data() -> None:
 
 
 async def test_independent_tasks_share_a_wave() -> None:
-    run = CollectionRun([task("a"), task("b"), task("c")])
+    run = CollectionRun([task(Evidence.A), task(Evidence.B), task(Evidence.C)])
     assert [len(w) for w in run.waves()] == [3]
 
 
 async def test_a_dependency_forces_a_later_wave() -> None:
     """``diagnostic_settings`` needs the ids storage and SQL produce. That used
     to be expressed as "call it fifth"."""
-    run = CollectionRun([task("late", depends_on=("early",)), task("early")])
+    run = CollectionRun([task(Evidence.LATE, depends_on=(Evidence.EARLY,)), task(Evidence.EARLY)])
     waves = run.waves()
 
-    assert [t.key for t in waves[0]] == ["early"]
-    assert [t.key for t in waves[1]] == ["late"]
+    assert [t.key for t in waves[0]] == [Evidence.EARLY]
+    assert [t.key for t in waves[1]] == [Evidence.LATE]
 
 
 async def test_a_dependent_task_sees_what_its_dependency_produced() -> None:
@@ -61,9 +98,9 @@ async def test_a_dependent_task_sees_what_its_dependency_produced() -> None:
 
     await CollectionRun(
         [
-            task("source", data={"source": [1, 2, 3]}),
+            task(Evidence.SOURCE, data={"source": [1, 2, 3]}),
             CollectionTask(
-                key="reader", category="things", run=reader, depends_on=("source",)
+                key=Evidence.READER, run=reader, depends_on=(Evidence.SOURCE,)
             ),
         ]
     ).execute({})
@@ -78,37 +115,40 @@ async def test_one_failure_does_not_cost_its_siblings() -> None:
     already arrived."""
     data: dict = {}
     report = await CollectionRun(
-        [task("nsgs"), task("public_ips", boom="throttled"), task("nics")]
+        [task(Evidence.NSGS), task(Evidence.PUBLIC_IPS, boom="throttled"), task(Evidence.NICS)]
     ).execute(data)
 
     assert data["nsgs"] == ["nsgs"]
     assert data["nics"] == ["nics"]
-    assert report.results["public_ips"].outcome == TaskOutcome.FAILED
-    assert report.results["nsgs"].outcome == TaskOutcome.COMPLETE
+    assert report.results[Evidence.PUBLIC_IPS].outcome == TaskOutcome.FAILED
+    assert report.results[Evidence.NSGS].outcome == TaskOutcome.COMPLETE
 
 
 async def test_a_failed_dependency_skips_rather_than_fails_its_dependents() -> None:
     """Nothing is wrong with the dependent task. Reporting it as failed would
     send someone looking for a second problem one hop from the real one."""
     report = await CollectionRun(
-        [task("source", boom="gone"), task("dependent", depends_on=("source",))]
+        [
+            task(Evidence.SOURCE, boom="gone"),
+            task(Evidence.DEPENDENT, depends_on=(Evidence.SOURCE,)),
+        ]
     ).execute({})
 
-    assert report.results["source"].outcome == TaskOutcome.FAILED
-    assert report.results["dependent"].outcome == TaskOutcome.SKIPPED
-    assert "source" in report.results["dependent"].detail
+    assert report.results[Evidence.SOURCE].outcome == TaskOutcome.FAILED
+    assert report.results[Evidence.DEPENDENT].outcome == TaskOutcome.SKIPPED
+    assert "source" in report.results[Evidence.DEPENDENT].detail
 
 
 async def test_a_skip_cascades_through_the_chain() -> None:
     report = await CollectionRun(
         [
-            task("a", boom="gone"),
-            task("b", depends_on=("a",)),
-            task("c", depends_on=("b",)),
+            task(Evidence.A, boom="gone"),
+            task(Evidence.B, depends_on=(Evidence.A,)),
+            task(Evidence.C, depends_on=(Evidence.B,)),
         ]
     ).execute({})
 
-    assert report.results["c"].outcome == TaskOutcome.SKIPPED
+    assert report.results[Evidence.C].outcome == TaskOutcome.SKIPPED
 
 
 # ------------------------------------------------------------------ the point
@@ -117,20 +157,20 @@ async def test_a_partial_result_keeps_its_data_and_forfeits_its_verdict() -> Non
     inventory; it is not evidence that nothing is wrong."""
     data: dict = {}
     report = await CollectionRun(
-        [task("storage_accounts", category="storage", partial="the listing stopped early")]
+        [task(Evidence.STORAGE_ACCOUNTS, partial="the listing stopped early")]
     ).execute(data)
 
     assert data["storage_accounts"] == ["storage_accounts"]
-    assert report.results["storage_accounts"].outcome == TaskOutcome.PARTIAL
+    assert report.results[Evidence.STORAGE_ACCOUNTS].outcome == TaskOutcome.PARTIAL
     assert not report.is_complete
 
 
 async def test_a_partial_result_degrades_its_category_like_a_failure() -> None:
     """PARTIAL lands in ``errors`` beside FAILED on purpose: the existing
-    requires_collection path then degrades those rules to UNKNOWN, and no rule
-    has to learn that truncation exists."""
+    degradation path then costs those rules their verdict, and no rule has to
+    learn that truncation exists."""
     report = await CollectionRun(
-        [task("storage_accounts", category="storage", partial="stopped early")]
+        [task(Evidence.STORAGE_ACCOUNTS, partial="stopped early")]
     ).execute({})
 
     problems = report.category_problems()
@@ -144,12 +184,12 @@ async def test_a_partial_dependency_does_not_let_dependents_run() -> None:
     complete one's clothes."""
     report = await CollectionRun(
         [
-            task("storage_accounts", partial="stopped early"),
-            task("diagnostic_settings", depends_on=("storage_accounts",)),
+            task(Evidence.STORAGE_ACCOUNTS, partial="stopped early"),
+            task(Evidence.DIAGNOSTIC_SETTINGS, depends_on=(Evidence.STORAGE_ACCOUNTS,)),
         ]
     ).execute({})
 
-    assert report.results["diagnostic_settings"].outcome == TaskOutcome.SKIPPED
+    assert report.results[Evidence.DIAGNOSTIC_SETTINGS].outcome == TaskOutcome.SKIPPED
 
 
 # --------------------------------------------------------------- plan sanity
@@ -161,7 +201,10 @@ async def test_progress_is_reported_against_a_known_total() -> None:
     async def record(done: int, total: int) -> None:
         seen.append((done, total))
 
-    run = CollectionRun([task("a"), task("b", depends_on=("a",))], on_progress=record)
+    run = CollectionRun(
+        [task(Evidence.A), task(Evidence.B, depends_on=(Evidence.A,))],
+        on_progress=record,
+    )
     await run.execute({})
 
     assert run.size == 2
@@ -172,17 +215,17 @@ def test_a_dependency_on_a_key_nothing_produces_is_refused() -> None:
     """Silently skipping forever is the alternative, and it looks exactly like
     a permission problem from the outside."""
     with pytest.raises(ValueError, match="which no task produces"):
-        CollectionRun([task("a", depends_on=("typo",))])
+        CollectionRun([task(Evidence.A, depends_on=("typo",))])
 
 
 def test_a_cycle_is_refused_rather_than_hung() -> None:
     with pytest.raises(ValueError, match="dependency cycle"):
         CollectionRun(
-            [task("a", depends_on=("b",)), task("b", depends_on=("a",))]
+            [task(Evidence.A, depends_on=(Evidence.B,)), task(Evidence.B, depends_on=(Evidence.A,))]
         ).waves()
 
 
 def test_duplicate_keys_are_refused() -> None:
     """Two tasks writing one key means one silently wins."""
     with pytest.raises(ValueError, match="Duplicate collection task keys: a"):
-        CollectionRun([task("a"), task("a")])
+        CollectionRun([task(Evidence.A), task(Evidence.A)])

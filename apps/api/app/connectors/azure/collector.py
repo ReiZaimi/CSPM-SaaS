@@ -144,10 +144,13 @@ class AzureCollector:
                 await http.aclose()
 
         snapshot.coverage = report.to_json()
-        # Derived, not assigned alongside: every untrustworthy task lands in
-        # ``errors`` under its category, so PARTIAL degrades rules through the
-        # same ``requires_collection`` path a failure always has. No rule needs
-        # to learn that truncation exists.
+        # Both views derived from the one report, never assigned separately.
+        # ``gaps`` is what the rules degrade on, key by key; ``errors`` is the
+        # category summary the scan banner and the role-drift explanation read.
+        # PARTIAL lands in both alongside FAILED deliberately: a truncated
+        # listing costs a verdict exactly as an unreachable API does, and no
+        # rule has to learn that truncation exists.
+        snapshot.gaps.update(report.key_problems())
         snapshot.errors.update(report.category_problems())
 
         log.info(

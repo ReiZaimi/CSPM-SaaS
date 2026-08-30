@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.connectors.azure.evidence import AzureEvidence
 from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import RawSnapshot
 from app.core.enums import Level, Provider, RelationshipType, ResourceType
@@ -136,11 +137,32 @@ class TestIdentityNormalization:
 
 
 class TestCollectionErrorPropagation:
-    def test_errors_reach_the_rule_context(self) -> None:
+    def test_gaps_reach_the_rule_context(self) -> None:
+        """The rules degrade on ``gaps``, keyed per evidence key.
+
+        ``errors`` is the sibling category summary the scan banner reads. The
+        two are derived from one coverage report and must not be confused: a
+        rule that read the category view would go UNKNOWN over listings it never
+        touched.
+        """
+        snapshot = load_snapshot("snapshot_mixed")
+        snapshot.gaps[AzureEvidence.STORAGE_ACCOUNTS] = "Azure API timeout"
+        state = AzureNormalizer().normalize(snapshot)
+        assert (
+            state.collection_errors[AzureEvidence.STORAGE_ACCOUNTS]
+            == "Azure API timeout"
+        )
+
+    def test_the_category_summary_does_not_degrade_a_rule_on_its_own(self) -> None:
+        """A category is a permission, not a listing.
+
+        Degrading on it would cost AZ-DB-001 its verdict whenever the
+        PostgreSQL listing failed, over SQL servers it had read perfectly well.
+        """
         snapshot = load_snapshot("snapshot_mixed")
         snapshot.errors["storage"] = "Azure API timeout"
         state = AzureNormalizer().normalize(snapshot)
-        assert state.collection_errors["storage"] == "Azure API timeout"
+        assert state.collection_errors == {}
 
 
 class TestEndToEndEvaluation:
@@ -173,7 +195,7 @@ class TestEndToEndEvaluation:
 
     def test_storage_collection_failure_degrades_to_unknown_not_pass(self) -> None:
         snapshot = load_snapshot("snapshot_mixed")
-        snapshot.errors["storage"] = "Azure API timeout"
+        snapshot.gaps[AzureEvidence.STORAGE_ACCOUNTS] = "Azure API timeout"
         state = AzureNormalizer().normalize(snapshot)
         context = RuleContext(
             resources=state.resources,

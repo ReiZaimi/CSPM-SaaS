@@ -59,7 +59,7 @@ def test_the_model_keys_a_reading_to_its_subscription() -> None:
 
 def test_a_reading_carries_the_category_the_rules_degrade_on() -> None:
     """``task_key`` is what was read; ``category`` is the bucket
-    ``requires_collection`` keys on. Both are needed: one names the listing,
+    the customer's role is granted on. Both are needed: one names the listing,
     the other names the checks that lose their verdict over it."""
     from app.models.scan import ScanCollectionResult
 

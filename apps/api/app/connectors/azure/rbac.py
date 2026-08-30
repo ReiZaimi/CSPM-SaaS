@@ -32,6 +32,7 @@ rather than silently collecting UNKNOWN results.
 import json
 from dataclasses import dataclass
 
+from app.connectors.evidence import EvidenceCategory
 from app.core.enums import ConnectionScope
 
 # Bump when the action list changes.
@@ -125,25 +126,25 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
 # This exists so a 403 can be explained rather than merely reported. When a
 # customer's deployed role predates a check, the resulting failure is not
 # "Forbidden" -- it is "redeploy the role", which is a thing they can act on.
-COLLECTION_ACTIONS: dict[str, tuple[str, ...]] = {
-    "resources": (
+COLLECTION_ACTIONS: dict[EvidenceCategory, tuple[str, ...]] = {
+    EvidenceCategory.RESOURCES: (
         "Microsoft.Resources/subscriptions/read",
         "Microsoft.Resources/subscriptions/resources/read",
         "Microsoft.ResourceGraph/resources/read",
     ),
-    "network": (
+    EvidenceCategory.NETWORK: (
         "Microsoft.Network/networkSecurityGroups/read",
         "Microsoft.Network/networkInterfaces/read",
         "Microsoft.Network/publicIPAddresses/read",
     ),
-    "compute": ("Microsoft.Compute/virtualMachines/read",),
-    "storage": ("Microsoft.Storage/storageAccounts/read",),
-    "database": (
+    EvidenceCategory.COMPUTE: ("Microsoft.Compute/virtualMachines/read",),
+    EvidenceCategory.STORAGE: ("Microsoft.Storage/storageAccounts/read",),
+    EvidenceCategory.DATABASE: (
         "Microsoft.Sql/servers/read",
         "Microsoft.Sql/servers/firewallRules/read",
         "Microsoft.DBforPostgreSQL/flexibleServers/read",
     ),
-    "logging": ("Microsoft.Insights/diagnosticSettings/read",),
+    EvidenceCategory.LOGGING: ("Microsoft.Insights/diagnosticSettings/read",),
 }
 
 # What each published role version granted. Frozen once shipped: a customer's
@@ -212,7 +213,7 @@ def actions_missing_from(role_version: str) -> tuple[str, ...]:
     return tuple(a for a in ARM_READ_ACTIONS if a not in granted)
 
 
-def categories_behind(role_version: str) -> frozenset[str]:
+def categories_behind(role_version: str) -> frozenset[EvidenceCategory]:
     """Collection categories ``role_version`` cannot fully serve."""
     missing = frozenset(actions_missing_from(role_version))
     if not missing:
