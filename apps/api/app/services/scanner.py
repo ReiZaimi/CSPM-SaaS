@@ -45,6 +45,8 @@ from app.connectors.registry import get_connector
 from app.context import ContextDeclaration, resolve_resource
 from app.core.db import scan_session, service_session
 from app.core.enums import (
+    AssetChange,
+    FindingEvent,
     FindingStatus,
     Level,
     RelationshipType,
@@ -65,6 +67,7 @@ from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
+from app.models.history import AssetChangeEvent, FindingEventRecord
 from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding, RiskHistory
 from app.models.scan import (
@@ -1160,7 +1163,12 @@ class ScanPipeline:
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
         if mutate_findings:
             id_map = await self._persist_resources(
-                session, org_id, account_state, observed_at, directory=directory
+                session,
+                org_id,
+                account_state,
+                observed_at,
+                directory=directory,
+                scan_id=scan.id,
             )
         else:
             # A superseded capture describes an environment that has since
@@ -1639,6 +1647,7 @@ class ScanPipeline:
         observed_at: datetime,
         *,
         directory: tuple[CloudConnection, NormalizedState] | None = None,
+        scan_id: UUID | None = None,
     ) -> dict[str, UUID]:
         """Upsert this scan's assets, returning provider id -> row id.
 
@@ -1689,6 +1698,10 @@ class ScanPipeline:
         # already in hand; the read-back loop existed only because this
         # reference was dropped.
         touched: dict[str, ResourceRecord] = {}
+        # (row, what changed, before, after). Collected rather than written
+        # inline because the rows are not flushed yet: a change event needs the
+        # asset's primary key, and a new asset has none until the flush below.
+        changes: list[tuple[ResourceRecord, AssetChange, str | None, str | None]] = []
 
         def upsert(
             resource: CloudResource,
@@ -1707,6 +1720,37 @@ class ScanPipeline:
                     first_seen_at=now,
                 )
                 session.add(row)
+                changes.append((row, AssetChange.APPEARED, None, None))
+            else:
+                # Everything the risk engine multiplies a finding by, and
+                # nothing else. Diffing whole payloads would produce a feed
+                # nobody can read, and the drift that matters already arrives
+                # as a finding.
+                for change, before, after in (
+                    (
+                        AssetChange.EXPOSURE_CHANGED,
+                        row.public_exposure,
+                        resource.public_exposure,
+                    ),
+                    (
+                        AssetChange.SENSITIVITY_CHANGED,
+                        row.data_sensitivity,
+                        resource.data_sensitivity,
+                    ),
+                    (
+                        AssetChange.CRITICALITY_CHANGED,
+                        row.criticality,
+                        resource.criticality,
+                    ),
+                ):
+                    if before != after:
+                        changes.append((row, change, before.value, after.value))
+                if row.absent_since is not None:
+                    # It came back. One asset that vanished for a week, not two
+                    # assets -- which is why the row was kept rather than
+                    # deleted when it went.
+                    changes.append((row, AssetChange.APPEARED, None, None))
+            row.absent_since = None
 
             row.resource_type = resource.resource_type
             row.name = resource.name
@@ -1750,8 +1794,30 @@ class ScanPipeline:
             for resource in directory_state.resources:
                 upsert(resource, account_id=None, connection_id=connection.id)
 
+        # Assets this scan covered and did not find. Recorded as a transition
+        # rather than left to be inferred: an absence derived from
+        # ``last_seen_at`` would need a scan cadence nobody records, and would
+        # re-report itself on every scan afterwards.
+        for row in existing.values():
+            if row.provider_resource_id in touched or row.absent_since is not None:
+                continue
+            row.absent_since = now
+            changes.append((row, AssetChange.DISAPPEARED, None, None))
+
         # One flush assigns every pending primary key.
         await session.flush()
+        for row, change, before, after in changes:
+            session.add(
+                AssetChangeEvent(
+                    organization_id=org_id,
+                    resource_id=row.id,
+                    scan_id=scan_id,
+                    change=change,
+                    previous_value=before,
+                    current_value=after,
+                    observed_at=now,
+                )
+            )
         id_map = {provider_id: row.id for provider_id, row in touched.items()}
 
         edges = [edge for _account, state in account_state for edge in state.relationships]
@@ -1934,6 +2000,10 @@ class ScanPipeline:
             tuple[str, UUID | None],
             tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str],
         ] = {}
+        # (finding, what happened, the status it left, the sentence). Held
+        # until the flush, because a finding raised by this scan has no primary
+        # key for an event to point at until then.
+        events: list[tuple[Finding, FindingEvent, FindingStatus | None, str]] = []
 
         for failure in report.failures:
             rule = failure.rule
@@ -1957,10 +2027,19 @@ class ScanPipeline:
                 # Registered immediately so a second failure on the same key
                 # updates this row rather than creating a rival for it.
                 existing_findings[key] = finding
+                events.append((finding, FindingEvent.DETECTED, None, title))
 
             elif finding.status in {FindingStatus.RESOLVED, FindingStatus.FALSE_POSITIVE}:
                 # It came back. Reopen rather than leaving a stale RESOLVED --
                 # a regression is not a historical record.
+                events.append(
+                    (
+                        finding,
+                        FindingEvent.REOPENED,
+                        finding.status,
+                        "The check failed again after being resolved.",
+                    )
+                )
                 finding.status = FindingStatus.OPEN
                 finding.resolved_at = None
                 finding.resolved_by_scan_id = None
@@ -1996,6 +2075,20 @@ class ScanPipeline:
 
         # One flush for every new finding, rather than one per finding.
         await session.flush()
+
+        for finding, event, previous, detail in events:
+            session.add(
+                FindingEventRecord(
+                    organization_id=org_id,
+                    finding_id=finding.id,
+                    scan_id=scan.id,
+                    event=event,
+                    previous_status=previous,
+                    current_status=finding.status,
+                    detail=detail,
+                    observed_at=now,
+                )
+            )
 
         linked_ids = [
             risk_by_finding[f.id] for f, *_ in pending.values() if f.id in risk_by_finding
@@ -2583,6 +2676,21 @@ class ScanPipeline:
         } if links else {}
 
         for finding in resolved:
+            session.add(
+                FindingEventRecord(
+                    organization_id=org_id,
+                    finding_id=finding.id,
+                    scan_id=scan.id,
+                    event=FindingEvent.RESOLVED,
+                    previous_status=finding.status,
+                    current_status=FindingStatus.RESOLVED,
+                    detail=(
+                        "A scan observed the check passing on the same asset, "
+                        "so CloudGuard closed it."
+                    ),
+                    observed_at=now,
+                )
+            )
             finding.status = FindingStatus.RESOLVED
             finding.resolved_at = now
             finding.resolved_by_scan_id = scan.id

@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.enums import (
+    FindingEvent,
     FindingStatus,
     Level,
     Priority,
@@ -139,3 +140,22 @@ class VerificationOut(BaseModel):
     next_attempt_at: datetime | None = None
     settled_at: datetime | None = None
     detail: str | None = None
+
+
+class FindingEventOut(BaseModel):
+    """One transition in a finding's life.
+
+    Carries who or what caused it, because "resolved" means something different
+    depending on the answer: a scan observing the check pass is verification,
+    and a person moving the status is a decision.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    event: FindingEvent
+    previous_status: FindingStatus | None = None
+    current_status: FindingStatus
+    scan_id: UUID | None = None
+    user_id: UUID | None = None
+    detail: str | None = None
+    observed_at: datetime

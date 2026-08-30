@@ -2934,3 +2934,147 @@ class TestEscalationChains:
             {"o": org_id},
         )
         assert {"ATTACK_PATH", "ESCALATION", "FINDING"} <= {k[0] for k in kinds}
+
+
+class TestTemporalModel:
+    """What changed, rather than only what is true now.
+
+    Two timestamps and a snapshot blob could describe the present. They could
+    not answer "what changed while I was away" or "how long did this take to
+    fix", and the second is the north-star metric.
+    """
+
+    async def _changes(self, org_id) -> list:
+        return await fetch(
+            "SELECT c.change, c.previous_value, c.current_value, r.name "
+            "FROM asset_change_events c "
+            "JOIN cloud_resources r ON r.id = c.resource_id "
+            "WHERE c.organization_id = :o ORDER BY c.change",
+            {"o": org_id},
+        )
+
+    async def _events(self, org_id, rule_id: str = "AZ-NET-001") -> list:
+        return await fetch(
+            "SELECT e.event, e.previous_status, e.current_status FROM finding_events e "
+            "JOIN findings f ON f.id = e.finding_id "
+            "WHERE e.organization_id = :o AND f.rule_id = :r "
+            "ORDER BY e.observed_at",
+            {"o": org_id, "r": rule_id},
+        )
+
+    def _fix_rdp(self, replay) -> None:
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+
+    async def test_a_first_scan_records_every_asset_as_appearing(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        changes = await self._changes(org_id)
+        assert changes, "the first scan discovered assets and recorded none of them"
+        assert {c[0] for c in changes} == {"APPEARED"}
+
+    async def test_an_unchanged_environment_records_nothing_new(
+        self, replay, connected_account
+    ) -> None:
+        """A feed of movement, not a log of having looked. A second scan over
+        the same environment must leave the reader's week empty."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        first = len(await self._changes(org_id))
+
+        await run_scan(org_id, account_id)
+
+        assert len(await self._changes(org_id)) == first
+
+    async def test_an_asset_that_stops_being_returned_is_recorded_once(
+        self, replay, connected_account
+    ) -> None:
+        """A transition, not a standing condition. Derived from ``last_seen_at``
+        instead, an absence would re-report itself on every scan for ever."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        without_storage = load_raw()
+        removed = without_storage["data"]["storage_accounts"].pop(0)
+        replay["payload"] = without_storage
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        gone = [c for c in await self._changes(org_id) if c[0] == "DISAPPEARED"]
+        assert len(gone) == 1
+        assert gone[0][3] == removed["name"]
+
+    async def test_an_asset_that_comes_back_is_the_same_asset(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        without_storage = load_raw()
+        name = without_storage["data"]["storage_accounts"].pop(0)["name"]
+        replay["payload"] = without_storage
+        await run_scan(org_id, account_id)
+
+        replay["payload"] = load_raw()
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT absent_since FROM cloud_resources WHERE organization_id = :o "
+            "AND name = :n",
+            {"o": org_id, "n": name},
+        )
+        assert len(rows) == 1, "it came back as a second asset"
+        assert rows[0][0] is None, "it is still marked absent"
+
+    async def test_a_finding_carries_its_whole_life(
+        self, replay, connected_account
+    ) -> None:
+        """Raised, fixed, and back again. Two timestamps could not tell this
+        apart from one raised and fixed once."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        self._fix_rdp(replay)
+        await run_scan(org_id, account_id)
+        replay["payload"] = load_raw()
+        await run_scan(org_id, account_id)
+
+        assert [e[0] for e in await self._events(org_id)] == [
+            "DETECTED",
+            "RESOLVED",
+            "REOPENED",
+        ]
+
+    async def test_a_resolution_says_the_status_it_left(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        self._fix_rdp(replay)
+        await run_scan(org_id, account_id)
+
+        events = await self._events(org_id)
+        resolved = next(e for e in events if e[0] == "RESOLVED")
+        assert resolved[1] == "OPEN"
+        assert resolved[2] == "RESOLVED"
+
+    async def test_a_superseded_replay_writes_no_history(
+        self, replay, connected_account
+    ) -> None:
+        """A replay of an old capture makes no observation, so it must not
+        appear to have watched the environment change."""
+        org_id, account_id = connected_account
+        first = await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+        before = len(await self._changes(org_id)) + len(await self._events(org_id))
+
+        await run_replay(org_id, account_id, first)
+
+        after = len(await self._changes(org_id)) + len(await self._events(org_id))
+        assert after == before

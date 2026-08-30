@@ -465,3 +465,56 @@ class TestDashboard:
         assert data["last_scan"] is None
         # No scan has run, so we make no claim about coverage.
         assert data["coverage"]["ratio"] is None
+
+
+class TestChangeFeed:
+    """The "what changed while I was away" surface.
+
+    An empty answer is the interesting case to pin: a feed that padded a quiet
+    week with rows saying everything is still where it was would be worse than
+    no feed, because a customer would stop reading it before the week something
+    did move.
+    """
+
+    async def test_a_tenant_with_no_scans_has_an_empty_week(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org_id = await make_org(client, user, "Quiet Week Ltd")
+        cleanup_orgs.append(uuid.UUID(org_id))
+
+        response = await client.get("/api/v1/changes", headers=auth_header(user))
+
+        assert response.status_code == 200
+        assert response.json()["data"] == []
+        assert response.json()["meta"]["days"] == 7
+
+    async def test_the_window_is_bounded(self, client, cleanup_orgs) -> None:
+        """A feed is for a span somebody can read. An unbounded one would ask
+        PostgreSQL for a tenant's whole history to answer a question about a
+        week."""
+        user = uuid.uuid4()
+        org_id = await make_org(client, user, "Windowed Ltd")
+        cleanup_orgs.append(uuid.UUID(org_id))
+
+        assert (
+            await client.get("/api/v1/changes?days=91", headers=auth_header(user))
+        ).status_code == 422
+        assert (
+            await client.get("/api/v1/changes?days=0", headers=auth_header(user))
+        ).status_code == 422
+
+    async def test_an_unknown_change_kind_is_rejected(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org_id = await make_org(client, user, "Filtered Ltd")
+        cleanup_orgs.append(uuid.UUID(org_id))
+
+        response = await client.get(
+            "/api/v1/changes?change=EXPLODED", headers=auth_header(user)
+        )
+        assert response.status_code == 422
+
+    async def test_a_change_feed_needs_a_token(self, client) -> None:
+        assert (await client.get("/api/v1/changes")).status_code == 401

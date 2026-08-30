@@ -463,6 +463,41 @@ Contributor carrying Owner's permissions, which was never a real Azure role. It
 now carries the real exclusions, so the fixture proves the distinction rather
 than sidestepping it.
 
+## 20. History is a feed of transitions, never a log of having looked
+
+**Spec:** `ARCHITECTURE_REVIEW.md` §2.10 and §12 item 18 — the temporal model.
+
+Three tables, and one rule that shapes all of them: a scan that finds nothing
+different writes nothing. The alternative -- a row per scan per asset -- is
+easier to write and produces a feed whose signal falls as the customer scans
+more often, which is backwards.
+
+**Asset changes are five things, not everything.** An asset appearing or
+disappearing, and a change to exposure, sensitivity or criticality -- the three
+values the risk engine multiplies a finding by. Diffing whole provider payloads
+would be a change feed nobody can read, and the drift that matters is already a
+finding.
+
+**Disappearance is a transition, so it needed a column.**
+`cloud_resources.absent_since` is set when a scan that covered an asset's scope
+does not find it, and cleared when it returns. Derived from `last_seen_at`
+instead, an absence would need a scan cadence nobody records, and would
+re-report itself on every scan for ever. The row is never deleted: a finding
+about the asset is still history worth keeping, and something that vanishes for
+a week and comes back is one asset with two events rather than two assets.
+
+**A finding's timeline sits beside the audit log, not instead of it.** They
+answer different questions for different readers: the audit log is "what has
+anybody in this organization done", for a security reviewer; the timeline is
+"what happened to this finding", for whoever is looking at it. Only the second
+can be complete, because only it holds the transitions a *scan* made, which no
+person did -- and that distinction is the point, since a scan observing a check
+pass is verification while a person moving a status is a decision.
+
+**A superseded replay writes no history at all.** It re-evaluates an old capture
+and makes no observation, so it records neither changes nor events, exactly as
+it records no risk history and resolves no findings.
+
 ---
 
 ## Open items carried forward

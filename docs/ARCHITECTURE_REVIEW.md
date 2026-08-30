@@ -1000,8 +1000,35 @@ on the reaper.
 
     Still to do: traces spanning scan → step → task, and
     evidence-freshness and coverage gauges.
-18. The temporal model: `asset_change_events`, `finding_events`,
-    `risk_history`. (§2.10)
+18. **Done.** All three tables exist. `risk_history` came first with item 16;
+    migration 0018 adds the other two, plus `cloud_resources.absent_since`.
+
+    `asset_change_events` records five things: an asset appearing or
+    disappearing, and a change in any of the three attributes the risk engine
+    multiplies a finding by. Configuration drift is deliberately excluded --
+    diffing whole payloads would produce a feed nobody reads, and the drift that
+    matters already arrives as a finding. One row per change rather than one per
+    scan, so a quiet week reads as a quiet week instead of a wall of rows saying
+    everything is still where it was.
+
+    Disappearance needed the new column to be a *transition* rather than a
+    standing condition. Derived from `last_seen_at`, an absence would need a
+    scan cadence nobody records and would re-report itself on every scan
+    afterwards; `absent_since` is set when a covering scan misses an asset and
+    cleared when it returns, so an asset that vanishes for a week and comes back
+    is one asset with two events rather than two assets.
+
+    `finding_events` records DETECTED, REOPENED, RESOLVED, RISK_ACCEPTED and
+    STATUS_CHANGED, each carrying the scan or the person that caused it -- and
+    the distinction matters, because a scan observing a check pass is
+    verification while a person moving a status is a decision. It sits beside
+    the audit log rather than replacing it: that answers "what has anybody in
+    this organization done", and this answers "what happened to this finding",
+    which is the only one of the two that includes what a scan did.
+
+    `GET /changes` is the feed; `GET /findings/{id}` now carries `timeline`. A
+    superseded replay writes neither, for the same reason it writes no risk
+    history: it made no observation.
 19. **Done for the interval half** — §2.12. Migration 0013 adds
     `cloud_connections.scan_interval_hours` and `scans.trigger`; a beat task
     starts scans for connections whose environment is overdue a reading, using

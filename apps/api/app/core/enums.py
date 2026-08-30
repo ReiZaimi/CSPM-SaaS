@@ -310,6 +310,47 @@ class RiskKind(StrEnum):
     ESCALATION = "ESCALATION"
 
 
+class AssetChange(StrEnum):
+    """What happened to an asset between two readings of the same environment.
+
+    "What changed since last week" was answerable only by diffing snapshot
+    blobs in application code, which meant it was not answerable. These are the
+    changes worth a row: whether the thing exists, and the three attributes the
+    risk engine multiplies a finding by. Configuration drift is deliberately not
+    here -- every field of every payload would produce a change feed nobody can
+    read, and the drift that matters already surfaces as a finding.
+    """
+
+    APPEARED = "APPEARED"
+    # A scan that covered its scope did not see it. Not a deletion: the row
+    # stays, because a finding about it is still history worth keeping and the
+    # asset may well come back.
+    DISAPPEARED = "DISAPPEARED"
+    EXPOSURE_CHANGED = "EXPOSURE_CHANGED"
+    SENSITIVITY_CHANGED = "SENSITIVITY_CHANGED"
+    CRITICALITY_CHANGED = "CRITICALITY_CHANGED"
+
+
+class FindingEvent(StrEnum):
+    """A transition in a finding's life, and who or what caused it.
+
+    ``first_detected_at`` and ``resolved_at`` are two points on a line nobody
+    could see the rest of. A finding that was raised, fixed, regressed and fixed
+    again looked exactly like one raised and fixed once -- and "how long does
+    this customer take to fix a Critical" was a question the data could not
+    answer, on the product whose north-star metric is verified risk reduction.
+    """
+
+    DETECTED = "DETECTED"
+    # It came back after being resolved. The event a single ``resolved_at``
+    # column silently overwrote.
+    REOPENED = "REOPENED"
+    RESOLVED = "RESOLVED"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    # Somebody moved it through the workflow by hand.
+    STATUS_CHANGED = "STATUS_CHANGED"
+
+
 class RiskStatus(StrEnum):
     OPEN = "OPEN"
     IN_PROGRESS = "IN_PROGRESS"

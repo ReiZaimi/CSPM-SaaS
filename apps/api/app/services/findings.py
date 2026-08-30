@@ -8,9 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
-from app.core.enums import ExceptionStatus, FindingStatus, RiskKind, RiskStatus
+from app.core.enums import (
+    ExceptionStatus,
+    FindingEvent,
+    FindingStatus,
+    RiskKind,
+    RiskStatus,
+)
 from app.core.errors import FindingNotFound, ValidationFailed
 from app.models.finding import Finding
+from app.models.history import FindingEventRecord
 from app.models.remediation import AuditLog, RiskException
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
@@ -63,6 +70,10 @@ async def load_detail(
         "risk": risk,
         "priority": default_scorer.priority(score, effort),
         "estimated_effort_minutes": effort,
+        # Everything that has happened to it, which two timestamps could not
+        # say: a finding raised, fixed, regressed and fixed again looked
+        # exactly like one raised and fixed once.
+        "timeline": await timeline(session, finding),
         # Where the claimed fix has got to, if somebody has claimed one. The
         # answer to "did my work count" belongs on the page where the work was
         # reported, and the interesting part of it is the sentence: "still
@@ -87,6 +98,14 @@ async def accept_risk(
     if finding.status == FindingStatus.RESOLVED:
         raise ValidationFailed("This finding is already resolved")
 
+    _record_event(
+        session,
+        tenant,
+        finding,
+        FindingEvent.RISK_ACCEPTED,
+        FindingStatus.ACCEPTED_RISK,
+        detail=reason,
+    )
     finding.status = FindingStatus.ACCEPTED_RISK
 
     # A risk somebody has decided to live with is not a fix waiting to be
@@ -144,6 +163,7 @@ async def set_status(
             "rescan — CloudGuard resolves it once a scan confirms the fix."
         )
 
+    _record_event(session, tenant, finding, FindingEvent.STATUS_CHANGED, status)
     finding.status = status
     await record_audit(
         session,
@@ -155,6 +175,56 @@ async def set_status(
     )
     await commit_unless_externally_managed(session)
     return finding
+
+
+def _record_event(
+    session: AsyncSession,
+    tenant: TenantContext,
+    finding: Finding,
+    event: FindingEvent,
+    new_status: FindingStatus,
+    *,
+    detail: str | None = None,
+) -> None:
+    """Write the transition to the finding's own timeline.
+
+    Beside the audit log rather than instead of it, and the difference is who
+    is asking. The audit log answers "what has anybody in this organization
+    done", for a security reviewer; this answers "what happened to *this
+    finding*", for whoever is looking at it -- and only the second is complete,
+    because it also holds the transitions a scan made, which no person did.
+    """
+    session.add(
+        FindingEventRecord(
+            organization_id=tenant.organization_id,
+            finding_id=finding.id,
+            scan_id=finding.scan_id,
+            user_id=tenant.user.id,
+            event=event,
+            previous_status=finding.status,
+            current_status=new_status,
+            detail=detail,
+            observed_at=datetime.now(UTC),
+        )
+    )
+
+
+async def timeline(
+    session: AsyncSession, finding: Finding, limit: int = 50
+) -> list[FindingEventRecord]:
+    """Everything that has happened to this finding, newest first."""
+    return list(
+        (
+            await session.execute(
+                select(FindingEventRecord)
+                .where(FindingEventRecord.finding_id == finding.id)
+                .order_by(FindingEventRecord.observed_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 async def latest_verification(

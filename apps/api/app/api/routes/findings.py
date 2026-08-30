@@ -11,6 +11,7 @@ from app.models.resource import ResourceRecord
 from app.models.scan import Scan
 from app.schemas.finding import (
     AcceptRiskRequest,
+    FindingEventOut,
     FindingOut,
     ResourceSummary,
     RiskOut,
@@ -108,6 +109,10 @@ async def get_finding(finding_id: UUID, session: DbSession, tenant: Tenant) -> d
     # Null until somebody claims a fix. Present afterwards whether or not
     # CloudGuard has settled it -- "checking, and it has not appeared yet" is
     # the answer a customer who has just done the work is waiting for.
+    payload["timeline"] = [
+        FindingEventOut.model_validate(event).model_dump(mode="json")
+        for event in detail["timeline"]
+    ]
     payload["verification"] = (
         VerificationOut.model_validate(detail["verification"]).model_dump(mode="json")
         if detail["verification"]

@@ -96,6 +96,15 @@ class ResourceRecord(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Set when a scan that covered this asset's scope did not find it, cleared
+    # when it comes back. The row survives either way: a finding about it is
+    # still history worth keeping, and an asset that vanishes for a week and
+    # returns is one asset rather than two.
+    #
+    # A column rather than a comparison against ``last_seen_at``, because the
+    # question is a transition. Deriving it would need a scan cadence nobody
+    # records, and would re-report the same absence on every scan afterwards.
+    absent_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ResourceRelationship(UUIDPrimaryKey, TenantOwned, Base):

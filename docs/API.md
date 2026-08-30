@@ -25,6 +25,7 @@ POST   /api/v1/scans                       GET  /api/v1/scans
 GET    /api/v1/scans/{id}
 
 GET    /api/v1/assets                      GET  /api/v1/assets/{id}
+GET    /api/v1/changes
 GET    /api/v1/findings                    GET  /api/v1/findings/{id}
 GET    /api/v1/risks                       GET  /api/v1/risks/{id}
 
@@ -67,6 +68,16 @@ Two endpoints are unauthenticated by necessity, both protected by an HMAC-signed
 token rather than a session: `/cloud-connections/azure/consent/callback`, which
 Entra's redirect reaches from the customer's browser, and
 `/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches.
+
+`/changes` answers "what moved while I was away": asset appearances,
+disappearances, and changes to the three attributes the risk engine multiplies a
+finding by. A feed of transitions rather than a diff of two scans, so a week in
+which nothing changed returns nothing rather than restating the inventory. The
+window defaults to seven days and is bounded at ninety. `GET /findings/{id}`
+carries the matching per-finding view as `timeline`, which is where a
+regression becomes visible: a finding raised, fixed and raised again is
+indistinguishable from one raised and fixed once if all you have is
+`first_detected_at` and `resolved_at`.
 
 Marking a remediation task `DONE` opens a **verification**: CloudGuard records
 what it now expects to see and checks the environment on a backoff (5m, 15m, 1h,
