@@ -99,7 +99,7 @@ jobs:
         run: pytest -q
 
   web:
-    name: Web — types and tests
+    name: Web — lint, types and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +115,14 @@ jobs:
         # from, so a lockfile that drifted out of sync fails here rather than
         # surfacing as a confusing deploy error.
         run: npm ci
+
+      # Ahead of the type check because it is the faster of the two. It is
+      # also the step that was missing: `npm run lint` pointed at a config that
+      # did not exist for long enough that ESLint itself fell out of the
+      # dependencies, and nothing caught it because nothing ran it.
+      - name: Lint
+        working-directory: apps/web
+        run: npm run lint
 
       - name: Type check
         working-directory: apps/web

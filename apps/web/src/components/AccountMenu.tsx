@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, auth } from "@/lib/api";
@@ -57,15 +57,28 @@ export function AccountMenu({
   });
 
   // Close on an outside click or Escape. Both are bound only while the menu is
+  /**
+   * Closing the menu abandons any confirmation inside it.
+   *
+   * This used to be an effect watching `open`, which meant the component
+   * observed its own state change and corrected it on the next render. Saying
+   * it in the one place that closes the menu is both simpler and a render
+   * earlier -- and it is what `react-hooks/set-state-in-effect` is pointing at.
+   */
+  const close = useCallback(() => {
+    setOpen(false);
+    setConfirming(null);
+  }, []);
+
   // open, so a closed menu costs nothing.
   useEffect(() => {
     if (!open) return;
 
     function onPointerDown(event: MouseEvent) {
-      if (!container.current?.contains(event.target as Node)) setOpen(false);
+      if (!container.current?.contains(event.target as Node)) close();
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") close();
     }
 
     document.addEventListener("mousedown", onPointerDown);
@@ -74,15 +87,17 @@ export function AccountMenu({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) setConfirming(null);
-  }, [open]);
+  }, [open, close]);
 
   function switchTo(organization: Organization) {
-    setOpen(false);
+    close();
     if (organization.id === current?.id) return;
+    // `auth` is an external store -- a localStorage-backed singleton with its
+    // own subscribers -- and writing to it from an event handler is exactly the
+    // pattern effects are meant to leave alone. The rule cannot tell an
+    // external store from a stray module variable, so the exemption is stated
+    // here rather than switched off for the whole codebase.
+    // eslint-disable-next-line react-hooks/immutability
     auth.organizationId = organization.id;
     queryClient.clear();
     navigate("/", { replace: true });
