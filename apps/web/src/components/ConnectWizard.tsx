@@ -1,9 +1,29 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { XIcon } from "lucide-react";
+
 import { api, ApiError } from "@/lib/api";
 import type { CloudConnection, ConnectionScope } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Button, Card, ErrorNote, Field, Input } from "@/components/ui";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/format";
 
 /**
@@ -21,6 +41,8 @@ export function ConnectionForm({
   onClose: () => void;
 }) {
   const t = useT();
+  const nameId = useId();
+  const scopeIdField = useId();
   const [name, setName] = useState("");
   const [scopeType, setScopeType] = useState<ConnectionScope>("TENANT_ROOT");
   const [scopeId, setScopeId] = useState("");
@@ -83,111 +105,128 @@ export function ConnectionForm({
   ];
 
   return (
-    <Card
-      title={t.connection.connectAzure}
-      action={
-        <button
-          onClick={onClose}
-          aria-label={t.connection.cancel}
-          className="text-sm text-muted-foreground transition hover:text-foreground"
-        >
-          ✕
-        </button>
-      }
-    >
-      <form
-        className="space-y-5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setError(null);
-          create.mutate();
-        }}
-      >
-        <Field label={t.connection.connectionName}>
-          <Input
-            required
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Acme production"
-          />
-        </Field>
-
-        <fieldset>
-          <legend className="mb-2 text-sm font-medium text-foreground">
-            {t.connection.scope}
-          </legend>
-          <div className="space-y-2">
-            {scopes.map((scope) => (
-              <label
-                key={scope.value}
-                className={cn(
-                  "flex cursor-pointer gap-3 rounded-lg border px-4 py-3 transition",
-                  scopeType === scope.value
-                    ? "border-foreground bg-muted/40"
-                    : "border-border hover:border-input",
-                )}
-              >
-                <input
-                  type="radio"
-                  className="mt-1"
-                  checked={scopeType === scope.value}
-                  onChange={() => setScopeType(scope.value)}
-                />
-                <span>
-                  <span className="block text-sm font-medium text-foreground">
-                    {scope.label}
-                  </span>
-                  <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
-                    {scope.detail}
-                  </span>
-                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                    {scope.requires}
-                  </span>
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        {needsScopeId && (
-          <Field
-            label={
-              scopeType === "MANAGEMENT_GROUP"
-                ? t.connection.managementGroupId
-                : t.connection.subscriptionId
-            }
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle>{t.connection.connectAzure}</CardTitle>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onClose}
+            aria-label={t.connection.cancel}
           >
-            <Input
-              required
-              value={scopeId}
-              onChange={(e) => setScopeId(e.target.value)}
-              placeholder={scopeType === "MANAGEMENT_GROUP" ? "platform-mg" : "00000000-…"}
-            />
-          </Field>
-        )}
-
-        <div className="rounded-lg border border-border bg-muted/40 px-4 py-3">
-          <p className="text-xs font-medium text-foreground">{t.connection.whoYouNeed}</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {t.connection.whoYouNeedDetail}
-          </p>
-          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            {t.connection.noGuidsNeeded}
-          </p>
-        </div>
-
-        {error && <ErrorNote message={error} />}
-
-        <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={create.isPending}>
-            {create.isPending ? "Creating\u2026" : t.connection.connectAzure}
-          </Button>
-          <Button type="button" variant="ghost" onClick={onClose}>
-            {t.connection.cancel}
+            <XIcon />
           </Button>
         </div>
-      </form>
+      </CardHeader>
+
+      <CardContent>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setError(null);
+            create.mutate();
+          }}
+        >
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor={nameId}>{t.connection.connectionName}</FieldLabel>
+              <Input
+                id={nameId}
+                required
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Acme production"
+              />
+            </Field>
+
+            <FieldSet>
+              <FieldLegend variant="label">{t.connection.scope}</FieldLegend>
+              <RadioGroup
+                value={scopeType}
+                onValueChange={(value) => setScopeType(value as ConnectionScope)}
+              >
+                {scopes.map((scope) => (
+                  <FieldLabel
+                    key={scope.value}
+                    htmlFor={`scope-${scope.value}`}
+                    className={cn(
+                      "flex cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition",
+                      scopeType === scope.value
+                        ? "border-foreground bg-muted/40"
+                        : "hover:border-input",
+                    )}
+                  >
+                    <RadioGroupItem
+                      id={`scope-${scope.value}`}
+                      value={scope.value}
+                      className="mt-1"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-foreground">
+                        {scope.label}
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+                        {scope.detail}
+                      </span>
+                      {/* What it will take to *finish*, not just what it
+                          covers -- see the note above the list. */}
+                      <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                        {scope.requires}
+                      </span>
+                    </span>
+                  </FieldLabel>
+                ))}
+              </RadioGroup>
+            </FieldSet>
+
+            {needsScopeId && (
+              <Field>
+                <FieldLabel htmlFor={scopeIdField}>
+                  {scopeType === "MANAGEMENT_GROUP"
+                    ? t.connection.managementGroupId
+                    : t.connection.subscriptionId}
+                </FieldLabel>
+                <Input
+                  id={scopeIdField}
+                  required
+                  value={scopeId}
+                  onChange={(e) => setScopeId(e.target.value)}
+                  placeholder={
+                    scopeType === "MANAGEMENT_GROUP" ? "platform-mg" : "00000000-…"
+                  }
+                />
+              </Field>
+            )}
+
+            <Field>
+              <FieldLabel className="text-xs">{t.connection.whoYouNeed}</FieldLabel>
+              <FieldDescription>
+                {t.connection.whoYouNeedDetail}
+                <span className="mt-2 block">{t.connection.noGuidsNeeded}</span>
+              </FieldDescription>
+            </Field>
+
+            {error && (
+              <Alert variant="destructive">
+                <AlertTitle>Could not create the connection</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" disabled={create.isPending}>
+                {create.isPending && <Spinner data-icon="inline-start" />}
+                {create.isPending ? "Creating\u2026" : t.connection.connectAzure}
+              </Button>
+              <Button type="button" variant="ghost" onClick={onClose}>
+                {t.connection.cancel}
+              </Button>
+            </div>
+          </FieldGroup>
+        </form>
+      </CardContent>
     </Card>
   );
 }

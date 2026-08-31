@@ -669,14 +669,14 @@ UNKNOWN keeps its dashed border and gains an icon. Colour alone would hide the
 product's most important distinction — "we could not look" versus "we looked and
 it was fine" — from a reader who cannot separate the hues.
 
-**The compatibility seam is now legacy-only.** `components/ui.tsx` was written
-to let ~20 call sites keep passing `title`/`subtitle`/`action` to a card while
-the primitives underneath changed. Every page except `Connect`, `Scans` and
-`ConnectWizard` has since moved to the composed API, so what remains of the seam
-serves three files rather than the product. `StatusPill` left it entirely: it is
-security vocabulary, not chrome -- RESOLVED means *a scan observed the fix* --
-and it now sits in `components/security/` beside `SeverityBadge`, which is where
-a reader would look for it.
+**The compatibility seam is gone.** `components/ui.tsx` was written to let ~20
+call sites keep passing `title`/`subtitle`/`action` to a card while the
+primitives underneath changed. Every one of them has since moved to the composed
+API, so the file was deleted rather than left as a second way to build the same
+card. `StatusPill` moved out first: it is security vocabulary, not chrome --
+RESOLVED means *a scan observed the fix* -- and it now sits in
+`components/security/` beside `SeverityBadge`, which is where a reader would
+look for it.
 
 **One thing the CLI got wrong, worth recording.** `init` writes Tailwind v4 CSS
 (`@theme inline`, `@import "shadcn/tailwind.css"`) and leaves a v3
@@ -795,6 +795,42 @@ because the engine genuinely assigns it, and leaving it out of the filter would
 hide precisely the risks CloudGuard could not score. Findings and routes stay in
 one ranking by default, per §14: a route outranking the findings inside it is
 only visible where they are listed together.
+
+## 28. Connect and Scans are split by what each part fetches
+
+**Spec:** none. `Connect.tsx` was 749 lines and `Scans.tsx` 593.
+
+Length alone would not have justified the change. What did is that both files
+mixed several independent request lifetimes, and reading either one made it
+genuinely hard to see which request fired when: the scan list polls every two
+seconds while anything is in flight, a running scan's card polls a second
+endpoint every three, and the panels underneath -- stages, what was collected,
+how many findings a delete would purge -- each fetch only when opened. Those are
+four different answers to "when does this run", and they were interleaved down
+one file.
+
+So the split follows the fetching rather than the layout. `components/scans/`
+now holds `ScanCard` (the two live polls), `ScanDetailPanel` and
+`CollectionPanel` (open-only), and `DeleteScanConfirm` (which reads the purge
+count). `components/connections/` holds `ConnectionCard` (polls until the
+connection can actually be scanned), `ScheduleControl` and `RemoveConfirm`. Each
+page is now a list, a control and the states around them: 125 and 105 lines.
+
+`IN_FLIGHT` lives in its own module because both the page and the card decide
+things from it, and a constant exported beside a component switches off fast
+refresh for that file.
+
+**Two behavioural notes from the move.** The schedule dropdown is now a Base UI
+`Select`, whose options live in a portal that is not mounted while the control
+is closed -- so the trigger renders its label from the value rather than
+delegating, or an interval the list does not offer would show as a bare number.
+And the connection's status ticks gained icons: three signals distinguished only
+by green-versus-grey are three signals a colour-blind reader cannot tell apart.
+
+`@testing-library/user-event` is now a dev dependency. The Base UI listbox is
+built out of pointer events and `fireEvent.click` never reaches an option, so
+the schedule tests were asserting against a control they could not actually
+operate.
 
 ---
 

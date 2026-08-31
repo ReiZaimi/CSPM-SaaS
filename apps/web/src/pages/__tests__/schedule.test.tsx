@@ -11,10 +11,11 @@
  * it is in without the customer having to open the dropdown to find out.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ScheduleControl } from "../Connect";
+import { ScheduleControl } from "@/components/connections/ScheduleControl";
 import type { CloudConnection } from "@/lib/types";
 import { api } from "@/lib/api";
 
@@ -59,6 +60,18 @@ function mount(value: CloudConnection) {
   );
 }
 
+/**
+ * Opens the control and picks an option by the words on it.
+ *
+ * `userEvent` rather than `fireEvent`: this is a listbox built out of pointer
+ * events, and a bare click event never reaches the option.
+ */
+async function choose(option: string) {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: option }));
+}
+
 describe("ScheduleControl", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -80,7 +93,7 @@ describe("ScheduleControl", () => {
       .mockResolvedValue({ data: connection(), meta: {} });
 
     mount(connection());
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "24" } });
+    await choose("Every day");
 
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith(
@@ -99,7 +112,7 @@ describe("ScheduleControl", () => {
       .mockResolvedValue({ data: connection(), meta: {} });
 
     mount(connection({ scan_interval_hours: 24 }));
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "" } });
+    await choose("Only when I ask");
 
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith(
@@ -115,8 +128,9 @@ describe("ScheduleControl", () => {
     // — a silent downgrade of the thing they switched on.
     mount(connection({ scan_interval_hours: 12 }));
 
-    const select = screen.getByRole("combobox") as HTMLSelectElement;
-    expect(select.value).toBe("12");
+    // Shown on the closed control, so the current setting is readable without
+    // opening anything.
+    expect(screen.getByRole("combobox")).toHaveTextContent("12 h");
     expect(screen.getByText("Scanning automatically")).toBeInTheDocument();
   });
 
@@ -124,7 +138,7 @@ describe("ScheduleControl", () => {
     vi.spyOn(api, "patch").mockResolvedValue({ data: connection(), meta: {} });
 
     mount(connection());
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "168" } });
+    await choose("Every week");
 
     // There is no Save button, so without this the control writes with no
     // evidence it wrote at all.

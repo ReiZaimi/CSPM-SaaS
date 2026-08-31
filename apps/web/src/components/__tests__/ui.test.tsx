@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Badge, StatusPill } from "../ui";
+import { SeverityBadge as Badge } from "../security/SeverityBadge";
+import { StatusPill } from "../security/StatusPill";
 import { SecurityScore } from "../security/SecurityScore";
 import { ContextRow } from "../security/ContextProvenance";
 
