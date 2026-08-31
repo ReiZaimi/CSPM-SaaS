@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Level } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, ErrorNote, Spinner, StatusPill } from "@/components/ui";
+import { Badge, Card, StatusPill } from "@/components/ui";
 import { formatDateTime, resourceTypeLabel } from "@/lib/format";
+import { DetailSkeleton, ErrorState } from "@/components/common/states";
 
 interface AssetDetail {
   id: string;
@@ -39,8 +40,13 @@ export function AssetDetailPage() {
     queryFn: () => api.get<AssetDetail>(`/api/v1/assets/${assetId}`).then((r) => r.data),
   });
 
-  if (isLoading) return <Spinner text={t.common.loading} />;
-  if (error) return <ErrorNote message={t.common.error} onRetry={() => refetch()} />;
+  if (isLoading) return <DetailSkeleton />;
+  if (error) return <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />;
   if (!data) return null;
 
   return (

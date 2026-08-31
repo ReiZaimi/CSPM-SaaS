@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Rule } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, EmptyState, ErrorNote, Spinner } from "@/components/ui";
+import { Badge, Card, EmptyState } from "@/components/ui";
 import { formatEffort, resourceTypeLabel } from "@/lib/format";
+import { ErrorState, TableSkeleton } from "@/components/common/states";
 
 export function RulesPage() {
   const t = useT();
@@ -22,8 +23,13 @@ export function RulesPage() {
         </p>
       </div>
 
-      {isLoading && <Spinner text={t.common.loading} />}
-      {error && <ErrorNote message={t.common.error} onRetry={() => refetch()} />}
+      {isLoading && <TableSkeleton />}
+      {error && <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />}
       {data && data.length === 0 && <EmptyState title={t.rules.empty} />}
 
       <div className="space-y-3">

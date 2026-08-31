@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { ComplianceControl, ComplianceFrameworkDetail } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, ErrorNote, Spinner } from "@/components/ui";
+import { Badge, Card } from "@/components/ui";
 import { formatPercent } from "@/lib/format";
 import { CoverageBar, ControlStatusPill, EvidenceNotice } from "@/components/compliance";
+import { DetailSkeleton, ErrorState } from "@/components/common/states";
 
 /**
  * One framework, control by control.
@@ -29,9 +30,14 @@ export function ComplianceFrameworkPage() {
     enabled: Boolean(frameworkId),
   });
 
-  if (isLoading) return <Spinner text={t.common.loading} />;
+  if (isLoading) return <DetailSkeleton />;
   if (error || !data) {
-    return <ErrorNote message={t.common.error} onRetry={() => refetch()} />;
+    return <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />;
   }
 
   const groups = groupBySection(data.controls);

@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { ComplianceFramework } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Card, EmptyState, ErrorNote, Spinner } from "@/components/ui";
+import { Card, EmptyState } from "@/components/ui";
 import { formatPercent } from "@/lib/format";
 import { CoverageBar, EvidenceNotice } from "@/components/compliance";
+import { ErrorState, TableSkeleton } from "@/components/common/states";
 
 /**
  * Framework overview.
@@ -33,8 +34,13 @@ export function CompliancePage() {
 
       <EvidenceNotice />
 
-      {isLoading && <Spinner text={t.common.loading} />}
-      {error && <ErrorNote message={t.common.error} onRetry={() => refetch()} />}
+      {isLoading && <TableSkeleton />}
+      {error && <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />}
       {data && data.length === 0 && <EmptyState title={t.compliance.empty} />}
 
       <div className="grid gap-4 md:grid-cols-2">

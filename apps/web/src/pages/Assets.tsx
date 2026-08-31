@@ -4,8 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Asset } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, EmptyState, ErrorNote, Input, Select, Spinner } from "@/components/ui";
+import { Badge, Card, EmptyState, Input, Select } from "@/components/ui";
 import { formatDate, resourceTypeLabel } from "@/lib/format";
+import { ErrorState, TableSkeleton } from "@/components/common/states";
 
 export function AssetsPage() {
   const t = useT();
@@ -50,8 +51,13 @@ export function AssetsPage() {
         </div>
       </div>
 
-      {isLoading && <Spinner text={t.common.loading} />}
-      {error && <ErrorNote message={t.common.error} onRetry={() => refetch()} />}
+      {isLoading && <TableSkeleton />}
+      {error && <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />}
       {data && data.length === 0 && <EmptyState title={t.assets.empty} />}
 
       {data && data.length > 0 && (

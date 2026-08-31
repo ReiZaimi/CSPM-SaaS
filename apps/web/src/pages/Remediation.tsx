@@ -3,8 +3,9 @@ import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import type { RemediationTask } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Button, Card, EmptyState, ErrorNote, Spinner, StatusPill } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, StatusPill } from "@/components/ui";
 import { formatDate, formatEffort } from "@/lib/format";
+import { ErrorState, TableSkeleton } from "@/components/common/states";
 
 export function RemediationPage() {
   const t = useT();
@@ -31,8 +32,13 @@ export function RemediationPage() {
         </p>
       </div>
 
-      {isLoading && <Spinner text={t.common.loading} />}
-      {error && <ErrorNote message={t.common.error} onRetry={() => refetch()} />}
+      {isLoading && <TableSkeleton />}
+      {error && <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />}
       {data && data.length === 0 && (
         <EmptyState
           title={t.remediation.empty}

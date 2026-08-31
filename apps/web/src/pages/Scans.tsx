@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import { formatDateTime, label, outcomeStyle } from "@/lib/format";
 import { Badge } from "@/components/ui";
+import { TableSkeleton } from "@/components/common/states";
 
 const IN_FLIGHT = ["QUEUED", "DISCOVERING", "NORMALIZING", "EVALUATING", "CALCULATING_RISK"];
 
@@ -81,7 +82,7 @@ export function ScansPage() {
       </div>
 
       {error && <ErrorNote message={error} />}
-      {scans.isLoading && <Spinner text={t.common.loading} />}
+      {scans.isLoading && <TableSkeleton />}
       {scans.data && scans.data.length === 0 && (
         <EmptyState
           title={t.scans.empty}

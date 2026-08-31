@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Risk } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, EmptyState, ErrorNote, Spinner, StatusPill } from "@/components/ui";
+import { Badge, Card, EmptyState, StatusPill } from "@/components/ui";
+import { ErrorState, TableSkeleton } from "@/components/common/states";
 
 export function RisksPage() {
   const t = useT();
@@ -21,8 +22,13 @@ export function RisksPage() {
         </p>
       </div>
 
-      {isLoading && <Spinner text={t.common.loading} />}
-      {error && <ErrorNote message={t.common.error} onRetry={() => refetch()} />}
+      {isLoading && <TableSkeleton />}
+      {error && <ErrorState
+          title="Could not load this page"
+          detail="CloudGuard could not reach its own API."
+          impact="Nothing about your environment has changed — this is a problem displaying it."
+          onRetry={() => refetch()}
+        />}
       {data && data.length === 0 && <EmptyState title={t.risks.empty} />}
 
       <div className="space-y-3">
