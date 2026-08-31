@@ -34,6 +34,8 @@ Dashboard  Assets  Findings  Risks  Remediation  Compliance  Reports  Scans  Set
 
 **Finding detail** — title, severity, asset, why it matters, evidence, risk score, recommended fix, estimated effort, owner, and actions: **Assign / Mark In Progress / Accept Risk / Rescan**.
 
+**Changes** — what moved in the environment, newest first, grouped by the day it was observed; filterable by window (24 hours / 7 / 30 / 90 days) and by kind. Rows say whether an attribute change went up or down; a move into UNKNOWN is neither. A `DISAPPEARED` row says whether the asset is missing *now*, which is what makes it a job rather than history.
+
 **Scan** — live progress (discovery → rules → risk analysis) then a summary: resources, rules run, findings by severity.
 
 ---

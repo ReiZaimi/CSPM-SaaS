@@ -528,3 +528,38 @@ export interface CollectionStatus {
   skipped: number;
   degraded_categories: string[];
 }
+
+/**
+ * What happened to an asset between two readings of the same environment.
+ *
+ * Deliberately only five kinds. Configuration drift is not here — every field
+ * of every payload would produce a feed nobody can read, and the drift that
+ * matters already surfaces as a finding.
+ */
+export type AssetChange =
+  | "APPEARED"
+  | "DISAPPEARED"
+  | "EXPOSURE_CHANGED"
+  | "SENSITIVITY_CHANGED"
+  | "CRITICALITY_CHANGED";
+
+export interface ChangeEvent {
+  id: string;
+  change: AssetChange;
+  /** Null on APPEARED and DISAPPEARED, which are about the asset itself. */
+  previous_value: string | null;
+  current_value: string | null;
+  observed_at: string;
+  scan_id: string | null;
+  asset: {
+    id: string;
+    name: string;
+    resource_type: string;
+    environment: string | null;
+    /**
+     * Whether the asset is missing *now*, which is what turns a DISAPPEARED
+     * row from history into something to act on.
+     */
+    absent_since: string | null;
+  };
+}

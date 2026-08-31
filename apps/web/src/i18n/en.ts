@@ -13,6 +13,7 @@ export const en = {
   },
   nav: {
     dashboard: "Dashboard",
+    changes: "Changes",
     assets: "Assets",
     findings: "Findings",
     risks: "Risks",
@@ -417,6 +418,46 @@ export const en = {
       NOT_ASSESSED: "Rules map here, but no scan has produced a result yet.",
       NOT_COVERED: "No rule maps here. CloudGuard has nothing to say about it.",
     },
+  },
+  changes: {
+    title: "Changes",
+    intro:
+      "The rest of the product says what is true in your environment now. This says what moved. A scan that finds nothing different writes nothing here, so a quiet week reads as a quiet week rather than as a wall of rows saying everything is still where it was.",
+    empty: "Nothing moved in this window",
+    emptyDetail:
+      "No asset appeared, disappeared, or changed exposure, sensitivity or criticality in the period you are looking at. Widen the window to look further back.",
+    emptyFiltered: "No changes of this kind in this window",
+    emptyFilteredDetail:
+      "Something may still have moved \u2014 clear the filter, or widen the window, to see the rest of the feed.",
+    // Each kind said as a sentence about the asset, not as an enum name. "The
+    // exposure changed" is a fact about a column; "became reachable from more
+    // of the internet" is a fact the reader can act on.
+    kind: {
+      APPEARED: "Appeared",
+      DISAPPEARED: "Disappeared",
+      EXPOSURE_CHANGED: "Exposure changed",
+      SENSITIVITY_CHANGED: "Data sensitivity changed",
+      CRITICALITY_CHANGED: "Criticality changed",
+    },
+    appeared: "First seen in this environment",
+    disappeared: "A scan that covered its scope did not see it",
+    // The distinction that decides whether a DISAPPEARED row is history or a
+    // job. The asset row is never deleted, so both readings are possible.
+    stillMissing: "Still missing",
+    returned: "Seen again since",
+    worse: "Got worse",
+    better: "Got better",
+    windowLabel: "Look back",
+    kindLabel: "Kind of change",
+    windows: {
+      1: "Last 24 hours",
+      7: "Last 7 days",
+      30: "Last 30 days",
+      90: "Last 90 days",
+    },
+    allKinds: "All changes",
+    count: "change",
+    countPlural: "changes",
   },
   remediation: { title: "Remediation", empty: "No remediation tasks yet." },
   common: {

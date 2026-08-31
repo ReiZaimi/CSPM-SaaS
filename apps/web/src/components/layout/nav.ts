@@ -4,6 +4,7 @@ import {
   ClipboardCheckIcon,
   CloudIcon,
   GaugeIcon,
+  GitCompareArrowsIcon,
   ListChecksIcon,
   RadarIcon,
   RouteIcon,
@@ -26,7 +27,12 @@ import {
 export const NAV_GROUPS = [
   {
     label: "Posture",
-    items: [{ to: "/", label: "Overview", icon: GaugeIcon, end: true }],
+    items: [
+      { to: "/", label: "Overview", icon: GaugeIcon, end: true },
+      // Beside the overview rather than under Evidence: both answer "where do
+      // I stand", one as a state and one as the movement that produced it.
+      { to: "/changes", label: "Changes", icon: GitCompareArrowsIcon },
+    ],
   },
   {
     label: "Exposure",

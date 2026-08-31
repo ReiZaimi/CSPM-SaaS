@@ -9,6 +9,7 @@ import { ResetPasswordPage } from "@/pages/ResetPassword";
 import { OnboardingPage } from "@/pages/Onboarding";
 import { ConnectPage } from "@/pages/Connect";
 import { DashboardPage } from "@/pages/Dashboard";
+import { ChangesPage } from "@/pages/Changes";
 import { AssetsPage } from "@/pages/Assets";
 import { AssetDetailPage } from "@/pages/AssetDetail";
 import { FindingsPage } from "@/pages/Findings";
@@ -67,6 +68,7 @@ export function App() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/changes" element={<ChangesPage />} />
         <Route path="/assets" element={<AssetsPage />} />
         <Route path="/assets/:assetId" element={<AssetDetailPage />} />
         <Route path="/findings" element={<FindingsPage />} />
