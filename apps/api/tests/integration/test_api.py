@@ -762,28 +762,64 @@ class TestAssetList:
     per row.
     """
 
-    async def test_a_listed_asset_names_itself_in_the_provider(
-        self, client, cleanup_orgs
-    ) -> None:
-        import uuid as uuid_module
+    async def _asset_in_a_subscription(self, org_id: uuid.UUID, arm_id: str) -> None:
+        """One asset, sitting where a real one sits.
+
+        ``ck_cloud_resources_one_scope`` requires every resource to hang off an
+        account or, for a directory-scoped one, a connection. Nothing may float
+        free of both, so a fixture that skips them is not a lighter version of
+        the real row -- it is a shape the estate cannot produce.
+        """
         from datetime import UTC, datetime
 
         from app.core.db import service_session
-        from app.core.enums import Level, Provider, ResourceType
+        from app.core.enums import (
+            CloudAccountStatus,
+            ConnectionScope,
+            ConsentStatus,
+            Level,
+            Provider,
+            ResourceType,
+        )
+        from app.models.cloud_account import CloudAccount
+        from app.models.cloud_connection import CloudConnection
         from app.models.resource import ResourceRecord
 
-        user = uuid.uuid4()
-        org_id = uuid.UUID(await make_org(client, user, "Inventory Ltd"))
-        cleanup_orgs.append(org_id)
-
-        arm_id = (
-            "/subscriptions/00000000-0000-0000-0000-000000000001"
-            "/resourceGroups/prod/providers/Microsoft.Storage/storageAccounts/payroll"
-        )
+        tenant_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         async with service_session() as session:
+            connection = CloudConnection(
+                organization_id=org_id,
+                provider=Provider.AZURE,
+                name="prod",
+                scope_type=ConnectionScope.TENANT_ROOT,
+                role_version="v2",
+                tenant_id=tenant_id,
+                consent_status=ConsentStatus.GRANTED,
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+            )
+            session.add(connection)
+            await session.flush()
+
+            account = CloudAccount(
+                organization_id=org_id,
+                connection_id=connection.id,
+                provider=Provider.AZURE,
+                account_name="Production",
+                tenant_id=tenant_id,
+                subscription_id="00000000-0000-0000-0000-000000000001",
+                consent_status=ConsentStatus.GRANTED,
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+            )
+            session.add(account)
+            await session.flush()
+
             session.add(
                 ResourceRecord(
                     organization_id=org_id,
+                    cloud_account_id=account.id,
+                    connection_id=connection.id,
                     provider=Provider.AZURE,
                     provider_resource_id=arm_id,
                     resource_type=ResourceType.STORAGE_ACCOUNT,
@@ -796,6 +832,21 @@ class TestAssetList:
                 )
             )
             await session.commit()
+
+    async def test_a_listed_asset_names_itself_in_the_provider(
+        self, client, cleanup_orgs
+    ) -> None:
+        import uuid as uuid_module
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Inventory Ltd"))
+        cleanup_orgs.append(org_id)
+
+        arm_id = (
+            "/subscriptions/00000000-0000-0000-0000-000000000001"
+            "/resourceGroups/prod/providers/Microsoft.Storage/storageAccounts/payroll"
+        )
+        await self._asset_in_a_subscription(org_id, arm_id)
 
         response = await client.get("/api/v1/assets", headers=auth_header(user))
 
