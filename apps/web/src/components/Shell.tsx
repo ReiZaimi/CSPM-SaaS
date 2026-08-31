@@ -10,6 +10,7 @@ import { ShieldMark } from "@/components/Brand";
 import { AccountMenu } from "@/components/AccountMenu";
 import { SidebarNav } from "@/components/layout/Sidebar";
 import { ScanIndicator } from "@/components/layout/ScanIndicator";
+import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
@@ -99,6 +100,7 @@ export function Shell() {
 
           <div className="ml-auto flex items-center gap-3">
             <ScanIndicator />
+            <ThemeToggle />
             <AccountMenu organizations={orgs ?? []} current={current} />
           </div>
         </header>

@@ -213,10 +213,10 @@ export function SignInPage() {
                 <button
                   type="submit"
                   disabled={busy}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-stone-300"
+                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring/50 focus:ring-offset-2 focus:ring-offset-background disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
                 >
                   {busy && (
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current" />
                   )}
                   {submitLabel(mode, busy, t)}
                 </button>
@@ -241,7 +241,7 @@ export function SignInPage() {
 }
 
 const FIELD_CLASS =
-  "mt-2 w-full rounded-lg border border-input bg-background px-3.5 py-2.5 text-sm text-foreground shadow-sm transition placeholder:text-muted-foreground hover:border-stone-400 focus:border-stone-900 focus:outline-none focus:ring-2 focus:ring-stone-900/10";
+  "mt-2 w-full rounded-lg border border-input bg-background px-3.5 py-2.5 text-sm text-foreground shadow-sm transition placeholder:text-muted-foreground hover:border-ring focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20";
 
 function submitLabel(mode: Mode, busy: boolean, t: ReturnType<typeof useT>): string {
   if (busy) {
@@ -290,9 +290,9 @@ function authErrorMessage(err: unknown): string {
 function Divider({ label }: { label: string }) {
   return (
     <div className="mt-6 flex items-center gap-3" aria-hidden="true">
-      <span className="h-px flex-1 bg-stone-200" />
+      <span className="h-px flex-1 bg-border" />
       <span className="text-xs uppercase tracking-wide text-muted-foreground">{label}</span>
-      <span className="h-px flex-1 bg-stone-200" />
+      <span className="h-px flex-1 bg-border" />
     </div>
   );
 }
@@ -311,7 +311,7 @@ function MicrosoftButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium text-foreground shadow-sm transition hover:border-stone-400 hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-stone-900/10 disabled:cursor-not-allowed disabled:text-muted-foreground"
+      className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium text-foreground shadow-sm transition hover:border-ring hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:text-muted-foreground"
     >
       <MicrosoftMark />
       {label}

@@ -124,7 +124,7 @@ export function ConnectionForm({
                 className={cn(
                   "flex cursor-pointer gap-3 rounded-lg border px-4 py-3 transition",
                   scopeType === scope.value
-                    ? "border-stone-900 bg-muted/40"
+                    ? "border-foreground bg-muted/40"
                     : "border-border hover:border-input",
                 )}
               >

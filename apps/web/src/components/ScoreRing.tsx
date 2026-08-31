@@ -26,7 +26,11 @@ export function ScoreRing({ score }: { score: number }) {
           stroke="currentColor"
           strokeWidth="10"
           strokeLinecap="round"
-          className="text-stone-100"
+          // The track, not a value: `muted` so it recedes on either
+          // surface. Hard-coded near-white here made the unfilled part of
+          // the gauge the brightest thing on a dark page -- a full ring of
+          // light reads as a full score.
+          className="text-muted"
           strokeDasharray={`${circumference * sweep} ${circumference}`}
         />
         <circle

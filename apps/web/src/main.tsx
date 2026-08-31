@@ -6,6 +6,7 @@ import { I18nProvider } from "@/i18n";
 import { App } from "@/App";
 import { configProblems } from "@/lib/config";
 import { ConfigError } from "@/components/ConfigError";
+import { initTheme } from "@/lib/theme";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -17,6 +18,11 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// The inline script in index.html has already put the class on the document;
+// this re-reads the same stored choice so React's view of it is derived
+// rather than assumed, and starts following the OS while the tab is open.
+initTheme();
 
 // A misconfigured production build cannot reach its API at all, so there is
 // nothing useful to render -- say why instead of failing silently.

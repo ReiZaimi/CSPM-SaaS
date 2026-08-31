@@ -708,7 +708,7 @@ function Signal({ label, ok, detail }: { label: string; ok: boolean; detail: str
     <div className="flex items-center gap-2">
       <span
         className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white ${
-          ok ? "bg-ok" : "bg-stone-300"
+          ok ? "bg-ok" : "bg-muted-foreground/40"
         }`}
       >
         {ok ? "✓" : "–"}
@@ -724,7 +724,7 @@ function Signal({ label, ok, detail }: { label: string; ok: boolean; detail: str
 function WaitingNote({ text }: { text: string }) {
   return (
     <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-input border-t-stone-600" />
+      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-input border-t-foreground" />
       {text}
     </p>
   );

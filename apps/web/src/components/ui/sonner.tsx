@@ -1,9 +1,13 @@
-import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
+// Registry default reads next-themes; this app carries its own theme store
+// (`lib/theme.ts`), and two sources of truth for one class on one element is
+// how a toast ends up light on a dark page.
+import { useTheme } from "@/lib/theme"
+
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  const { choice: theme } = useTheme()
 
   return (
     <Sonner

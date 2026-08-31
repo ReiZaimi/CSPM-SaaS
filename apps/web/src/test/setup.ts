@@ -19,3 +19,19 @@ class ResizeObserverStub {
 }
 
 globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
+
+/**
+ * jsdom implements no `matchMedia`, and the theme store asks it what the
+ * operating system prefers. Defaults to light so a test that says nothing
+ * about the theme gets the same surface every run; tests that care replace it.
+ */
+globalThis.matchMedia ??= ((query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+  dispatchEvent: () => false,
+})) as unknown as typeof window.matchMedia;

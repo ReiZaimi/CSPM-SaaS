@@ -35,6 +35,10 @@ import { formatDateTime } from "@/lib/format";
 const INK = "var(--foreground)";
 const GRID = "var(--border)";
 const AXIS = "var(--muted-foreground)";
+// Recharts paints the tooltip inline, so it does not inherit the surface the
+// way a Tailwind-classed element does: unset, it stays white on a dark page.
+const SURFACE = "var(--popover)";
+const SURFACE_INK = "var(--popover-foreground)";
 
 export function ScoreTrend({ history }: { history: PostureReading[] }) {
   const t = useT();
@@ -78,8 +82,12 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
               contentStyle={{
                 borderRadius: 8,
                 border: `1px solid ${GRID}`,
+                backgroundColor: SURFACE,
+                color: SURFACE_INK,
                 fontSize: 12,
               }}
+              itemStyle={{ color: SURFACE_INK }}
+              labelStyle={{ color: AXIS }}
             />
             <Line
               type="monotone"

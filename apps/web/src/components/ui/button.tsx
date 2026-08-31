@@ -1,3 +1,5 @@
+import * as React from "react"
+
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 
@@ -40,19 +42,24 @@ const buttonVariants = cva(
   }
 )
 
-function Button({
-  className,
-  variant = "default",
-  size = "default",
-  ...props
-}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+// forwardRef, which the registry version does without: it targets React 19,
+// where a ref is an ordinary prop. This app is on React 18, so every Base UI
+// trigger rendering a Button (`render={<Button />}`) was handing a ref to a
+// plain function component -- React warned, and the trigger element the popup
+// anchors to was never captured.
+const Button = React.forwardRef<
+  HTMLButtonElement,
+  ButtonPrimitive.Props & VariantProps<typeof buttonVariants>
+>(({ className, variant = "default", size = "default", ...props }, ref) => {
   return (
     <ButtonPrimitive
+      ref={ref}
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />
   )
-}
+})
+Button.displayName = "Button"
 
 export { Button, buttonVariants }

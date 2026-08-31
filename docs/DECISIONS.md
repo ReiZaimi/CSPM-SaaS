@@ -677,6 +677,48 @@ that did not exist and the build failed outright. The v3 bridge in
 through `hsl()` — the variables hold complete oklch colours, and the usual v3
 `hsl(var(--x))` recipe would silently render every one of them black.
 
+## 25. The theme is applied before React exists, and "system" is a real choice
+
+**Spec:** none. The dark palette had been defined since §24 — every neutral
+token and a re-lit severity scale under `.dark` — with nothing in the product
+able to put that class on the document.
+
+Three decisions worth recording.
+
+**Three states, not a switch.** `light`, `dark` and `system` are stored as
+given, because "system" is a standing instruction rather than a synonym for
+whichever theme the machine happened to prefer at the moment of choosing. A
+laptop that goes dark in the evening takes CloudGuard with it, and a boolean
+could only ever record one day's answer. The store subscribes to
+`prefers-color-scheme` and follows it only while the choice is `system` — an
+explicit choice is not a default for the OS to overrule.
+
+**The class is set by an inline script in `index.html`, before the bundle
+loads.** React cannot do this: by the time it mounts the browser has painted a
+white page, and correcting it afterwards is a flash of white in a dark room —
+which for a console people sit in front of at 2am during an incident is worse
+than having no dark mode. That script is the one place in the frontend that
+duplicates a constant (`cloudguard-theme`, and the `dark` class), so
+`lib/__tests__/theme.test.ts` reads the real `index.html` and fails if the two
+copies ever drift.
+
+**`next-themes` is gone.** It arrived as a dependency of the vendored `sonner`
+component, which nothing mounts. Two theme stores writing one class to one
+element is how a toast ends up light on a dark page, so `sonner.tsx` reads
+`lib/theme.ts` like everything else and the dependency was removed.
+
+The severity scale is re-lit rather than reused across the two surfaces, for
+the reason §24 gives: a light severity background on a dark page glows, and a
+glowing badge reads as more urgent than the one beside it — a ranking the rules
+never made.
+
+**A React 18 bug this surfaced.** `Button` came from the registry without
+`forwardRef`, which is correct for React 19 where a ref is an ordinary prop.
+This app is on React 18, so every Base UI trigger rendering a Button
+(`render={<Button />}`) handed a ref to a plain function component: React warned,
+and the element the popup anchors to was never captured. `Button` now forwards
+its ref, which fixes the existing `Sheet` trigger as well as the new menu.
+
 ---
 
 ## Open items carried forward
