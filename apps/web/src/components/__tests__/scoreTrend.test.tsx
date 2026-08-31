@@ -12,7 +12,8 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ScoreDelta, ScoreTrend } from "../ScoreTrend";
+import { ScoreDelta } from "../ScoreDelta";
+import { ScoreTrend } from "../ScoreTrend";
 import type { PostureReading } from "@/lib/types";
 
 function reading(score: number, day: number): PostureReading {

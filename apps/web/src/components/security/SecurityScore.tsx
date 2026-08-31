@@ -1,4 +1,4 @@
-import { ScoreDelta } from "@/components/ScoreTrend";
+import { ScoreDelta } from "@/components/ScoreDelta";
 import { cn, formatDateTime, scoreColor } from "@/lib/format";
 
 /** What a score *means*, so the number is not left to speak for itself. */

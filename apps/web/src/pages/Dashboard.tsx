@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRightIcon, CloudOffIcon, ScanLineIcon } from "lucide-react";
@@ -6,7 +7,17 @@ import { ApiError, api, auth } from "@/lib/api";
 import { supabaseSignOut } from "@/lib/supabase";
 import type { CloudAccount, Dashboard } from "@/lib/types";
 import { useT } from "@/i18n";
-import { ScoreTrend } from "@/components/ScoreTrend";
+/**
+ * The chart, fetched after the page it sits on.
+ *
+ * Recharts is by a wide margin the largest thing this app ships, and it draws
+ * one panel on one screen. Loading it inline made the dashboard's numbers --
+ * the part somebody actually came for -- wait on a library that only decorates
+ * them. Split out, the score renders immediately and the line fills in.
+ */
+const ScoreTrend = lazy(() =>
+  import("@/components/ScoreTrend").then((m) => ({ default: m.ScoreTrend })),
+);
 import { SecurityScore, RiskScore } from "@/components/security/SecurityScore";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { CoverageIndicator } from "@/components/security/CoverageIndicator";
@@ -26,6 +37,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatDateTime } from "@/lib/format";
 
 /**
@@ -123,7 +135,11 @@ export function DashboardPage() {
               scannedAt={data.last_scan.completed_at}
             />
             <Separator />
-            <ScoreTrend history={data.history ?? []} />
+            {/* Sized to the chart it replaces, so the card does not resize
+                under the reader when the line arrives. */}
+            <Suspense fallback={<Skeleton className="h-48 w-full" />}>
+              <ScoreTrend history={data.history ?? []} />
+            </Suspense>
           </CardContent>
         </Card>
 
