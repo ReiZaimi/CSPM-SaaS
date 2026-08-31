@@ -48,7 +48,7 @@ export function ScoreRing({ score }: { score: number }) {
         >
           {Math.round(clamped)}
         </span>
-        <span className="mt-1 text-[11px] uppercase tracking-wide text-stone-400">
+        <span className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
           out of 100
         </span>
       </div>

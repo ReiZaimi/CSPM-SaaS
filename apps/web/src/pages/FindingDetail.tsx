@@ -77,7 +77,7 @@ export function FindingDetailPage() {
 
   return (
     <div className="space-y-6">
-      <Link to="/findings" className="text-sm text-stone-500 hover:text-stone-900">
+      <Link to="/findings" className="text-sm text-muted-foreground hover:text-foreground">
         ← {t.findings.title}
       </Link>
 
@@ -86,14 +86,14 @@ export function FindingDetailPage() {
         <div className="flex flex-wrap items-center gap-3">
           <Badge level={data.severity} />
           <StatusPill status={data.status} />
-          <span className="text-xs text-stone-400">
+          <span className="text-xs text-muted-foreground">
             {data.rule_id} · v{data.rule_version}
           </span>
         </div>
-        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-stone-900">
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">
           {data.title}
         </h1>
-        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-stone-600">
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
           {data.description}
         </p>
       </div>
@@ -106,7 +106,7 @@ export function FindingDetailPage() {
       )}
 
       {notice && (
-        <div className="rounded-lg border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
+        <div className="rounded-lg border border-border bg-background px-4 py-3 text-sm text-foreground">
           {notice}
         </div>
       )}
@@ -116,7 +116,7 @@ export function FindingDetailPage() {
           {/* WHY */}
           {data.rationale && (
             <Card title={t.findings.whyItMatters}>
-              <p className="text-sm leading-relaxed text-stone-700">{data.rationale}</p>
+              <p className="text-sm leading-relaxed text-foreground">{data.rationale}</p>
             </Card>
           )}
 
@@ -139,7 +139,7 @@ export function FindingDetailPage() {
 
           {/* DID THE FIX WORK */}
           <Card title="Verify the fix">
-            <p className="text-sm text-stone-600">{t.findings.cannotResolveManually}</p>
+            <p className="text-sm text-muted-foreground">{t.findings.cannotResolveManually}</p>
             <div className="mt-4 flex flex-wrap gap-2">
               <Button onClick={() => rescan.mutate()} disabled={rescan.isPending}>
                 {rescan.isPending ? t.common.loading : t.findings.rescan}
@@ -158,7 +158,7 @@ export function FindingDetailPage() {
 
             {showAccept && (
               <form
-                className="mt-4 border-t border-stone-100 pt-4"
+                className="mt-4 border-t border-border pt-4"
                 onSubmit={(e) => {
                   e.preventDefault();
                   accept.mutate();
@@ -197,25 +197,25 @@ export function FindingDetailPage() {
           {data.risk && (
             <Card title={t.findings.riskScore}>
               <div className="flex items-baseline gap-2">
-                <span className="text-4xl font-semibold tabular-nums text-stone-900">
+                <span className="text-4xl font-semibold tabular-nums text-foreground">
                   {Number(data.risk.risk_score).toFixed(0)}
                 </span>
                 <Badge level={data.risk.risk_level} />
               </div>
 
-              <p className="mt-4 text-xs font-medium text-stone-500">
+              <p className="mt-4 text-xs font-medium text-muted-foreground">
                 {t.findings.scoreBreakdown}
               </p>
               <ul className="mt-2 space-y-1.5">
                 {Object.entries(components).map(([name, component]) => (
                   <li key={name} className="flex items-center justify-between gap-3 text-xs">
-                    <span className="text-stone-600">
+                    <span className="text-muted-foreground">
                       {name.replace(/_/g, " ")}
-                      <span className="ml-1 text-stone-400">
+                      <span className="ml-1 text-muted-foreground">
                         ({component.value} × {component.weight})
                       </span>
                     </span>
-                    <span className="font-medium tabular-nums text-stone-800">
+                    <span className="font-medium tabular-nums text-foreground">
                       {component.contribution.toFixed(1)}
                     </span>
                   </li>
@@ -228,7 +228,7 @@ export function FindingDetailPage() {
             <Card title={t.findings.asset}>
               <Link
                 to={`/assets/${data.resource.id}`}
-                className="text-sm font-medium text-stone-900 hover:underline"
+                className="text-sm font-medium text-foreground hover:underline"
               >
                 {data.resource.name}
               </Link>
@@ -263,11 +263,11 @@ export function FindingDetailPage() {
                   <li key={framework} className="text-xs">
                     <Link
                       to={`/compliance/${encodeURIComponent(framework)}`}
-                      className="font-medium text-stone-700 underline underline-offset-2 hover:text-stone-900"
+                      className="font-medium text-foreground underline underline-offset-2 hover:text-foreground"
                     >
                       {framework.replace(/_/g, " ")}
                     </Link>
-                    <span className="ml-2 text-stone-500">{controls.join(", ")}</span>
+                    <span className="ml-2 text-muted-foreground">{controls.join(", ")}</span>
                   </li>
                 ))}
               </ul>
@@ -282,8 +282,8 @@ export function FindingDetailPage() {
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-stone-500">{label}</dt>
-      <dd className="font-medium text-stone-800">{value}</dd>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium text-foreground">{value}</dd>
     </div>
   );
 }

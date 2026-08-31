@@ -109,12 +109,12 @@ export function AccountMenu({
         className={cn(
           "flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm transition",
           open
-            ? "border-stone-300 bg-stone-50"
-            : "border-transparent hover:border-stone-200 hover:bg-stone-50",
+            ? "border-input bg-muted/40"
+            : "border-transparent hover:border-border hover:bg-muted/40",
         )}
       >
         <Avatar name={current?.name ?? email ?? "?"} />
-        <span className="hidden max-w-[12rem] truncate font-medium text-stone-800 sm:block">
+        <span className="hidden max-w-[12rem] truncate font-medium text-foreground sm:block">
           {current?.name ?? t.account.unknownUser}
         </span>
         <Chevron open={open} />
@@ -123,10 +123,10 @@ export function AccountMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 z-20 mt-2 w-72 overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg"
+          className="absolute right-0 z-20 mt-2 w-72 overflow-hidden rounded-xl border border-border bg-background shadow-lg"
         >
           <Section label={t.account.signedInAs}>
-            <p className="truncate px-3 pb-2 text-sm font-medium text-stone-900">
+            <p className="truncate px-3 pb-2 text-sm font-medium text-foreground">
               {email ?? t.account.unknownUser}
             </p>
           </Section>
@@ -137,7 +137,7 @@ export function AccountMenu({
                 <p className="text-sm font-medium text-critical">
                   {t.account.removeOrgTitle} {confirming.name}?
                 </p>
-                <p className="mt-1 text-xs leading-relaxed text-stone-600">
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                   {t.account.removeOrgDetail}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -165,15 +165,15 @@ export function AccountMenu({
                   <button
                     role="menuitem"
                     onClick={() => switchTo(organization)}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition hover:bg-stone-50"
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition hover:bg-muted/40"
                   >
                     <Avatar name={organization.name} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm text-stone-900">
+                      <span className="block truncate text-sm text-foreground">
                         {organization.name}
                       </span>
                       {organization.role && (
-                        <span className="block text-xs text-stone-500">
+                        <span className="block text-xs text-muted-foreground">
                           {label(organization.role)}
                         </span>
                       )}
@@ -195,17 +195,17 @@ export function AccountMenu({
                 className="mt-1 w-full px-3 py-2 text-left text-sm text-critical transition hover:bg-critical-bg"
               >
                 {t.account.removeOrg}
-                <span className="ml-1 text-stone-400">· {current.name}</span>
+                <span className="ml-1 text-muted-foreground">· {current.name}</span>
               </button>
             )}
           </Section>
           )}
 
-          <div className="border-t border-stone-100 p-1">
+          <div className="border-t border-border p-1">
             <button
               role="menuitem"
               onClick={signOut}
-              className="w-full rounded-lg px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 hover:text-stone-900"
+              className="w-full rounded-lg px-3 py-2 text-left text-sm text-foreground transition hover:bg-muted/40 hover:text-foreground"
             >
               {t.nav.signOut}
             </button>
@@ -218,8 +218,8 @@ export function AccountMenu({
 
 function Section({ label: text, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="border-b border-stone-100 py-2 last:border-b-0">
-      <p className="px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-stone-400">
+    <div className="border-b border-border py-2 last:border-b-0">
+      <p className="px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {text}
       </p>
       {children}
@@ -232,7 +232,7 @@ function Avatar({ name }: { name: string }) {
   return (
     <span
       aria-hidden="true"
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-stone-900 text-[11px] font-semibold text-white"
+      className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary text-[11px] font-semibold text-primary-foreground"
     >
       {name.trim().charAt(0).toUpperCase() || "?"}
     </span>
@@ -244,7 +244,7 @@ function Chevron({ open }: { open: boolean }) {
     <svg
       viewBox="0 0 20 20"
       className={cn(
-        "h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform",
+        "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
         open && "rotate-180",
       )}
       aria-hidden="true"

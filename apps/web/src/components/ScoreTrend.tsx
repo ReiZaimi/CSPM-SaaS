@@ -32,9 +32,9 @@ import { formatDateTime } from "@/lib/format";
  * on the axis. A single series needs no colour identity at all: nothing else is
  * in the frame to confuse it with, which is also why there is no legend.
  */
-const INK = "#292524"; // stone-800
-const GRID = "#e7e5e4"; // stone-200
-const AXIS = "#a8a29e"; // stone-400
+const INK = "var(--foreground)";
+const GRID = "var(--border)";
+const AXIS = "var(--muted-foreground)";
 
 export function ScoreTrend({ history }: { history: PostureReading[] }) {
   const t = useT();
@@ -44,7 +44,7 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
   // than a chart with nothing in it.
   if (history.length < 2) {
     return (
-      <p className="text-xs leading-relaxed text-stone-500">{t.dashboard.trendTooShort}</p>
+      <p className="text-xs leading-relaxed text-muted-foreground">{t.dashboard.trendTooShort}</p>
     );
   }
 
@@ -55,7 +55,7 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
 
   return (
     <div>
-      <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {t.dashboard.trendTitle}
       </p>
       <div className="mt-2 h-28 w-full">
@@ -118,10 +118,10 @@ export function ScoreDelta({ delta }: { delta: number | null }) {
   const t = useT();
 
   if (delta === null) {
-    return <p className="mt-1 text-xs text-stone-400">{t.dashboard.noPreviousScan}</p>;
+    return <p className="mt-1 text-xs text-muted-foreground">{t.dashboard.noPreviousScan}</p>;
   }
   if (delta === 0) {
-    return <p className="mt-1 text-xs text-stone-400">No change since last scan</p>;
+    return <p className="mt-1 text-xs text-muted-foreground">No change since last scan</p>;
   }
 
   const improved = delta > 0;

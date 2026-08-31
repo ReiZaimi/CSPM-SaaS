@@ -458,8 +458,28 @@ export interface ScanScope {
   role_version: string | null;
 }
 
+/**
+ * One durable stage of a scan.
+ *
+ * A scan is not one task: it is PLAN, then a COLLECT per subscription plus one
+ * for the tenant directory, then ANALYZE. Each is claimed under a lease and
+ * retried on its own, which is why `attempt` matters — a step on its second
+ * attempt is a step that was interrupted, and that is the first thing to know
+ * about a scan taking twice as long as usual.
+ */
+export interface ScanStage {
+  stage: "PLAN" | "COLLECT" | "ANALYZE";
+  /** The subscription this stage read, or the tenant directory. */
+  scope: string | null;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "SKIPPED";
+  attempt: number;
+  duration_seconds: number | null;
+  error: string | null;
+}
+
 export interface ScanDetail extends Scan {
   scope: ScanScope;
+  stages?: ScanStage[];
   findings_by_severity: Record<string, number>;
   /** How many unresolved findings a purge would take with it. */
   purgeable_finding_count: number;

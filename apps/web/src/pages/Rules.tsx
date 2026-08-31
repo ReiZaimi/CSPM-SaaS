@@ -17,7 +17,7 @@ export function RulesPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t.rules.title}</h1>
-        <p className="mt-1 text-sm text-stone-500">
+        <p className="mt-1 text-sm text-muted-foreground">
           Every check CloudGuard runs. Rules are deterministic — the same environment always
           produces the same result.
         </p>
@@ -39,36 +39,36 @@ export function RulesPage() {
               <div className="flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge level={rule.severity} />
-                  <code className="text-xs text-stone-400">{rule.rule_id}</code>
-                  <span className="text-xs text-stone-400">v{rule.version}</span>
+                  <code className="text-xs text-muted-foreground">{rule.rule_id}</code>
+                  <span className="text-xs text-muted-foreground">v{rule.version}</span>
                   {rule.scope === "aggregate" && (
-                    <span className="rounded bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-600">
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                       Tenant-wide
                     </span>
                   )}
                 </div>
-                <p className="mt-2 text-sm font-medium text-stone-900">{rule.name}</p>
-                <p className="mt-1 max-w-3xl text-sm text-stone-600">{rule.description}</p>
+                <p className="mt-2 text-sm font-medium text-foreground">{rule.name}</p>
+                <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{rule.description}</p>
               </div>
-              <div className="text-right text-xs text-stone-500">
+              <div className="text-right text-xs text-muted-foreground">
                 <p>Exploitability {rule.exploitability}/5</p>
                 <p className="mt-0.5">{formatEffort(rule.estimated_effort_minutes)} to fix</p>
               </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 border-t border-stone-100 pt-3 text-xs">
+            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 border-t border-border pt-3 text-xs">
               {rule.applies_to.length > 0 && (
-                <span className="text-stone-500">
+                <span className="text-muted-foreground">
                   Applies to{" "}
-                  <strong className="text-stone-700">
+                  <strong className="text-foreground">
                     {rule.applies_to.map(resourceTypeLabel).join(", ")}
                   </strong>
                 </span>
               )}
               {Object.entries(rule.compliance_mappings).map(([framework, controls]) => (
-                <span key={framework} className="text-stone-500">
+                <span key={framework} className="text-muted-foreground">
                   {framework.replace(/_/g, " ")}{" "}
-                  <strong className="text-stone-700">{controls.join(", ")}</strong>
+                  <strong className="text-foreground">{controls.join(", ")}</strong>
                 </span>
               ))}
             </div>

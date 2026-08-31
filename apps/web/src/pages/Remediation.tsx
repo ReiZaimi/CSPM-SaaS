@@ -26,7 +26,7 @@ export function RemediationPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t.remediation.title}</h1>
-        <p className="mt-1 text-sm text-stone-500">
+        <p className="mt-1 text-sm text-muted-foreground">
           Ordered by impact against effort. Marking work done does not close a finding — a scan
           does.
         </p>
@@ -55,12 +55,12 @@ export function RemediationPage() {
                 <StatusPill status={task.status} />
                 <Link
                   to={`/findings/${task.finding_id}`}
-                  className="text-sm text-stone-800 hover:underline"
+                  className="text-sm text-foreground hover:underline"
                 >
                   View finding
                 </Link>
               </div>
-              <div className="flex flex-wrap items-center gap-4 text-xs text-stone-500">
+              <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
                 <span>{formatEffort(task.estimated_effort_minutes)}</span>
                 {task.due_date && <span>Due {formatDate(task.due_date)}</span>}
                 {task.status !== "DONE" && (
@@ -73,7 +73,7 @@ export function RemediationPage() {
                 )}
               </div>
             </div>
-            {task.notes && <p className="mt-3 text-sm text-stone-600">{task.notes}</p>}
+            {task.notes && <p className="mt-3 text-sm text-muted-foreground">{task.notes}</p>}
           </Card>
         ))}
       </div>

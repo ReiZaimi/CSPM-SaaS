@@ -47,12 +47,12 @@ export function ComplianceFrameworkPage() {
       <div>
         <Link
           to="/compliance"
-          className="text-xs text-stone-500 underline underline-offset-4 hover:text-stone-900"
+          className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
         >
           ← {t.compliance.backToFrameworks}
         </Link>
         <h1 className="mt-2 text-xl font-semibold tracking-tight">{data.name}</h1>
-        <p className="mt-1 text-sm text-stone-500">
+        <p className="mt-1 text-sm text-muted-foreground">
           {data.version} · {data.authority}
         </p>
       </div>
@@ -65,33 +65,33 @@ export function ComplianceFrameworkPage() {
             <CoverageBar counts={data.status_counts} total={data.control_count} />
           </div>
           <div className="text-right">
-            <p className="text-3xl font-semibold tabular-nums tracking-tight text-stone-900">
+            <p className="text-3xl font-semibold tabular-nums tracking-tight text-foreground">
               {formatPercent(data.coverage_ratio)}
             </p>
-            <p className="text-[11px] uppercase tracking-wide text-stone-400">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
               {t.compliance.coverage}
             </p>
           </div>
         </div>
-        <p className="mt-4 border-t border-stone-100 pt-3 text-xs leading-relaxed text-stone-500">
+        <p className="mt-4 border-t border-border pt-3 text-xs leading-relaxed text-muted-foreground">
           {t.compliance.coverageHelp}
         </p>
         {!data.assessed && (
-          <p className="mt-2 text-xs text-stone-500">
+          <p className="mt-2 text-xs text-muted-foreground">
             No scan has completed yet, so nothing here has been assessed.
           </p>
         )}
       </Card>
 
       <Card title={t.compliance.scopeNote}>
-        <p className="text-sm leading-relaxed text-stone-600">{data.scope_note}</p>
-        <p className="mt-3 text-xs leading-relaxed text-stone-500">
+        <p className="text-sm leading-relaxed text-muted-foreground">{data.scope_note}</p>
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
           {t.compliance.ownWording}{" "}
           <a
             href={data.url}
             target="_blank"
             rel="noreferrer noopener"
-            className="font-medium underline underline-offset-2 hover:text-stone-900"
+            className="font-medium underline underline-offset-2 hover:text-foreground"
           >
             {t.compliance.source} →
           </a>
@@ -100,7 +100,7 @@ export function ComplianceFrameworkPage() {
 
       {groups.map(([group, controls]) => (
         <section key={group}>
-          <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
+          <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {group}
           </h2>
           <div className="space-y-2">
@@ -130,36 +130,36 @@ function ControlRow({ control }: { control: ComplianceControl }) {
   const t = useT();
 
   return (
-    <div className="rounded-xl border border-stone-200 bg-white px-5 py-4 shadow-sm">
+    <div className="rounded-xl border border-border bg-background px-5 py-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <code className="text-xs font-medium text-stone-500">{control.id}</code>
+            <code className="text-xs font-medium text-muted-foreground">{control.id}</code>
             {!control.technically_assessable && (
               <span
                 title={t.compliance.notAssessableHelp}
-                className="rounded bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-500"
+                className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
               >
                 {t.compliance.notAssessable}
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-stone-900">{control.title}</p>
+          <p className="mt-1 text-sm text-foreground">{control.title}</p>
         </div>
         <ControlStatusPill status={control.status} />
       </div>
 
       {control.rules.length > 0 ? (
-        <div className="mt-3 border-t border-stone-100 pt-3">
-          <p className="text-[11px] uppercase tracking-wide text-stone-400">
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
             {t.compliance.evidenceFrom}
           </p>
           <ul className="mt-2 space-y-1.5">
             {control.rules.map((rule) => (
               <li key={rule.rule_id} className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge level={rule.severity} />
-                <code className="text-stone-400">{rule.rule_id}</code>
-                <span className="text-stone-600">{rule.name}</span>
+                <code className="text-muted-foreground">{rule.rule_id}</code>
+                <span className="text-muted-foreground">{rule.name}</span>
                 {rule.open_finding_count > 0 && (
                   <Link
                     to={`/findings?rule_id=${encodeURIComponent(rule.rule_id)}`}
@@ -174,14 +174,14 @@ function ControlRow({ control }: { control: ComplianceControl }) {
                   </span>
                 )}
                 {!rule.evaluated && (
-                  <span className="text-stone-400">did not run in the last scan</span>
+                  <span className="text-muted-foreground">did not run in the last scan</span>
                 )}
               </li>
             ))}
           </ul>
         </div>
       ) : (
-        <p className="mt-3 border-t border-stone-100 pt-3 text-xs text-stone-400">
+        <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
           {control.technically_assessable
             ? t.compliance.noRules
             : t.compliance.notAssessableHelp}

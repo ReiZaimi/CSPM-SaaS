@@ -32,7 +32,7 @@ export function AttackPathsPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t.attackPaths.title}</h1>
-        <p className="mt-1 max-w-3xl text-sm text-stone-500">{t.attackPaths.intro}</p>
+        <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t.attackPaths.intro}</p>
       </div>
 
       {isLoading && <Spinner text={t.common.loading} />}
@@ -42,7 +42,7 @@ export function AttackPathsPage() {
 
       {data && data.paths.length > 0 && (
         <>
-          <p className="text-xs text-stone-500">
+          <p className="text-xs text-muted-foreground">
             {data.meta.total} · {data.meta.entry_points} {t.attackPaths.entryPoints} ·{" "}
             {data.meta.sensitive_targets} {t.attackPaths.sensitiveTargets}
           </p>
@@ -98,10 +98,10 @@ function PathCard({ path }: { path: AttackPath }) {
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-stone-900">
-            {path.entry.name} <span className="text-stone-400">→</span> {path.target.name}
+          <p className="text-sm font-medium text-foreground">
+            {path.entry.name} <span className="text-muted-foreground">→</span> {path.target.name}
           </p>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-stone-500">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               {t.attackPaths.exposure}
               <Badge level={path.entry.public_exposure} className="text-[10px]" />
@@ -113,8 +113,8 @@ function PathCard({ path }: { path: AttackPath }) {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-3xl font-semibold tabular-nums text-stone-900">{path.hops}</p>
-          <p className="text-xs text-stone-400">
+          <p className="text-3xl font-semibold tabular-nums text-foreground">{path.hops}</p>
+          <p className="text-xs text-muted-foreground">
             {path.hops === 1 ? t.attackPaths.oneHop : t.attackPaths.hops}
           </p>
         </div>
@@ -138,8 +138,8 @@ function PathCard({ path }: { path: AttackPath }) {
       {path.cheapest_break && (
         <div className="mt-4 rounded-lg border border-ok-border bg-ok-bg px-4 py-3">
           <p className="text-sm font-medium text-ok">{t.attackPaths.cutHere}</p>
-          <p className="mt-1 text-sm text-stone-800">{path.cheapest_break.description}</p>
-          <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          <p className="mt-1 text-sm text-foreground">{path.cheapest_break.description}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
             {t.attackPaths.cutHereDetail}
           </p>
         </div>

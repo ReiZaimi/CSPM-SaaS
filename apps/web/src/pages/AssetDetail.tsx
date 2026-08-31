@@ -51,13 +51,13 @@ export function AssetDetailPage() {
 
   return (
     <div className="space-y-6">
-      <Link to="/assets" className="text-sm text-stone-500 hover:text-stone-900">
+      <Link to="/assets" className="text-sm text-muted-foreground hover:text-foreground">
         ← {t.assets.title}
       </Link>
 
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>
-        <p className="mt-1 text-sm text-stone-500">
+        <p className="mt-1 text-sm text-muted-foreground">
           {resourceTypeLabel(data.resource_type)}
           {data.region && ` · ${data.region}`}
           {data.environment && ` · ${data.environment}`}
@@ -73,29 +73,29 @@ export function AssetDetailPage() {
             <Row label="First seen" value={formatDateTime(data.first_seen_at)} />
             <Row label="Last seen" value={formatDateTime(data.last_seen_at)} />
           </dl>
-          <p className="mt-4 break-all border-t border-stone-100 pt-3 text-xs text-stone-400">
+          <p className="mt-4 break-all border-t border-border pt-3 text-xs text-muted-foreground">
             {data.provider_resource_id}
           </p>
         </Card>
 
         <Card title="Findings on this asset" className="lg:col-span-2">
           {data.findings.length === 0 ? (
-            <p className="py-4 text-center text-sm text-stone-500">
+            <p className="py-4 text-center text-sm text-muted-foreground">
               No findings on this asset.
             </p>
           ) : (
-            <ul className="divide-y divide-stone-100">
+            <ul className="divide-y divide-border">
               {data.findings.map((finding) => (
                 <li key={finding.id} className="flex items-center gap-3 py-3 first:pt-0">
                   <Badge level={finding.severity} />
                   <Link
                     to={`/findings/${finding.id}`}
-                    className="flex-1 text-sm text-stone-800 hover:underline"
+                    className="flex-1 text-sm text-foreground hover:underline"
                   >
                     {finding.title}
                   </Link>
                   <StatusPill status={finding.status} />
-                  <span className="w-10 text-right text-sm font-medium tabular-nums text-stone-600">
+                  <span className="w-10 text-right text-sm font-medium tabular-nums text-muted-foreground">
                     {finding.risk_score === null ? "—" : Number(finding.risk_score).toFixed(0)}
                   </span>
                 </li>
@@ -106,7 +106,7 @@ export function AssetDetailPage() {
       </div>
 
       <Card title="Configuration" subtitle="As collected in the most recent snapshot">
-        <pre className="overflow-x-auto rounded-lg bg-stone-900 p-4 text-xs leading-relaxed text-stone-100">
+        <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
           {JSON.stringify(data.metadata, null, 2)}
         </pre>
       </Card>
@@ -117,8 +117,8 @@ export function AssetDetailPage() {
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-stone-500">{label}</dt>
-      <dd className="font-medium text-stone-800">{value}</dd>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium text-foreground">{value}</dd>
     </div>
   );
 }

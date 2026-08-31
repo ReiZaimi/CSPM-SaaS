@@ -33,16 +33,16 @@ export function OnboardingPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-stone-50 px-6">
+    <div className="flex min-h-screen items-center justify-center bg-muted/40 px-6">
       <div className="w-full max-w-md">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {t.onboarding.step} 1 / 2
         </p>
         <h1 className="text-2xl font-semibold tracking-tight">{t.onboarding.createOrg}</h1>
 
         <form
           onSubmit={submit}
-          className="mt-6 space-y-4 rounded-xl border border-stone-200 bg-white p-6 shadow-sm"
+          className="mt-6 space-y-4 rounded-xl border border-border bg-background p-6 shadow-sm"
         >
           <Field label={t.onboarding.orgName}>
             <Input

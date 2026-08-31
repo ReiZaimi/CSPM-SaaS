@@ -21,6 +21,7 @@ import {
   StatusPill,
 } from "@/components/ui";
 import { formatDateTime, label, outcomeStyle } from "@/lib/format";
+import { ScanProgress } from "@/components/scans/ScanProgress";
 import { Badge } from "@/components/ui";
 import { TableSkeleton } from "@/components/common/states";
 
@@ -129,7 +130,7 @@ function ScanRow({ scan }: { scan: Scan }) {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <StatusPill status={scan.status} />
-          <span className="text-sm text-stone-500">
+          <span className="text-sm text-muted-foreground">
             {formatDateTime(scan.completed_at ?? scan.started_at ?? scan.created_at)}
           </span>
         </div>
@@ -143,11 +144,7 @@ function ScanRow({ scan }: { scan: Scan }) {
         </div>
       </div>
 
-      {running && (
-        <div className="mt-4">
-          <Progress status={scan.status} />
-        </div>
-      )}
+      {running && <LiveProgress scanId={scan.id} status={scan.status} />}
 
       {/* Queued far longer than a worker takes to collect one. The progress bar
           above keeps implying imminent work, so the reason has to say
@@ -160,9 +157,9 @@ function ScanRow({ scan }: { scan: Scan }) {
           and was simply empty. Saying so separates "nothing to assess" from
           "could not look", which the counters alone cannot. */}
       {!running && scan.status !== "FAILED" && scan.resource_count === 0 && (
-        <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
-          <p className="text-xs font-medium text-stone-800">{t.scans.nothingFound}</p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+        <div className="mt-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <p className="text-xs font-medium text-foreground">{t.scans.nothingFound}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {Object.keys(scan.collection_errors).length > 0
               ? t.scans.nothingFoundPartial
               : t.scans.nothingFoundHelp}
@@ -222,14 +219,14 @@ function ScanRow({ scan }: { scan: Scan }) {
             {Object.entries(scan.collection_errors)
               .slice(0, 3)
               .map(([scope, reason]) => (
-                <li key={scope} className="text-xs text-stone-700">
+                <li key={scope} className="text-xs text-foreground">
                   <strong>{scope}</strong>
-                  <span className="text-stone-600"> — {firstSentence(reason)}</span>
+                  <span className="text-muted-foreground"> — {firstSentence(reason)}</span>
                 </li>
               ))}
           </ul>
           {Object.keys(scan.collection_errors).length > 3 && (
-            <p className="mt-1 text-xs text-stone-500">
+            <p className="mt-1 text-xs text-muted-foreground">
               and {Object.keys(scan.collection_errors).length - 3} more
             </p>
           )}
@@ -239,23 +236,33 @@ function ScanRow({ scan }: { scan: Scan }) {
   );
 }
 
-/** Live progress through the fixed pipeline: discover -> rules -> risk. */
-function Progress({ status }: { status: string }) {
-  const stages = ["DISCOVERING", "NORMALIZING", "EVALUATING", "CALCULATING_RISK"];
-  const index = stages.indexOf(status);
+/**
+ * Progress, read from the steps the scan is actually made of.
+ *
+ * Polled separately from the scan list and only while something is running.
+ * The list refetches every two seconds to keep a status current; this reads a
+ * second endpoint per open scan, and doing that for a page of finished scans
+ * would be a request per card per tick for information that cannot change.
+ */
+function LiveProgress({ scanId, status }: { scanId: string; status: string }) {
+  const detail = useQuery({
+    queryKey: ["scan-detail", scanId],
+    queryFn: () =>
+      api.get<ScanDetail>(`/api/v1/scans/${scanId}/detail`).then((r) => r.data),
+    refetchInterval: 3000,
+  });
+
+  const stages = detail.data?.stages ?? [];
+
   return (
-    <div>
-      <div className="flex gap-1">
-        {stages.map((stage, i) => (
-          <div
-            key={stage}
-            className={`h-1.5 flex-1 rounded-full ${
-              i <= index ? "bg-stone-800" : "bg-stone-200"
-            } ${i === index ? "animate-pulse" : ""}`}
-          />
-        ))}
-      </div>
-      <p className="mt-2 text-xs text-stone-500">{label(status)}</p>
+    <div className="mt-4 rounded-lg border bg-muted/30 p-3">
+      {stages.length > 0 ? (
+        <ScanProgress stages={stages} />
+      ) : (
+        // Before PLAN has claimed anything there are no steps to show, and the
+        // status is the only honest thing to say.
+        <p className="text-xs text-muted-foreground">{label(status)}</p>
+      )}
     </div>
   );
 }
@@ -263,8 +270,8 @@ function Progress({ status }: { status: string }) {
 function Stat({ label: text, value }: { label: string; value: number | string }) {
   return (
     <div>
-      <p className="text-xs text-stone-500">{text}</p>
-      <p className="font-medium tabular-nums text-stone-900">{value}</p>
+      <p className="text-xs text-muted-foreground">{text}</p>
+      <p className="font-medium tabular-nums text-foreground">{value}</p>
     </div>
   );
 }
@@ -299,9 +306,9 @@ function ScanDetailPanel({ scanId }: { scanId: string }) {
   const scanned = detail.data.progress_total ?? 0;
 
   return (
-    <div className="mt-3 grid gap-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 sm:grid-cols-2">
+    <div className="mt-3 grid gap-4 rounded-lg border border-border bg-muted/40 px-4 py-3 sm:grid-cols-2">
       <div>
-        <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           {t.scans.scope}
         </p>
         <dl className="mt-1.5 space-y-1 text-xs">
@@ -313,7 +320,7 @@ function ScanDetailPanel({ scanId }: { scanId: string }) {
       </div>
 
       <div>
-        <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           {t.scans.identity}
         </p>
         <dl className="mt-1.5 space-y-1 text-xs">
@@ -339,7 +346,7 @@ function ScanDetailPanel({ scanId }: { scanId: string }) {
 
       {Object.keys(severities).length > 0 && (
         <div className="sm:col-span-2">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             {t.scans.breakdown}
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -348,6 +355,17 @@ function ScanDetailPanel({ scanId }: { scanId: string }) {
                 {label(severity)} {count}
               </Badge>
             ))}
+          </div>
+        </div>
+      )}
+
+      {(detail.data.stages?.length ?? 0) > 0 && (
+        <div className="sm:col-span-2">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Stages
+          </p>
+          <div className="mt-2">
+            <ScanProgress stages={detail.data.stages ?? []} />
           </div>
         </div>
       )}
@@ -400,12 +418,12 @@ function CollectionPanel({ scanId }: { scanId: string }) {
 
   return (
     <div>
-      <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+      <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         {t.scans.collectionTitle}
       </p>
 
-      <p className="mt-1.5 text-xs text-stone-600">
-        <span className="font-medium tabular-nums text-stone-900">
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        <span className="font-medium tabular-nums text-foreground">
           {complete}/{total}
         </span>{" "}
         {t.scans.collectionSummary}
@@ -422,25 +440,25 @@ function CollectionPanel({ scanId }: { scanId: string }) {
         {[...bySubscription.entries()].map(([subscription, readings]) => (
           <div key={subscription}>
             {bySubscription.size > 1 && (
-              <p className="text-xs font-medium text-stone-700">{subscription}</p>
+              <p className="text-xs font-medium text-foreground">{subscription}</p>
             )}
-            <ul className="mt-1 divide-y divide-stone-200 rounded-lg border border-stone-200 bg-white">
+            <ul className="mt-1 divide-y divide-border rounded-lg border border-border bg-background">
               {readings.map((reading) => (
                 <li
                   key={`${reading.cloud_account_id}-${reading.task}`}
                   className="flex flex-wrap items-start gap-x-3 gap-y-1 px-3 py-2"
                 >
-                  <span className="min-w-0 flex-1 font-mono text-[11px] text-stone-800">
+                  <span className="min-w-0 flex-1 font-mono text-[11px] text-foreground">
                     {reading.task}
                   </span>
                   {reading.outcome === "COMPLETE" && (
-                    <span className="text-xs tabular-nums text-stone-500">
+                    <span className="text-xs tabular-nums text-muted-foreground">
                       {reading.item_count}
                     </span>
                   )}
                   <OutcomeBadge outcome={reading.outcome} />
                   {reading.detail && (
-                    <p className="w-full text-xs leading-relaxed text-stone-600">
+                    <p className="w-full text-xs leading-relaxed text-muted-foreground">
                       {reading.detail}
                     </p>
                   )}
@@ -472,8 +490,8 @@ function firstSentence(text: string): string {
 function Row({ label: text, value }: { label: string; value: string | null }) {
   return (
     <div className="flex gap-2">
-      <dt className="shrink-0 text-stone-500">{text}</dt>
-      <dd className="min-w-0 truncate font-mono text-[11px] text-stone-800">
+      <dt className="shrink-0 text-muted-foreground">{text}</dt>
+      <dd className="min-w-0 truncate font-mono text-[11px] text-foreground">
         {value ?? "\u2014"}
       </dd>
     </div>
@@ -516,7 +534,7 @@ function DeleteScanConfirm({
           <Button variant="secondary" onClick={() => onConfirm(false)} disabled={busy}>
             {t.scans.deleteRecordOnly}
           </Button>
-          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {t.scans.deleteRecordOnlyDetail}
           </p>
         </div>
@@ -525,7 +543,7 @@ function DeleteScanConfirm({
             {t.scans.deleteWithFindings}
             {purgeable > 0 && ` (${purgeable})`}
           </Button>
-          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {t.scans.deleteWithFindingsDetail}
           </p>
         </div>
@@ -562,11 +580,11 @@ function StuckNote() {
   return (
     <div className="mt-3 rounded-lg border border-high-border bg-high-bg px-3 py-2">
       <p className="text-xs font-medium text-high">{t.scans.stuckTitle}</p>
-      <p className="mt-1 text-xs leading-relaxed text-stone-700">
+      <p className="mt-1 text-xs leading-relaxed text-foreground">
         {status.data ? status.data.detail : t.scans.stuckDetail}
       </p>
       {status.data && status.data.workers === 0 && (
-        <p className="mt-1 text-xs leading-relaxed text-stone-600">
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           {t.scans.stuckDetail}
         </p>
       )}

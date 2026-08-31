@@ -89,7 +89,7 @@ export function ConnectionForm({
         <button
           onClick={onClose}
           aria-label={t.connection.cancel}
-          className="text-sm text-stone-500 transition hover:text-stone-900"
+          className="text-sm text-muted-foreground transition hover:text-foreground"
         >
           ✕
         </button>
@@ -114,7 +114,7 @@ export function ConnectionForm({
         </Field>
 
         <fieldset>
-          <legend className="mb-2 text-sm font-medium text-stone-700">
+          <legend className="mb-2 text-sm font-medium text-foreground">
             {t.connection.scope}
           </legend>
           <div className="space-y-2">
@@ -124,8 +124,8 @@ export function ConnectionForm({
                 className={cn(
                   "flex cursor-pointer gap-3 rounded-lg border px-4 py-3 transition",
                   scopeType === scope.value
-                    ? "border-stone-900 bg-stone-50"
-                    : "border-stone-200 hover:border-stone-300",
+                    ? "border-stone-900 bg-muted/40"
+                    : "border-border hover:border-input",
                 )}
               >
                 <input
@@ -135,13 +135,13 @@ export function ConnectionForm({
                   onChange={() => setScopeType(scope.value)}
                 />
                 <span>
-                  <span className="block text-sm font-medium text-stone-900">
+                  <span className="block text-sm font-medium text-foreground">
                     {scope.label}
                   </span>
-                  <span className="mt-0.5 block text-xs leading-relaxed text-stone-600">
+                  <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
                     {scope.detail}
                   </span>
-                  <span className="mt-1 block text-xs leading-relaxed text-stone-500">
+                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
                     {scope.requires}
                   </span>
                 </span>
@@ -167,12 +167,12 @@ export function ConnectionForm({
           </Field>
         )}
 
-        <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
-          <p className="text-xs font-medium text-stone-700">{t.connection.whoYouNeed}</p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+        <div className="rounded-lg border border-border bg-muted/40 px-4 py-3">
+          <p className="text-xs font-medium text-foreground">{t.connection.whoYouNeed}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {t.connection.whoYouNeedDetail}
           </p>
-          <p className="mt-2 text-xs leading-relaxed text-stone-600">
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
             {t.connection.noGuidsNeeded}
           </p>
         </div>

@@ -59,7 +59,7 @@ export function ConnectPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t.connection.title}</h1>
-          <p className="mt-1 max-w-3xl text-sm text-stone-600">{t.connection.intro}</p>
+          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t.connection.intro}</p>
         </div>
         {!showForm && (
           <Button onClick={() => setShowForm(true)}>
@@ -239,7 +239,7 @@ function ConnectionCard({
           <p className="text-sm font-medium text-high">
             {t.connection.cannotStartConsent}
           </p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+          <p className="mt-1 text-xs leading-relaxed text-foreground">
             {connection.status_detail}
           </p>
         </div>
@@ -247,8 +247,8 @@ function ConnectionCard({
 
       {/* Consent step: not yet granted */}
       {!cancelled && connection.consent_status !== "GRANTED" && connection.consent_url && (
-        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
-          <p className="text-sm text-stone-700">{connection.status_detail}</p>
+        <div className="mt-4 rounded-lg border border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm text-foreground">{connection.status_detail}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             <a
               href={connection.consent_url}
@@ -267,8 +267,8 @@ function ConnectionCard({
         connection.consent_status === "GRANTED" &&
         !connection.rbac_verified_at &&
         connection.template_url && (
-          <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
-            <p className="text-sm text-stone-700">{connection.status_detail}</p>
+          <div className="mt-4 rounded-lg border border-border bg-muted/40 px-4 py-3">
+            <p className="text-sm text-foreground">{connection.status_detail}</p>
             <div className="mt-3">
               <a
                 href={connection.template_url}
@@ -304,7 +304,7 @@ function ConnectionCard({
             <p className="text-sm font-medium text-high">
               {t.connection.cannotDeployYet}
             </p>
-            <p className="mt-1 text-xs leading-relaxed text-stone-700">
+            <p className="mt-1 text-xs leading-relaxed text-foreground">
               {connection.status_detail}
             </p>
           </div>
@@ -313,11 +313,11 @@ function ConnectionCard({
       {/* Verified with nothing beneath it. Previously this rendered nothing:
           three green ticks, "Ready to scan: Yes", and an empty card. */}
       {connection.is_verified && subscriptions.length === 0 && (
-        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
-          <p className="text-sm font-medium text-stone-900">
+        <div className="mt-4 rounded-lg border border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-medium text-foreground">
             {t.connection.noSubscriptionsTitle}
           </p>
-          <p className="mt-1 text-sm text-stone-600">{t.connection.noSubscriptionsBody}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t.connection.noSubscriptionsBody}</p>
           <Button
             className="mt-3"
             variant="secondary"
@@ -333,14 +333,14 @@ function ConnectionCard({
 
       {/* Verified: show subscriptions */}
       {connection.is_verified && subscriptions.length > 0 && (
-        <div className="mt-4 border-t border-stone-100 pt-3">
-          <p className="text-xs text-stone-500">
+        <div className="mt-4 border-t border-border pt-3">
+          <p className="text-xs text-muted-foreground">
             {scoped.length} of {subscriptions.length} {t.connection.inScopeCount}
             {connection.last_discovery_at && (
               <> · {t.connection.lastDiscovery} {formatDateTime(connection.last_discovery_at)}</>
             )}
           </p>
-          <ul className="mt-2 divide-y divide-stone-100 rounded-lg border border-stone-200">
+          <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
             {subscriptions.map((sub) => (
               <li key={sub.id} className="flex items-center gap-3 px-4 py-2.5">
                 <input
@@ -355,8 +355,8 @@ function ConnectionCard({
                   aria-label={`${t.connection.inScope}: ${sub.display_name}`}
                 />
                 <span className="flex-1">
-                  <span className="block text-sm text-stone-900">{sub.display_name}</span>
-                  <code className="text-[11px] text-stone-400">{sub.subscription_id}</code>
+                  <span className="block text-sm text-foreground">{sub.display_name}</span>
+                  <code className="text-[11px] text-muted-foreground">{sub.subscription_id}</code>
                 </span>
               </li>
             ))}
@@ -382,7 +382,7 @@ function ConnectionCard({
         !error &&
         connection.consent_status === "GRANTED" &&
         connection.rbac_verified_at && (
-          <p className="mt-3 text-sm text-stone-600">{connection.status_detail}</p>
+          <p className="mt-3 text-sm text-muted-foreground">{connection.status_detail}</p>
         )}
 
       {/* Verified with subscriptions in scope. Scanning lives on another page,
@@ -391,7 +391,7 @@ function ConnectionCard({
       {connection.is_verified && scoped.length > 0 && (
         <div className="mt-4 rounded-lg border border-ok-border bg-ok-bg px-4 py-3">
           <p className="text-sm font-medium text-ok">{t.connection.readyToScan}</p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-700">
+          <p className="mt-1 text-xs leading-relaxed text-foreground">
             {scoped.length} {t.connection.inScopeCount}.
           </p>
           <Link to="/scans" className="mt-3 inline-block">
@@ -409,11 +409,11 @@ function ConnectionCard({
       )}
 
       {cancelled && (
-        <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
-          <p className="text-sm font-medium text-stone-800">
+        <div className="mt-4 rounded-lg border border-border bg-muted/40 px-4 py-3">
+          <p className="text-sm font-medium text-foreground">
             {t.connection.setupCancelled}
           </p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {connection.status_detail}
           </p>
         </div>
@@ -519,13 +519,13 @@ export function ScheduleControl({
   const known = options.some((o) => o.value === String(current ?? ""));
 
   return (
-    <div className="mt-4 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
+    <div className="mt-4 rounded-lg border border-border bg-muted/40 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-stone-900">
+          <p className="text-sm font-medium text-foreground">
             {t.connection.scheduleTitle}
           </p>
-          <p className="mt-1 max-w-prose text-xs leading-relaxed text-stone-600">
+          <p className="mt-1 max-w-prose text-xs leading-relaxed text-muted-foreground">
             {t.connection.scheduleHelp}
           </p>
         </div>
@@ -537,7 +537,7 @@ export function ScheduleControl({
           className={cn(
             "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium",
             current === null
-              ? "border-stone-200 bg-white text-stone-600"
+              ? "border-border bg-background text-muted-foreground"
               : "border-ok-border bg-ok-bg text-ok",
           )}
         >
@@ -564,18 +564,18 @@ export function ScheduleControl({
           ))}
         </Select>
         {save.isPending && (
-          <span className="text-xs text-stone-500">{t.connection.scheduleSaving}</span>
+          <span className="text-xs text-muted-foreground">{t.connection.scheduleSaving}</span>
         )}
         {saved && !save.isPending && (
           <span className="text-xs text-ok">{t.connection.scheduleSaved}</span>
         )}
       </div>
 
-      <p className="mt-2 text-xs leading-relaxed text-stone-500">
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
         {t.connection.scheduleFloorNote}
       </p>
       {current !== null && (
-        <p className="mt-1 text-xs leading-relaxed text-stone-500">
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           {t.connection.scheduleFirstRunNote}
         </p>
       )}
@@ -619,7 +619,7 @@ function RemoveConfirm({
   return (
     <div className="mt-4 rounded-lg border border-critical-border bg-critical-bg px-4 py-3">
       <p className="text-sm font-medium text-critical">{t.connection.removeTitle}</p>
-      <p className="mt-1 text-xs leading-relaxed text-stone-700">
+      <p className="mt-1 text-xs leading-relaxed text-foreground">
         {t.connection.removeDetail}
       </p>
 
@@ -628,16 +628,16 @@ function RemoveConfirm({
           connection is deleted the principal id and scope needed to write these
           commands are gone with it. */}
       {steps.length > 0 && (
-        <div className="mt-3 rounded-lg border border-stone-200 bg-white px-3 py-2.5">
-          <p className="text-xs font-medium text-stone-800">{t.connection.revokeTitle}</p>
-          <p className="mt-1 text-xs leading-relaxed text-stone-600">
+        <div className="mt-3 rounded-lg border border-border bg-background px-3 py-2.5">
+          <p className="text-xs font-medium text-foreground">{t.connection.revokeTitle}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {t.connection.revokeIntro}
           </p>
           <ol className="mt-2 space-y-2">
             {steps.map((step) => (
               <li key={step.title}>
-                <p className="text-xs font-medium text-stone-700">{step.title}</p>
-                <p className="text-[11px] leading-relaxed text-stone-500">
+                <p className="text-xs font-medium text-foreground">{step.title}</p>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
                   {step.detail}
                 </p>
                 <pre className="mt-1 overflow-x-auto rounded bg-stone-900 px-2.5 py-1.5 text-[11px] text-stone-100">
@@ -647,7 +647,7 @@ function RemoveConfirm({
             ))}
           </ol>
           {revocation.data && (
-            <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
               {revocation.data.why_manual}
             </p>
           )}
@@ -673,7 +673,7 @@ function RemoveConfirm({
             )}
           </div>
           {checked && (
-            <p className="mt-1 text-[11px] leading-relaxed text-stone-600">
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
               {checked.detail}
             </p>
           )}
@@ -714,8 +714,8 @@ function Signal({ label, ok, detail }: { label: string; ok: boolean; detail: str
         {ok ? "✓" : "–"}
       </span>
       <span>
-        <span className="font-medium text-stone-800">{label}</span>{" "}
-        <span className="text-stone-500">{detail}</span>
+        <span className="font-medium text-foreground">{label}</span>{" "}
+        <span className="text-muted-foreground">{detail}</span>
       </span>
     </div>
   );
@@ -723,8 +723,8 @@ function Signal({ label, ok, detail }: { label: string; ok: boolean; detail: str
 
 function WaitingNote({ text }: { text: string }) {
   return (
-    <p className="mt-3 flex items-center gap-2 text-sm text-stone-500">
-      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-stone-300 border-t-stone-600" />
+    <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-input border-t-stone-600" />
       {text}
     </p>
   );
