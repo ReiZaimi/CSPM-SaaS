@@ -55,6 +55,23 @@
 </div>
 {% endif %}
 
+{#
+  What this document does not contain. A reader handed a report with no
+  compliance section should be told it was left out rather than conclude that
+  CloudGuard assesses no frameworks — an omission somebody chose looks exactly
+  like an absence of evidence once the PDF is forwarded.
+#}
+{% if report.omitted_sections %}
+<div class="note">
+  <p class="note-title">Sections excluded from this report</p>
+  <p class="small">
+    {{ report.omitted_sections | join(', ') | capitalize }}.
+    They were not included when this document was generated; nothing here says
+    anything about them either way.
+  </p>
+</div>
+{% endif %}
+
 {% if report.evidence.collection_errors %}
 <div class="note note-warn">
   <p class="note-title">Part of the environment could not be read</p>

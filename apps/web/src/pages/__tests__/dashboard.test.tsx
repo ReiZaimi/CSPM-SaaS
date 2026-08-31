@@ -97,4 +97,27 @@ describe("DashboardPage", () => {
     );
     expect(screen.queryByRole("link", { name: /Reports/ })).not.toBeInTheDocument();
   });
+
+  it("sends a ranked risk to that risk, not back to the unfiltered list", async () => {
+    // Every top risk used to link to /risks, so clicking the thing the page had
+    // just ranked first made the reader find it again in a table.
+    mount(
+      dashboard({
+        top_risks: [
+          {
+            id: "risk-1",
+            title: "Production database reachable from the internet",
+            risk_score: 94,
+            risk_level: "CRITICAL",
+          },
+        ],
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("link", { name: /Production database reachable/ }),
+      ).toHaveAttribute("href", "/risks/risk-1"),
+    );
+  });
 });

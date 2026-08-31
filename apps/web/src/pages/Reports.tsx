@@ -13,9 +13,65 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 
 type Kind = "executive" | "technical";
+
+/**
+ * What a reader can leave out, and what they cannot.
+ *
+ * The posture block and the evidence caveats are absent from this list on
+ * purpose: a report that could drop "12% of checks reached no verdict" would
+ * let somebody produce a cleaner-looking document by unticking a box. What is
+ * optional is detail, never the terms the numbers are read on.
+ */
+type Section = {
+  id: string;
+  label: string;
+  detail: string;
+  /** Only meaningful in the technical report, which is the one that lists them. */
+  technicalOnly?: boolean;
+};
+
+const SECTIONS: Section[] = [
+  {
+    id: "top_risks",
+    label: "Top risks",
+    detail: "Ranked by what a finding means on the asset it was found on.",
+  },
+  {
+    id: "attack_paths",
+    label: "Attack paths",
+    detail: "Routes from something exposed to something worth taking, and the link to cut.",
+  },
+  {
+    id: "remediation",
+    label: "Remediation progress",
+    detail: "Work claimed and fixes proved, reported separately.",
+  },
+  {
+    id: "compliance",
+    label: "Compliance coverage",
+    detail: "Evidence toward each framework — never a verdict.",
+  },
+  {
+    id: "findings",
+    label: "Full findings list",
+    detail: "Every open finding, worst first. Technical report only.",
+    technicalOnly: true,
+  },
+];
+
+/** The activity window. Not a filter on the posture — see the note by it. */
+const WINDOWS = [30, 90, 365] as const;
 
 /**
  * The evidence, fixed to a moment and made portable.
@@ -33,10 +89,38 @@ type Kind = "executive" | "technical";
 export function ReportsPage() {
   const t = useT();
   const [failure, setFailure] = useState<{ title: string; detail: string } | null>(null);
+  const [days, setDays] = useState<number>(30);
+  const [chosen, setChosen] = useState<string[]>(SECTIONS.map((section) => section.id));
+
+  /**
+   * The options, as the API takes them.
+   *
+   * `sections` is always sent, including when it is empty: an absent parameter
+   * means "all of them" and an empty one means "none", and collapsing the two
+   * would make unticking every box produce the fullest document.
+   */
+  function query(kind: Kind, format: "pdf" | "html"): string {
+    const applicable = chosen.filter(
+      (id) =>
+        kind === "technical" ||
+        !SECTIONS.find((section) => section.id === id)?.technicalOnly,
+    );
+    const params = new URLSearchParams();
+    params.set("format", format);
+    params.set("days", String(days));
+    params.set("sections", applicable.join(","));
+    return params.toString();
+  }
+
+  function toggle(id: string, on: boolean) {
+    setChosen((current) =>
+      on ? [...new Set([...current, id])] : current.filter((item) => item !== id),
+    );
+  }
 
   const download = useMutation({
     mutationFn: async (kind: Kind) => {
-      const blob = await api.document(`/api/v1/reports/${kind}?format=pdf`);
+      const blob = await api.document(`/api/v1/reports/${kind}?${query(kind, "pdf")}`);
       return { kind, blob };
     },
     onSuccess: ({ kind, blob }) => {
@@ -57,7 +141,8 @@ export function ReportsPage() {
   });
 
   const preview = useMutation({
-    mutationFn: async (kind: Kind) => api.document(`/api/v1/reports/${kind}?format=html`),
+    mutationFn: async (kind: Kind) =>
+      api.document(`/api/v1/reports/${kind}?${query(kind, "html")}`),
     onSuccess: (blob) => {
       setFailure(null);
       openBlob(blob);
@@ -82,6 +167,79 @@ export function ReportsPage() {
           impact="Nothing about your environment has changed — this is a problem producing the document."
         />
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">What to include</CardTitle>
+          <CardDescription>
+            Both documents always carry the posture, how old the evidence is and
+            what could not be read. Those are the terms the numbers are read on,
+            so they are not optional.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">Activity window</span>
+              <Select
+                value={String(days)}
+                onValueChange={(value) => setDays(Number(value ?? 30))}
+              >
+                <SelectTrigger size="sm" className="w-[150px]" aria-label="Activity window">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {WINDOWS.map((window) => (
+                    <SelectItem key={window} value={String(window)}>
+                      Last {window} days
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
+              Sets how far back verified fixes, completed work and the trend line
+              reach. It does not filter the posture: a score is a reading of now,
+              not a thing that has a date range.
+            </p>
+          </div>
+
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {SECTIONS.map((section) => (
+              <li key={section.id} className="flex items-start gap-2.5">
+                {/* Labelled by the visible text rather than wrapped in a
+                    <label>: the primitive renders a button, and a button
+                    inside a label is a click the browser delivers twice. */}
+                <Checkbox
+                  className="mt-0.5"
+                  aria-labelledby={`section-${section.id}-label`}
+                  checked={chosen.includes(section.id)}
+                  onCheckedChange={(value) => toggle(section.id, value === true)}
+                />
+                <div>
+                  <span
+                    id={`section-${section.id}-label`}
+                    className="block text-sm text-foreground"
+                  >
+                    {section.label}
+                  </span>
+                  <span className="block text-xs leading-snug text-muted-foreground">
+                    {section.detail}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          {/* Said here rather than discovered on the cover page: a section
+              left out is named in the document, so nobody reads an omission
+              somebody chose as an absence of evidence. */}
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Anything left unticked is named on the report's cover as excluded,
+            so a reader downstream can tell a choice from a gap.
+          </p>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <ReportCard

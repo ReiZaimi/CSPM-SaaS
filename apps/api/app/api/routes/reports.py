@@ -26,9 +26,14 @@ from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, Response
 
 from app.core.deps import DbSession, Tenant
-from app.core.errors import NotFound
+from app.core.errors import NotFound, ValidationFailed
 from app.reports.render import render_html, render_pdf
-from app.services.reports import build_report
+from app.services.reports import (
+    DEFAULT_WINDOW_DAYS,
+    MAX_WINDOW_DAYS,
+    OPTIONAL_SECTIONS,
+    build_report,
+)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -55,12 +60,53 @@ async def get_report(
     session: DbSession,
     tenant: Tenant,
     format: str = Query(default="pdf", pattern="^(pdf|html)$"),
+    days: int = Query(
+        default=DEFAULT_WINDOW_DAYS,
+        ge=1,
+        le=MAX_WINDOW_DAYS,
+        description="Activity window: how far back verified fixes, completed "
+        "work and the trend line reach. It does not filter the posture, which "
+        "is a reading of now.",
+    ),
+    sections: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated optional sections to include. Omit the parameter "
+            "for all of them; pass it empty for none. The posture block and "
+            "the evidence caveats are not optional either way."
+        ),
+    ),
 ) -> Response:
     """One report, rendered now from the current evidence."""
     if kind not in KINDS:
         raise NotFound(f"No such report: {kind}")
 
-    report = await build_report(session, tenant.organization_id, technical=kind == "technical")
+    chosen: frozenset[str] | None = None
+    if sections is not None:
+        # An absent parameter means "all of them"; an empty one means "none",
+        # which is a posture-only report and a real thing to want. The two are
+        # distinguished rather than collapsed, because collapsing them would
+        # make the emptiest request produce the fullest document.
+        requested = [part.strip() for part in sections.split(",") if part.strip()]
+        # Named rather than ignored. A misspelled section that silently
+        # produced a report without it would be a document quietly missing a
+        # part somebody asked for, which is the one failure mode a report
+        # cannot afford.
+        unknown = sorted(set(requested) - set(OPTIONAL_SECTIONS))
+        if unknown:
+            raise ValidationFailed(
+                f"No such report section: {', '.join(unknown)}. "
+                f"Choose from: {', '.join(OPTIONAL_SECTIONS)}."
+            )
+        chosen = frozenset(requested)
+
+    report = await build_report(
+        session,
+        tenant.organization_id,
+        technical=kind == "technical",
+        sections=chosen,
+        window_days=days,
+    )
     name = report["organization"]["name"]
 
     if format == "html":

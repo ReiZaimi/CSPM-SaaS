@@ -834,6 +834,184 @@ operate.
 
 ---
 
+## 29. The remediation queue joins the finding in the browser
+
+**Spec:** none. `UI.md` section 3 describes the queue; nothing said what a row
+had to contain.
+
+`GET /remediation` returns the task and nothing of the finding behind it -- no
+title, no rule, no asset -- so every row said the same three things: a priority
+badge, a status, and a link reading "View finding". Everything on the card was
+about the record and nothing was about the problem, and a person deciding what
+to work on next had to open each one to find out what it was.
+
+The finding is therefore fetched per task in the browser, under the same
+`["finding", id]` cache key its own page uses, so opening a row from the queue
+costs no request at all. That is a round trip per task rather than a join, which
+is the right trade at this size: the queue is bounded by work a human created,
+and the alternative -- widening the endpoint's response -- is a change to a
+stable API for a display concern. It stops being the right trade if the queue
+ever grows into the hundreds, and at that point the serializer should carry a
+finding summary.
+
+`RemediationOut` is otherwise unchanged, and the API note the endpoint returns
+when work is marked done is now shown rather than discarded: marking a task done
+never closes a finding, and the sentence saying CloudGuard will look again is
+the whole reason that is not a broken promise.
+
+## 30. Actions that do not navigate say so in a toast
+
+**Spec:** none.
+
+Three actions on the finding page and one in the remediation queue changed a
+record without moving the reader anywhere, and two of them said nothing at all
+-- marking a finding in progress and accepting a risk both wrote to the audit
+log and left an unchanged screen. `sonner` was already vendored as
+`components/ui/sonner.tsx` and never mounted.
+
+Toasts are used for exactly this: the outcome of an action that has no page of
+its own. What stays inline is anything a reader must be able to re-read later --
+a failed report generation, an expired session, the verified-fixed banner --
+because a message that disappears after four seconds is not where a security
+product puts a fact somebody may need to act on.
+
+---
+
+## 31. A navigation styled as a button is a link, not a button
+
+**Spec:** none.
+
+Fourteen places dressed a route change as a button by handing Base UI's
+`Button` a `render={<Link />}`. Base UI warned on every one of them, and the
+warning was right for a reason that matters: it renders with `nativeButton`
+true, which asserts native button semantics over an element that has none.
+
+The tempting central fix -- defaulting `nativeButton` to false whenever a
+`render` is passed -- is wrong, and the tests caught it. Base UI then gives the
+element `role="button"`, so an anchor announces itself as a button to a screen
+reader and loses what a link is actually for: middle-click, ctrl-click, "open
+in new tab", and the status bar showing where it goes.
+
+So these render a real `Link` wearing the button's classes --
+`className={buttonVariants({ variant, size })}`, wrapped in `cn()` when there
+is anything to merge -- which is shadcn's own recipe for this case. `Button` is
+kept for things that act rather than navigate. The rule is worth stating because
+the wrong version reads as more idiomatic: *if it changes the URL it is a
+`Link`, whatever it looks like.*
+
+---
+
+## 32. A report can leave things out, but not the terms it is read on
+
+**Spec:** `UI.md` section 3 described two fixed documents. A frontend brief
+asked for period, scope and section options.
+
+**Sections and a window, yes.** `GET /reports/{kind}` now takes `days` (the
+activity window: verified fixes, completed work, and how much of the trend line
+is drawn) and `sections` (a comma-separated subset of top risks, attack paths,
+compliance, remediation, findings). Two of those sections are new content
+rather than new switches: the report can now carry the shortest attack paths
+with the link worth cutting, and remediation progress with work *claimed* and
+fixes *proved* side by side and never summed.
+
+Three rules hold the shape:
+
+* **The posture block and the evidence caveats are not optional.** Coverage,
+  staleness and collection failures are the terms every number in the document
+  is read on. A report that could drop "12% of checks reached no verdict" would
+  let somebody produce a cleaner-looking PDF by unticking a box, which is the
+  same transformation — "we could not look" into "we looked and it was fine" —
+  that this product refuses everywhere else.
+* **What was left out is printed on the cover.** Once a PDF has been forwarded
+  twice, an omission somebody chose looks exactly like an absence of evidence,
+  and only one of those is true.
+* **An absent `sections` means all of them; an empty one means none.** The two
+  are distinguished rather than collapsed, because collapsing them would make
+  the emptiest request produce the fullest document. An unknown section name is
+  a 422 rather than a silent omission.
+
+**The window does not touch the posture, and that is deliberate.** A score, the
+open findings and the severity split are a reading of *now*. Giving them a date
+range would invite "our score over the last quarter", which no scan can answer
+and which this product does not measure. What the window legitimately bounds is
+activity — fixes verified, work completed — and the trend, which is cut to the
+window rather than resampled: every point is a reading that happened.
+
+**Scope is not offered, and the reason is not effort.** A per-subscription
+report would have to recompute the score, the coverage ratio and the freshness
+for that scope; anything less produces a document whose headline is estate-wide
+and whose list is one subscription, which is the most quietly misleading report
+this product could print. It stays out until the posture itself can be scoped.
+
+---
+
+## 33. A finding says what it is part of, from its own endpoint
+
+**Spec:** `UI.md` section 3 listed what a finding detail must answer. Nothing
+there said whether the finding was one fault or one link in a route.
+
+The graph has been able to answer this since attack paths were built, and the
+finding page could not ask: `ResourceSummary` carries the database id and the
+routes are keyed by provider resource id, so the browser had nothing to match
+on. The gap was real rather than cosmetic — the findings list ranks problems
+one at a time, and a medium misconfiguration on a host standing between the
+internet and customer data is not a medium problem.
+
+`GET /findings/{id}/attack-paths` answers it. Three choices in that shape:
+
+* **Its own endpoint, not a field on the finding.** It costs a graph build, and
+  the page that answers "what is wrong" must not wait on one. The panel is
+  fetched after the page renders; a finding with no asset never asks at all.
+* **Membership is asked of the whole route.** A misconfiguration on the jump
+  box at the start and one on the storage account at the end are the same
+  problem seen from two ends. The response says which by way of `asset_role`
+  (`ENTRY`/`STEP`/`TARGET`), because that is what decides the action.
+* **An empty answer is not an all-clear, and does not read as one.** What counts
+  as sensitive is declared per subscription, so an estate that has classified
+  nothing yields no routes. The panel says that in as many words rather than
+  printing a reassuring dash.
+
+`serialize_path` moved from the attack-paths route into `services/graph.py`,
+because two endpoints now render the same object and a second copy of that
+serializer is how two screens start disagreeing about one route.
+
+---
+
+## 34. The asset hierarchy is counted server-side, or it is a lie
+
+**Spec:** `UI.md` section 3 described a filterable inventory. A frontend brief
+asked for the subscription → resource group → resource tree.
+
+The page already grouped by resource group, in the browser, over the fifty rows
+it had. That is fine as a visual aid to one page and wrong as a hierarchy: a
+resource group whose assets straddled two pages appeared twice, each time
+holding a fraction of its findings — and the number a reader takes away from a
+tree is exactly the count it puts beside a group's name.
+
+So `GET /assets/hierarchy` aggregates over the whole estate in one query and
+returns it whole. The tree it feeds is a summary, not a page of rows; the list
+keeps paging, and the two are offered as two readings of one inventory rather
+than as one replacing the other. Expanding a group asks `/assets` for that
+group, so no level of the tree is ever assembled out of something it only
+partly has.
+
+**The resource group is read, not stored.** An ARM id spells out its own
+subscription and resource group, so the fifth segment *is* the group —
+`split_part(provider_resource_id, '/', 5)`, positional because ARM treats
+`/resourcegroups/` and `/resourceGroups/` as the same path, and guarded by an
+`ILIKE '/subscriptions/%'` so a directory principal's id is never sliced into
+an invented group. The backend derives containment the same way when it builds
+the asset graph, so the tree and the graph agree by construction.
+
+**A directory asset is not an asset with an unknown subscription.** Users and
+service principals belong to the tenant, which outlives every subscription
+under it, so they are a named scope of their own. For the same reason, assets
+sitting directly in a subscription are labelled as that rather than as
+"Ungrouped", which would read as somebody's tagging oversight instead of as
+where they actually are.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

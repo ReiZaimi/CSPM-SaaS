@@ -8,9 +8,15 @@ import { useT } from "@/i18n";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { StatusPill } from "@/components/security/StatusPill";
 import { AttackPathRoute } from "@/components/graph/AttackPathRoute";
-import { DetailSkeleton, EmptyState, ErrorState } from "@/components/common/states";
+import {
+  Breadcrumbs,
+  DetailSkeleton,
+  EmptyState,
+  ErrorState,
+} from "@/components/common/states";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/format";
 import {
   Card,
   CardContent,
@@ -67,9 +73,12 @@ export function RiskDetailPage() {
           onRetry={missing ? undefined : () => refetch()}
           action={
             missing ? (
-              <Button variant="outline" render={<Link to="/risks" />}>
+              <Link
+                to="/risks"
+                className={buttonVariants({ variant: "outline" })}
+              >
                 {t.risks.backToRisks}
-              </Button>
+              </Link>
             ) : undefined
           }
         />
@@ -86,7 +95,12 @@ export function RiskDetailPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <BackLink label={t.risks.backToRisks} />
+      <Breadcrumbs
+        trail={[
+          { label: t.risks.title, to: "/risks" },
+          { label: data.title },
+        ]}
+      />
 
       <div>
         <div className="flex flex-wrap items-center gap-3">
@@ -265,15 +279,16 @@ export function RiskDetailPage() {
 
 function BackLink({ label }: { label: string }) {
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="-ml-2 self-start text-muted-foreground"
-      render={<Link to="/risks" />}
+    <Link
+      to="/risks"
+      className={cn(
+        buttonVariants({ variant: "ghost", size: "sm" }),
+        "-ml-2 self-start text-muted-foreground",
+      )}
     >
       <ArrowLeftIcon data-icon="inline-start" />
       {label}
-    </Button>
+    </Link>
   );
 }
 

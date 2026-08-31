@@ -1,15 +1,40 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from app.core.deps import DbSession, Tenant
 from app.core.enums import ContextSource, FindingStatus, Level
 from app.core.errors import NotFound, envelope
+from app.models.cloud_account import CloudAccount
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+# The resource group, read out of the provider's own identifier.
+#
+# An ARM id spells out where the resource sits -- ``/subscriptions/{id}/
+# resourceGroups/{name}/providers/...`` -- so the fifth segment *is* the group
+# and nothing needs storing or asking. Positional rather than pattern-matched
+# on the segment name, because ARM treats `/resourcegroups/` and
+# `/resourceGroups/` as the same path and an estate whose ids arrive in the
+# other casing would otherwise report every asset as ungrouped.
+#
+# The guard matters: a directory asset (`/principals/...`) has no fifth segment
+# to mean anything, and slicing one anyway would invent a resource group out of
+# a principal id.
+# What the tree calls the set of assets that belong to no subscription: the
+# directory itself, which outlives every subscription under it.
+DIRECTORY_SCOPE = "directory"
+
+RESOURCE_GROUP = case(
+    (
+        ResourceRecord.provider_resource_id.ilike("/subscriptions/%/resourcegroups/%"),
+        func.split_part(ResourceRecord.provider_resource_id, "/", 5),
+    ),
+    else_=None,
+)
 
 
 def _fact(value: object, source: ContextSource) -> dict:
@@ -36,6 +61,12 @@ async def list_assets(
     criticality: Level | None = None,
     exposure: Level | None = None,
     search: str | None = None,
+    # Where the asset sits, which is how the hierarchy view drills into it.
+    # `subscription_id="directory"` is the tenant-scoped set -- users, service
+    # principals -- which belongs to no subscription at all and would otherwise
+    # be unreachable from a tree keyed by one.
+    subscription_id: str | None = None,
+    resource_group: str | None = None,
     limit: int = Query(default=100, le=500),
     offset: int = 0,
 ) -> dict:
@@ -67,6 +98,21 @@ async def list_assets(
         stmt = stmt.where(ResourceRecord.public_exposure == exposure)
     if search:
         stmt = stmt.where(ResourceRecord.name.ilike(f"%{search}%"))
+    if subscription_id == DIRECTORY_SCOPE:
+        stmt = stmt.where(ResourceRecord.cloud_account_id.is_(None))
+    elif subscription_id:
+        stmt = stmt.where(
+            ResourceRecord.cloud_account_id.in_(
+                select(CloudAccount.id).where(
+                    CloudAccount.organization_id == tenant.organization_id,
+                    CloudAccount.subscription_id == subscription_id,
+                )
+            )
+        )
+    if resource_group:
+        # Compared case-insensitively because ARM is: a group named `Prod` and
+        # a link that says `prod` name the same place.
+        stmt = stmt.where(func.lower(RESOURCE_GROUP) == resource_group.lower())
 
     total = (
         await session.execute(
@@ -104,6 +150,118 @@ async def list_assets(
             for r, count in rows
         ],
         {"total": total, "limit": limit, "offset": offset},
+    )
+
+
+@router.get("/hierarchy")
+async def asset_hierarchy(session: DbSession, tenant: Tenant) -> dict:
+    """The estate as it is actually organised: subscriptions, then groups.
+
+    A flat inventory answers "what do I have"; it cannot answer "which part of
+    my estate is the problem", and that is the question with an owner attached
+    -- a resource group usually has one, and a subscription almost always does.
+
+    Counted in the database and returned whole. The list view pages, and a tree
+    built from one page of it would be a lie of the worst kind: a resource group
+    whose assets straddled two pages would appear twice, each time with a
+    fraction of its findings.
+    """
+    open_findings = (
+        select(Finding.resource_id, func.count().label("open"))
+        .where(
+            Finding.organization_id == tenant.organization_id,
+            Finding.status.in_([FindingStatus.OPEN, FindingStatus.IN_PROGRESS]),
+        )
+        .group_by(Finding.resource_id)
+        .subquery()
+    )
+
+    rows = (
+        await session.execute(
+            select(
+                ResourceRecord.cloud_account_id,
+                RESOURCE_GROUP.label("resource_group"),
+                func.count(ResourceRecord.id),
+                func.coalesce(func.sum(open_findings.c.open), 0),
+            )
+            .outerjoin(open_findings, open_findings.c.resource_id == ResourceRecord.id)
+            .where(ResourceRecord.organization_id == tenant.organization_id)
+            .group_by(ResourceRecord.cloud_account_id, RESOURCE_GROUP)
+        )
+    ).all()
+
+    accounts = {
+        account.id: account
+        for account in (
+            await session.execute(
+                select(CloudAccount).where(
+                    CloudAccount.organization_id == tenant.organization_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+    scopes: dict[str, dict] = {}
+    for account_id, group, asset_count, finding_count in rows:
+        account = accounts.get(account_id) if account_id else None
+        # A subscription row with no subscription id is not a scope anybody can
+        # drill into, so it falls back to the directory bucket rather than
+        # keying the tree on null.
+        key = (account.subscription_id if account else None) or DIRECTORY_SCOPE
+        scope = scopes.setdefault(
+            key,
+            {
+                "id": key,
+                "name": (
+                    account.display_name or account.subscription_id
+                    if account
+                    else "Directory"
+                ),
+                # Named rather than inferred from a null id: a directory asset
+                # is not an asset whose subscription is unknown, it is one that
+                # belongs to the tenant instead.
+                "kind": "SUBSCRIPTION" if account else "DIRECTORY",
+                "asset_count": 0,
+                "open_findings": 0,
+                "groups": [],
+            },
+        )
+        scope["asset_count"] += int(asset_count)
+        scope["open_findings"] += int(finding_count)
+        scope["groups"].append(
+            {
+                # Null where the asset sits directly in the subscription rather
+                # than in a group. Left null rather than called "Ungrouped",
+                # which would read as somebody's oversight.
+                "name": group,
+                "asset_count": int(asset_count),
+                "open_findings": int(finding_count),
+            }
+        )
+
+    # Worst first at both levels, so the tree opens on the part of the estate
+    # with the most to answer for rather than on whichever came back first.
+    ordered = sorted(
+        scopes.values(),
+        key=lambda scope: (-scope["open_findings"], -scope["asset_count"], scope["name"]),
+    )
+    for scope in ordered:
+        scope["groups"].sort(
+            key=lambda group: (
+                -group["open_findings"],
+                -group["asset_count"],
+                group["name"] or "",
+            )
+        )
+
+    return envelope(
+        ordered,
+        {
+            "total_assets": sum(scope["asset_count"] for scope in ordered),
+            "total_open_findings": sum(scope["open_findings"] for scope in ordered),
+        },
     )
 
 

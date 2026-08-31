@@ -1,7 +1,16 @@
-import type { ComponentType, ReactNode } from "react";
+import { Fragment, type ComponentType, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { AlertCircleIcon } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -44,6 +53,50 @@ export function PageHeader({
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </div>
+  );
+}
+
+/**
+ * Where the reader is, and the way back up.
+ *
+ * Detail pages each had a lone "← Findings" button, which answers only one of
+ * the two questions somebody arriving from a search result or a shared link
+ * asks. A trail answers both: what this page is a detail *of*, and what it is
+ * called -- and it is the same shape on every detail screen, so the way back is
+ * always in the same place.
+ *
+ * The last entry is the page itself and is deliberately not a link: offering to
+ * navigate to where you already are is noise.
+ */
+export function Breadcrumbs({
+  trail,
+  className,
+}: {
+  trail: { label: string; to?: string }[];
+  className?: string;
+}) {
+  return (
+    <Breadcrumb className={className}>
+      <BreadcrumbList>
+        {trail.map((crumb, index) => {
+          const last = index === trail.length - 1;
+          return (
+            <Fragment key={`${crumb.label}-${index}`}>
+              <BreadcrumbItem className="min-w-0">
+                {crumb.to && !last ? (
+                  <BreadcrumbLink render={<Link to={crumb.to} />}>
+                    {crumb.label}
+                  </BreadcrumbLink>
+                ) : (
+                  <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                )}
+              </BreadcrumbItem>
+              {!last && <BreadcrumbSeparator />}
+            </Fragment>
+          );
+        })}
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }
 

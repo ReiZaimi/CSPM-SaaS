@@ -43,3 +43,17 @@ globalThis.matchMedia ??= ((query: string) => ({
  * whole of what a faithful implementation would achieve here.
  */
 Element.prototype.scrollIntoView ??= function scrollIntoView() {};
+
+/**
+ * jsdom implements no `PointerEvent`, and Base UI's checkbox constructs one to
+ * forward a click that carried modifier keys. Without it, clicking a checkbox
+ * in a test throws `PointerEvent is not a constructor` from inside the
+ * primitive — a failure about the environment rather than about the component.
+ *
+ * A subclass of `MouseEvent`, which is what jsdom has and what carries the
+ * modifier state the primitive reads. The pointer-specific fields nothing
+ * under test looks at are simply absent.
+ */
+class PointerEventStub extends MouseEvent {}
+
+globalThis.PointerEvent ??= PointerEventStub as unknown as typeof PointerEvent;

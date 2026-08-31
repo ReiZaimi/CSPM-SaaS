@@ -1,11 +1,18 @@
 import { Suspense, lazy } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRightIcon, CloudOffIcon, ScanLineIcon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  CloudOffIcon,
+  GitCompareArrowsIcon,
+  RouteIcon,
+  ScanLineIcon,
+  ScissorsIcon,
+} from "lucide-react";
 
 import { ApiError, api, auth } from "@/lib/api";
 import { supabaseSignOut } from "@/lib/supabase";
-import type { CloudAccount, Dashboard } from "@/lib/types";
+import type { AttackPath, ChangeEvent, CloudAccount, Dashboard } from "@/lib/types";
 import { useT } from "@/i18n";
 /**
  * The chart, fetched after the page it sits on.
@@ -28,7 +35,7 @@ import {
   ErrorState,
   PageHeader,
 } from "@/components/common/states";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -38,7 +45,7 @@ import {
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn, formatDateTime } from "@/lib/format";
+import { cn, formatDate, formatDateTime } from "@/lib/format";
 
 /**
  * The page that answers "how secure am I right now".
@@ -67,6 +74,26 @@ export function DashboardPage() {
     retry: false,
   });
 
+  // The two readings the dashboard was missing, and each is a different kind of
+  // question from the score. "What is wrong together" ranks by how few hops
+  // separate the internet from something worth taking, and "what moved" is the
+  // only thing here that is about the last week rather than about right now.
+  // Both are asked for small and fail quietly: a dashboard that cannot draw its
+  // last panel is still a dashboard.
+  const paths = useQuery({
+    queryKey: ["dashboard-attack-paths"],
+    queryFn: () =>
+      api.get<AttackPath[]>("/api/v1/attack-paths?limit=3").then((r) => r.data),
+    retry: false,
+  });
+
+  const changes = useQuery({
+    queryKey: ["dashboard-changes"],
+    queryFn: () =>
+      api.get<ChangeEvent[]>("/api/v1/changes?days=7&limit=5").then((r) => r.data),
+    retry: false,
+  });
+
   if (isLoading) return <DashboardSkeleton />;
   if (error) return <DashboardError error={error} onRetry={() => refetch()} />;
   if (!data) return null;
@@ -85,9 +112,12 @@ export function DashboardPage() {
               : "CloudGuard needs read access to your Azure environment before it can assess anything. It holds no credential of yours and performs no writes."
           }
           action={
-            <Button render={<Link to={hasConnection ? "/scans" : "/connections"} />}>
+            <Link
+              to={hasConnection ? "/scans" : "/connections"}
+              className={buttonVariants()}
+            >
               {hasConnection ? t.dashboard.runFirstScan : t.connection.connectAzure}
-            </Button>
+            </Link>
           }
         />
       </div>
@@ -104,17 +134,17 @@ export function DashboardPage() {
         description={`Last assessed ${formatDateTime(data.last_scan.completed_at)}`}
         actions={
           <>
-            <Button variant="outline" render={<Link to="/scans" />}>
+            <Link to="/scans" className={buttonVariants({ variant: "outline" })}>
               {t.scans.runScan}
-            </Button>
+            </Link>
             {/* The two things anyone does with a posture: read it again, or
                 write it down. This page is where the second decision gets
                 made -- somebody looking at a score is the person who wants it
                 on paper -- and until now nothing here said reports existed. */}
-            <Button variant="ghost" render={<Link to="/reports" />}>
+            <Link to="/reports" className={buttonVariants({ variant: "ghost" })}>
               {t.reports.title}
               <ArrowRightIcon data-icon="inline-end" />
-            </Button>
+            </Link>
           </>
         }
       />
@@ -193,15 +223,16 @@ export function DashboardPage() {
           <CardDescription>
             Ranked by risk to your business, not by how many alerts fired
           </CardDescription>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="col-start-2 row-span-2 row-start-1 self-start justify-self-end"
-            render={<Link to="/risks" />}
+          <Link
+            to="/risks"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "col-start-2 row-span-2 row-start-1 self-start justify-self-end",
+            )}
           >
             View all
             <ArrowRightIcon data-icon="inline-end" />
-          </Button>
+          </Link>
         </CardHeader>
         <CardContent className="px-0">
           {data.top_risks.length === 0 ? (
@@ -212,9 +243,13 @@ export function DashboardPage() {
             <ol>
               {data.top_risks.map((risk, index) => (
                 <li key={risk.id}>
+                  {/* The risk itself, not the list it came from. Ranking five
+                      risks and then sending every one of them to the same
+                      unfiltered table made the reader find their way back to
+                      the row they had just clicked. */}
                   <Link
-                    to="/risks"
-                    className="flex items-center gap-3 border-b px-6 py-3 transition-colors last:border-0 hover:bg-accent/50"
+                    to={`/risks/${risk.id}`}
+                    className="group flex items-center gap-3 border-b px-6 py-3 transition-colors last:border-0 hover:bg-accent/50"
                   >
                     <span className="w-4 shrink-0 text-xs tabular-nums text-muted-foreground">
                       {index + 1}
@@ -222,6 +257,10 @@ export function DashboardPage() {
                     <SeverityBadge level={risk.risk_level} />
                     <span className="flex-1 truncate text-sm">{risk.title}</span>
                     <RiskScore score={Number(risk.risk_score)} />
+                    <ArrowRightIcon
+                      className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                      aria-hidden
+                    />
                   </Link>
                 </li>
               ))}
@@ -230,19 +269,26 @@ export function DashboardPage() {
         </CardContent>
       </Card>
 
+      {/* What is wrong together, and what moved --------------------------- */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <AttackPathsPanel paths={paths.data} />
+        <RecentChangesPanel events={changes.data} />
+      </div>
+
       {/* Where the numbers came from ------------------------------------- */}
       <Card>
         <CardHeader>
           <CardTitle>{t.dashboard.lastScan}</CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="col-start-2 row-span-2 row-start-1 self-start justify-self-end"
-            render={<Link to="/scans" />}
+          <Link
+            to="/scans"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "col-start-2 row-span-2 row-start-1 self-start justify-self-end",
+            )}
           >
             Scan history
             <ArrowRightIcon data-icon="inline-end" />
-          </Button>
+          </Link>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm">
           <StatusPill status={data.last_scan.status} />
@@ -301,6 +347,156 @@ function DashboardError({ error, onRetry }: { error: unknown; onRetry: () => voi
         }
       />
     </div>
+  );
+}
+
+/**
+ * The shortest routes, named rather than counted.
+ *
+ * Three at most, and each one says where it starts, what it reaches and how
+ * many links are in between -- because the number of paths is not a thing
+ * anybody can act on and "internet → jump box → identity → customer data" is.
+ */
+function AttackPathsPanel({ paths }: { paths: AttackPath[] | undefined }) {
+  const t = useT();
+  // Guarded rather than trusted: this panel is the least important thing on
+  // the page and must never be the reason it fails to render.
+  const rows = Array.isArray(paths) ? paths.slice(0, 3) : [];
+
+  return (
+    <Card className="flex flex-col">
+      <CardHeader>
+        <CardTitle>{t.attackPaths.title}</CardTitle>
+        <CardDescription>
+          What is wrong together — ranked by how few hops separate the internet
+          from something worth taking
+        </CardDescription>
+        <Link
+          to="/attack-paths"
+          className={cn(
+            buttonVariants({ variant: "ghost", size: "sm" }),
+            "col-start-2 row-span-2 row-start-1 self-start justify-self-end",
+          )}
+        >
+          View all
+          <ArrowRightIcon data-icon="inline-end" />
+        </Link>
+      </CardHeader>
+      <CardContent className="flex-1 px-0">
+        {rows.length === 0 ? (
+          <p className="px-6 pb-2 text-sm leading-relaxed text-muted-foreground">
+            No route from an exposed asset to a sensitive one in the last scan.
+            What counts as sensitive is something you declare, so the attack
+            paths page says what CloudGuard had to work with.
+          </p>
+        ) : (
+          <ol>
+            {rows.map((path) => (
+              <li key={`${path.entry.id}->${path.target.id}`}>
+                <Link
+                  to="/attack-paths"
+                  className="flex items-start gap-3 border-b px-6 py-3 transition-colors last:border-0 hover:bg-accent/50"
+                >
+                  <RouteIcon
+                    className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm">
+                      {path.entry.name}
+                      <span className="mx-1.5 text-muted-foreground">→</span>
+                      {path.target.name}
+                    </p>
+                    {path.cheapest_break && (
+                      <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-ok">
+                        <ScissorsIcon className="size-3 shrink-0" aria-hidden />
+                        {path.cheapest_break.description}
+                      </p>
+                    )}
+                  </div>
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {path.hops}{" "}
+                    {path.hops === 1 ? t.attackPaths.oneHop : t.attackPaths.hops}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ol>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * What moved this week.
+ *
+ * Everything else on this page is a photograph of now. This is the only panel
+ * that answers the question somebody actually asks after a week away, and it
+ * is deliberately small: five rows and a way through to the feed.
+ */
+function RecentChangesPanel({ events }: { events: ChangeEvent[] | undefined }) {
+  const t = useT();
+  const rows = Array.isArray(events) ? events.slice(0, 5) : [];
+
+  return (
+    <Card className="flex flex-col">
+      <CardHeader>
+        <CardTitle>{t.changes.title}</CardTitle>
+        <CardDescription>
+          What moved in the last seven days, newest first
+        </CardDescription>
+        <Link
+          to="/changes"
+          className={cn(
+            buttonVariants({ variant: "ghost", size: "sm" }),
+            "col-start-2 row-span-2 row-start-1 self-start justify-self-end",
+          )}
+        >
+          View all
+          <ArrowRightIcon data-icon="inline-end" />
+        </Link>
+      </CardHeader>
+      <CardContent className="flex-1 px-0">
+        {rows.length === 0 ? (
+          <p className="px-6 pb-2 text-sm leading-relaxed text-muted-foreground">
+            {t.changes.empty}. A scan that finds nothing different writes
+            nothing here, so this is a quiet week rather than a gap.
+          </p>
+        ) : (
+          <ol>
+            {rows.map((event) => (
+              <li key={event.id}>
+                <Link
+                  to="/changes"
+                  className="flex items-center gap-3 border-b px-6 py-3 transition-colors last:border-0 hover:bg-accent/50"
+                >
+                  <GitCompareArrowsIcon
+                    className="size-4 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm">{event.asset.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {t.changes.kind[event.change]}
+                      {event.previous_value && event.current_value && (
+                        <>
+                          {" · "}
+                          {event.previous_value} → {event.current_value}
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatDate(event.observed_at)}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ol>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

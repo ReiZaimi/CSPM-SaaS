@@ -21,17 +21,19 @@ screen it was taken from and nobody can ask it a follow-up question:
   the compliance screen carries.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import FindingStatus, Severity
+from app.core.enums import FindingStatus, RemediationStatus, Severity
 from app.models.finding import Finding
 from app.models.organization import Organization
+from app.models.remediation import RemediationTask
 from app.models.resource import ResourceRecord
 from app.services import compliance as compliance_service
+from app.services import graph as graph_service
 from app.services.dashboard import build_dashboard
 
 # How many findings the technical report lists. A tenant with four thousand
@@ -40,6 +42,35 @@ from app.services.dashboard import build_dashboard
 # arbitrary slice. The count it was cut from is printed beside it, because a
 # document that quietly shows 500 of 4000 is a lie of omission.
 MAX_TECHNICAL_FINDINGS = 500
+
+# Which parts of a report a reader can leave out.
+#
+# Not all of it: the posture block and the evidence caveats are the report, and
+# a document that could omit "12% of checks reached no verdict" would let
+# somebody produce a cleaner-looking PDF by unticking a box. What is optional is
+# the parts that are additional detail rather than the terms the numbers are
+# read on.
+OPTIONAL_SECTIONS = ("top_risks", "attack_paths", "compliance", "remediation", "findings")
+
+# What each section is called to somebody reading the document rather than
+# calling the API.
+SECTION_LABELS = {
+    "top_risks": "top risks",
+    "attack_paths": "attack paths",
+    "compliance": "compliance coverage",
+    "remediation": "remediation progress",
+    "findings": "the full findings list",
+}
+
+# The activity window: how far back "verified fixed" and "work completed" look,
+# and how much of the trend line is drawn. It does not filter the posture, which
+# is a reading of now -- a score is not a thing that has a date range.
+DEFAULT_WINDOW_DAYS = 30
+MAX_WINDOW_DAYS = 365
+
+# Routes carried into a report. The screen offers every path; a document wants
+# the ones somebody will act on this quarter, shortest first.
+MAX_REPORT_PATHS = 5
 
 SEVERITY_ORDER = [
     Severity.CRITICAL,
@@ -54,6 +85,8 @@ async def build_report(
     organization_id: UUID,
     *,
     technical: bool,
+    sections: frozenset[str] | None = None,
+    window_days: int = DEFAULT_WINDOW_DAYS,
     now: datetime | None = None,
 ) -> dict:
     """Everything a report template renders, in one dictionary.
@@ -63,22 +96,58 @@ async def build_report(
     worse than no executive summary: the first question anyone asks of a
     security report is why two pages of it disagree.
     """
+    chosen = frozenset(sections if sections is not None else OPTIONAL_SECTIONS)
+    moment = now or datetime.now(UTC)
+    since = moment - timedelta(days=window_days)
+
     dashboard = await build_dashboard(session, organization_id)
     organization = await session.get(Organization, organization_id)
-    frameworks = await compliance_service.list_frameworks(session, organization_id)
 
     report = {
-        "generated_at": (now or datetime.now(UTC)).isoformat(),
+        "generated_at": moment.isoformat(),
         "organization": {
             "name": organization.name if organization else "Unknown organization",
             "industry": organization.industry if organization else None,
             "country": organization.country if organization else None,
         },
         "kind": "technical" if technical else "executive",
-        "posture": _posture(dashboard),
+        # Which optional parts this document contains. Printed on the cover as
+        # well as branched on here: a reader handed a report with no compliance
+        # section should be told it was left out, not left to conclude that
+        # CloudGuard assesses no frameworks.
+        "sections": sorted(chosen),
+        # Named on the cover. An omission somebody chose looks exactly like an
+        # absence of evidence once a PDF has been forwarded twice, and only one
+        # of those is true.
+        "omitted_sections": [
+            SECTION_LABELS[name]
+            for name in OPTIONAL_SECTIONS
+            if name not in chosen and (technical or name != "findings")
+        ],
+        "window_days": window_days,
+        "posture": _posture(
+            dashboard,
+            window_days=window_days,
+            since=since,
+            resolved_in_window=await _verified_resolved(session, organization_id, since),
+        ),
         "evidence": _evidence(dashboard),
-        "top_risks": dashboard["top_risks"],
-        "compliance": {
+    }
+
+    if "top_risks" in chosen:
+        report["top_risks"] = dashboard["top_risks"]
+
+    if "attack_paths" in chosen:
+        report["attack_paths"] = await _attack_paths(session, organization_id)
+
+    if "remediation" in chosen:
+        report["remediation"] = await _remediation(
+            session, organization_id, since=since, dashboard=dashboard
+        )
+
+    if "compliance" in chosen:
+        frameworks = await compliance_service.list_frameworks(session, organization_id)
+        report["compliance"] = {
             "frameworks": frameworks,
             # Repeated in the document rather than left to the reader's memory
             # of the screen. A PDF gets forwarded to auditors and boards, and
@@ -89,10 +158,9 @@ async def build_report(
                 "it is not a statement that a requirement is met in law or that "
                 "an audit would pass."
             ),
-        },
-    }
+        }
 
-    if technical:
+    if technical and "findings" in chosen:
         findings, total = await _findings(session, organization_id)
         report["findings"] = findings
         report["finding_total"] = total
@@ -101,12 +169,23 @@ async def build_report(
     return report
 
 
-def _posture(dashboard: dict) -> dict:
+def _posture(
+    dashboard: dict,
+    *,
+    window_days: int = DEFAULT_WINDOW_DAYS,
+    since: datetime | None = None,
+    resolved_in_window: int | None = None,
+) -> dict:
     """The headline numbers, with the severity order fixed rather than sorted.
 
     A dictionary iterated in insertion order would put the severities in
     whatever order the aggregate query returned them, which on a quiet estate
     is "whatever happened to exist" -- so a report could open with LOW.
+
+    The window touches only the activity counts and the trend. The score, the
+    open findings and the severity split are a reading of now: giving them a
+    date range would invite "our score over the last quarter", which is not a
+    thing this product measures and not a thing a scan can answer.
     """
     severity = dashboard["findings_by_severity"]
     status = dashboard["findings_by_status"]
@@ -116,7 +195,12 @@ def _posture(dashboard: dict) -> dict:
         "open_finding_count": dashboard["open_finding_count"],
         "asset_count": dashboard["asset_count"],
         "remediation_rate": dashboard["remediation_rate"],
-        "verified_resolved_last_30_days": dashboard["verified_resolved_last_30_days"],
+        "window_days": window_days,
+        "verified_resolved_in_window": (
+            dashboard["verified_resolved_last_30_days"]
+            if resolved_in_window is None
+            else resolved_in_window
+        ),
         "by_severity": [
             {"severity": level.value, "count": int(severity.get(level.value, 0))}
             for level in SEVERITY_ORDER
@@ -126,7 +210,129 @@ def _posture(dashboard: dict) -> dict:
         # quietly absorb: a finding accepted as risk is still in the
         # environment, and is counted neither as open nor as fixed.
         "accepted_risk_count": int(status.get(FindingStatus.ACCEPTED_RISK.value, 0)),
-        "history": dashboard["history"],
+        # Cut to the window, so a report asked for the last 30 days does not
+        # draw a line reaching back six months. Cut rather than resampled: each
+        # point is a reading that happened, and inventing an evenly spaced
+        # series would draw movement nobody measured.
+        "history": _history_within(
+            dashboard["history"],
+            since or datetime.now(UTC) - timedelta(days=window_days),
+        ),
+    }
+
+
+def _history_within(history: list[dict], cutoff: datetime) -> list[dict]:
+    """The readings inside the window, in the order they were given.
+
+    Taken from the same cutoff the counts use, rather than from a second call
+    to the clock: a report whose trend and whose "verified fixed" count covered
+    slightly different periods would be wrong in a way nobody could see.
+    """
+    kept = []
+    for entry in history:
+        observed = entry.get("observed_at")
+        if not observed:
+            continue
+        try:
+            moment = datetime.fromisoformat(observed)
+        except ValueError:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        if moment >= cutoff:
+            kept.append(entry)
+    return kept
+
+
+async def _verified_resolved(
+    session: AsyncSession, organization_id: UUID, since: datetime
+) -> int:
+    """Findings a later scan observed passing, inside the window.
+
+    Counted here rather than taken from the dashboard's fixed thirty days,
+    because the window is the one thing a reader chose about this document.
+    """
+    return int(
+        (
+            await session.execute(
+                select(func.count()).where(
+                    Finding.organization_id == organization_id,
+                    Finding.status == FindingStatus.RESOLVED,
+                    Finding.resolved_at >= since,
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def _attack_paths(session: AsyncSession, organization_id: UUID) -> list[dict]:
+    """The shortest routes from something exposed to something worth taking.
+
+    Shortest first, because that ordering is the recommendation: fewer hops is
+    both likelier to be walked and cheaper to sever. Each route carries the one
+    link worth cutting, which is the only line in this section somebody can act
+    on without opening CloudGuard.
+    """
+    graph = await graph_service.load_graph(session, organization_id)
+    paths = graph.attack_paths()
+
+    serialized = []
+    for path in paths[:MAX_REPORT_PATHS]:
+        cut = path.cheapest_break()
+        serialized.append(
+            {
+                "entry": path.entry.name,
+                "target": path.target.name,
+                "hops": path.hops,
+                "steps": path.describe(),
+                "cheapest_break": cut.describe() if cut else None,
+            }
+        )
+    return serialized
+
+
+async def _remediation(
+    session: AsyncSession,
+    organization_id: UUID,
+    *,
+    since: datetime,
+    dashboard: dict,
+) -> dict:
+    """Work in flight, work completed, and the only number that proves anything.
+
+    Tasks completed and findings verified fixed are reported side by side and
+    never added together. A task marked done is a claim; a verified fix is an
+    observation, and a report that summed them would let the claim inflate the
+    proof.
+    """
+    rows = (
+        await session.execute(
+            select(RemediationTask.status, func.count())
+            .where(RemediationTask.organization_id == organization_id)
+            .group_by(RemediationTask.status)
+        )
+    ).all()
+    counts = {str(status): int(count) for status, count in rows}
+
+    completed_in_window = int(
+        (
+            await session.execute(
+                select(func.count()).where(
+                    RemediationTask.organization_id == organization_id,
+                    RemediationTask.status == RemediationStatus.DONE,
+                    RemediationTask.completed_at >= since,
+                )
+            )
+        ).scalar_one()
+    )
+
+    return {
+        "open_tasks": counts.get(RemediationStatus.TODO.value, 0)
+        + counts.get(RemediationStatus.IN_PROGRESS.value, 0),
+        "done_tasks": counts.get(RemediationStatus.DONE.value, 0),
+        "cancelled_tasks": counts.get(RemediationStatus.CANCELLED.value, 0),
+        "completed_in_window": completed_in_window,
+        "remediation_rate": dashboard["remediation_rate"],
     }
 
 

@@ -146,4 +146,19 @@ describe("the findings list", () => {
       ).toBe(true),
     );
   });
+
+  it("orders from the column header, and asks the database to do it", async () => {
+    // Sorting used to live in a dropdown beside the filters, which left the
+    // table's own headers inert: clicking "Risk score" did nothing.
+    renderPage();
+    await screen.findByText(/of 120 findings/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by severity" }));
+
+    await waitFor(() =>
+      expect(
+        requested.some((url) => url.includes("sort=severity") && url.includes("offset=0")),
+      ).toBe(true),
+    );
+  });
 });

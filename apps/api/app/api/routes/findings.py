@@ -8,6 +8,7 @@ from sqlalchemy.sql.elements import UnaryExpression
 from app.core.deps import DbSession, Tenant
 from app.core.enums import FindingStatus, ScanStatus, Severity
 from app.core.errors import ConflictError, ValidationFailed, envelope
+from app.graph import Path
 from app.models.finding import Finding
 from app.models.resource import ResourceRecord
 from app.models.scan import Scan
@@ -21,7 +22,9 @@ from app.schemas.finding import (
 )
 from app.services import cloud_accounts as accounts_service
 from app.services import findings as service
+from app.services import graph as graph_service
 from app.services import scans as scans_service
+from app.services.graph import serialize_path
 from app.workers.scan_tasks import run_scan
 
 router = APIRouter(prefix="/findings", tags=["findings"])
@@ -118,6 +121,62 @@ async def list_findings(
         payload.append(item)
 
     return envelope(payload, {"total": total, "limit": limit, "offset": offset})
+
+
+@router.get("/{finding_id}/attack-paths")
+async def finding_attack_paths(
+    finding_id: UUID, session: DbSession, tenant: Tenant
+) -> dict:
+    """The routes this finding's asset sits on, if any.
+
+    Its own endpoint rather than a field on the finding, because it costs a
+    graph build and the finding page must not wait on one to say what is wrong.
+    The page asks for this after it has rendered, and a reader who never scrolls
+    to it has paid nothing.
+
+    Membership is asked of the whole route, not of its endpoints: a person
+    looking at a misconfiguration on the jump box at the start and a person
+    looking at one on the storage account at the end are looking at the same
+    problem, and both deserve to be told it is a route rather than an isolated
+    fault.
+    """
+    finding = await service.get_finding(session, tenant, finding_id)
+
+    # A tenant-wide finding has no asset, so it cannot be on a route. Answered
+    # as an empty list rather than a 404: "this finding is on no path" is a
+    # true and useful answer, and the page renders it as one.
+    if finding.resource_id is None:
+        return envelope([], {"total": 0, "asset": None})
+
+    resource = await session.get(ResourceRecord, finding.resource_id)
+    if resource is None:
+        return envelope([], {"total": 0, "asset": None})
+
+    graph = await graph_service.load_graph(session, tenant.organization_id)
+    paths = graph.paths_through(resource.provider_resource_id)
+
+    return envelope(
+        [
+            # Where on the route this asset sits, which changes what the reader
+            # should do about it: an entry point is how somebody gets in, a
+            # target is what they are coming for, and a hop in between is the
+            # link most likely worth cutting.
+            {
+                **serialize_path(path),
+                "asset_role": _role_on_path(path, resource.provider_resource_id),
+            }
+            for path in paths
+        ],
+        {"total": len(paths), "asset": resource.provider_resource_id},
+    )
+
+
+def _role_on_path(path: Path, resource_id: str) -> str:
+    if path.entry.provider_resource_id == resource_id:
+        return "ENTRY"
+    if path.target.provider_resource_id == resource_id:
+        return "TARGET"
+    return "STEP"
 
 
 @router.get("/{finding_id}")

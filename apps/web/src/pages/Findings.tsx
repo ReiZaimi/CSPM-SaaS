@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { SearchIcon, ShieldCheckIcon, XIcon } from "lucide-react";
+import { ArrowDownIcon, SearchIcon, ShieldCheckIcon, XIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { Finding } from "@/lib/types";
@@ -16,7 +16,7 @@ import {
   TableSkeleton,
 } from "@/components/common/states";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -34,7 +34,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDate, resourceTypeLabel } from "@/lib/format";
+import { cn, formatDate, resourceTypeLabel } from "@/lib/format";
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
 const PAGE_SIZE = 50;
@@ -208,26 +208,6 @@ export function FindingsPage() {
               <SelectItem value="ACCEPTED_RISK">Risk accepted</SelectItem>
             </SelectContent>
           </Select>
-
-          <Select
-            value={sort}
-            onValueChange={(v) =>
-              refilter(() => setSort((v as SortKey) ?? "risk"))
-            }
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-[150px]"
-              aria-label="Sort findings"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="risk">Highest risk</SelectItem>
-              <SelectItem value="severity">Severity</SelectItem>
-              <SelectItem value="recent">Most recent</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
       </div>
 
@@ -282,9 +262,12 @@ export function FindingsPage() {
                 Clear filters
               </Button>
             ) : (
-              <Button variant="outline" render={<Link to="/scans" />}>
+              <Link
+                to="/scans"
+                className={buttonVariants({ variant: "outline" })}
+              >
                 View scan coverage
-              </Button>
+              </Link>
             )
           }
         />
@@ -298,15 +281,28 @@ export function FindingsPage() {
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[45%]">Finding</TableHead>
-                    <TableHead>{t.common.severity}</TableHead>
+                    <SortableHead
+                      label={t.common.severity}
+                      sortKey="severity"
+                      active={sort}
+                      onSort={(key) => refilter(() => setSort(key))}
+                    />
                     <TableHead>{t.findings.asset}</TableHead>
-                    <TableHead className="text-right">
-                      {t.findings.riskScore}
-                    </TableHead>
+                    <SortableHead
+                      label={t.findings.riskScore}
+                      sortKey="risk"
+                      active={sort}
+                      align="right"
+                      onSort={(key) => refilter(() => setSort(key))}
+                    />
                     <TableHead>{t.common.status}</TableHead>
-                    <TableHead className="text-right">
-                      {t.findings.lastSeen}
-                    </TableHead>
+                    <SortableHead
+                      label={t.findings.lastSeen}
+                      sortKey="recent"
+                      active={sort}
+                      align="right"
+                      onSort={(key) => refilter(() => setSort(key))}
+                    />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -392,5 +388,60 @@ export function FindingsPage() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * A column that is also the way to order by it.
+ *
+ * Ordering used to live in a fourth dropdown beside the filters, which put the
+ * control somewhere other than the thing it acts on and left the table's own
+ * headers inert -- so the obvious gesture, clicking "Risk score", did nothing.
+ *
+ * One direction per column, not a toggle, because the backend orders each of
+ * these the only way that is useful: worst risk, worst severity and most
+ * recent all mean descending, and an ascending findings table would put the
+ * least urgent row at the top of a security queue.
+ */
+function SortableHead({
+  label,
+  sortKey,
+  active,
+  align = "left",
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  active: SortKey;
+  align?: "left" | "right";
+  onSort: (key: SortKey) => void;
+}) {
+  const isActive = active === sortKey;
+  return (
+    <TableHead
+      aria-sort={isActive ? "descending" : "none"}
+      className={align === "right" ? "text-right" : undefined}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        aria-label={`Sort by ${label.toLowerCase()}`}
+        className={cn(
+          "inline-flex items-center gap-1 rounded-sm transition-colors hover:text-foreground",
+          "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          align === "right" && "flex-row-reverse",
+          isActive && "text-foreground",
+        )}
+      >
+        {label}
+        <ArrowDownIcon
+          className={cn(
+            "size-3 transition-opacity",
+            isActive ? "opacity-100" : "opacity-0",
+          )}
+          aria-hidden
+        />
+      </button>
+    </TableHead>
   );
 }

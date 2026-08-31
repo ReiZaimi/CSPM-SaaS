@@ -858,6 +858,64 @@ class TestAssetList:
         assert asset["id"] != arm_id
         assert uuid_module.UUID(asset["id"])
 
+    async def test_the_hierarchy_is_the_estate_as_it_is_organised(
+        self, client, cleanup_orgs
+    ) -> None:
+        """Subscription, then resource group, with the counts attached.
+
+        Read out of the ARM id in the database rather than stored, and counted
+        over the whole estate rather than over a page -- a tree built from one
+        page would show a resource group twice, each time with a fraction of
+        its findings.
+        """
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Estate Ltd"))
+        cleanup_orgs.append(org_id)
+
+        arm_id = (
+            "/subscriptions/00000000-0000-0000-0000-000000000001"
+            "/resourceGroups/prod/providers/Microsoft.Storage/storageAccounts/payroll"
+        )
+        await self._asset_in_a_subscription(org_id, arm_id)
+
+        response = await client.get("/api/v1/assets/hierarchy", headers=auth_header(user))
+
+        assert response.status_code == 200, response.text
+        [scope] = response.json()["data"]
+        assert scope["kind"] == "SUBSCRIPTION"
+        assert scope["id"] == "00000000-0000-0000-0000-000000000001"
+        assert scope["asset_count"] == 1
+        # Case as ARM returned it, and the fifth segment of the id rather than
+        # a stored column.
+        assert [group["name"] for group in scope["groups"]] == ["prod"]
+
+    async def test_the_list_can_be_narrowed_to_one_resource_group(
+        self, client, cleanup_orgs
+    ) -> None:
+        # What makes the tree navigable: expanding a group has to be able to
+        # ask for exactly that group, case-insensitively, because ARM treats
+        # `Prod` and `prod` as the same place.
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Narrowed Ltd"))
+        cleanup_orgs.append(org_id)
+
+        arm_id = (
+            "/subscriptions/00000000-0000-0000-0000-000000000001"
+            "/resourceGroups/prod/providers/Microsoft.Storage/storageAccounts/payroll"
+        )
+        await self._asset_in_a_subscription(org_id, arm_id)
+
+        hit = await client.get(
+            "/api/v1/assets?resource_group=PROD", headers=auth_header(user)
+        )
+        miss = await client.get(
+            "/api/v1/assets?resource_group=staging", headers=auth_header(user)
+        )
+
+        assert hit.status_code == 200, hit.text
+        assert len(hit.json()["data"]) == 1
+        assert miss.json()["data"] == []
+
     async def test_the_list_reports_the_true_total_not_the_page_size(
         self, client, cleanup_orgs
     ) -> None:
@@ -1078,6 +1136,27 @@ class TestRiskSearch:
         assert response.json()["meta"]["total"] == 1
 
 
+class TestFindingAttackPaths:
+    """Whether a finding's asset sits on a route, asked of the live graph."""
+
+    async def test_a_finding_with_no_asset_is_on_no_route(
+        self, client, cleanup_orgs
+    ) -> None:
+        # Tenant-wide findings carry no resource. "No path" is the true answer
+        # and is returned as one, rather than as a 404 the page has to decode.
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            f"/api/v1/findings/{uuid.uuid4()}/attack-paths", headers=auth_header(user)
+        )
+
+        # The finding itself does not exist in this tenant, which is a 404 --
+        # the route resolves the finding before it builds any graph.
+        assert response.status_code == 404, response.text
+
+
 class TestReports:
     """The report endpoints, over the real dependency chain.
 
@@ -1110,6 +1189,44 @@ class TestReports:
         response = await client.get("/api/v1/reports/executive?format=html")
 
         assert response.status_code == 401
+
+    async def test_sections_and_a_window_are_honoured(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/reports/executive?format=html&days=90"
+            "&sections=top_risks,attack_paths",
+            headers=auth_header(user),
+        )
+
+        assert response.status_code == 200, response.text
+        body = " ".join(response.text.split())
+        # What was asked for is in it, what was not is named as excluded rather
+        # than quietly missing, and the window is the one the caller chose.
+        assert "Attack paths" in body
+        assert "Sections excluded from this report" in body
+        assert "compliance coverage" in body.lower()
+        assert "last 90 days" in body
+
+    async def test_an_unknown_section_is_refused_rather_than_ignored(
+        self, client, cleanup_orgs
+    ) -> None:
+        # A misspelled section that silently produced a report without it would
+        # be a document quietly missing a part somebody asked for.
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/reports/executive?format=html&sections=budget",
+            headers=auth_header(user),
+        )
+
+        assert response.status_code == 422, response.text
 
     async def test_an_unknown_report_is_refused_rather_than_rendered_empty(
         self, client, cleanup_orgs

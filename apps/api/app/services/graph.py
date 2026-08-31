@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import RelationshipType
 from app.domain.resource import CloudResource
-from app.graph import AssetGraph
+from app.graph import AssetGraph, Path
 from app.models.resource import ResourceRecord, ResourceRelationship
 
 
@@ -86,3 +86,50 @@ async def load_graph(session: AsyncSession, organization_id: UUID) -> AssetGraph
     ]
 
     return AssetGraph.build(resources, relationships)
+
+
+def serialize_path(path: Path) -> dict:
+    step = path.cheapest_break()
+    return {
+        "entry": {
+            "id": path.entry.provider_resource_id,
+            "name": path.entry.name,
+            "resource_type": path.entry.resource_type.value,
+            "public_exposure": path.entry.public_exposure.value,
+        },
+        "target": {
+            "id": path.target.provider_resource_id,
+            "name": path.target.name,
+            "resource_type": path.target.resource_type.value,
+            "data_sensitivity": path.target.data_sensitivity.value,
+        },
+        "hops": path.hops,
+        # The route in plain language, hop by hop. A path that only named its
+        # endpoints would be an alarm; naming the route is what makes it a
+        # thing somebody can go and cut.
+        "steps": [
+            {
+                "source": s.source.name,
+                "source_id": s.source.provider_resource_id,
+                "relationship": s.relationship.value,
+                "target": s.target.name,
+                "target_id": s.target.provider_resource_id,
+                "description": s.describe(),
+            }
+            for s in path.steps
+        ],
+        # Where to cut it. Containment cannot be removed -- a storage account
+        # has to live somewhere -- so this is always a capability hop, and the
+        # earliest one closes the way in rather than containing what somebody
+        # reaches once inside.
+        "cheapest_break": (
+            {
+                "description": step.describe(),
+                "relationship": step.relationship.value,
+                "source_id": step.source.provider_resource_id,
+                "target_id": step.target.provider_resource_id,
+            }
+            if step
+            else None
+        ),
+    }

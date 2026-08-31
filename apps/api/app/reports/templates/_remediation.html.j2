@@ -1,0 +1,42 @@
+{#
+  Work claimed, and work proved.
+
+  The two counts sit side by side and are never added. A task marked done is
+  somebody's statement that they changed something; a verified fix is a later
+  scan observing the check pass. Summing them would let the claim inflate the
+  proof, which is the one arithmetic this product refuses everywhere else.
+#}
+<h2>Remediation progress</h2>
+
+<table>
+  <tbody>
+    <tr>
+      <td>Open remediation tasks</td>
+      <td class="num">{{ report.remediation.open_tasks }}</td>
+    </tr>
+    <tr>
+      <td>Tasks marked done in the last {{ report.window_days }} days</td>
+      <td class="num">{{ report.remediation.completed_in_window }}</td>
+    </tr>
+    <tr>
+      <td>Findings verified fixed in the last {{ report.window_days }} days</td>
+      <td class="num">{{ report.posture.verified_resolved_in_window }}</td>
+    </tr>
+    <tr>
+      <td>Share of findings ever raised that are now verified fixed</td>
+      <td class="num">{{ (report.remediation.remediation_rate * 100) | round(0) | int }}%</td>
+    </tr>
+    {% if report.remediation.cancelled_tasks %}
+    <tr>
+      <td>Tasks cancelled</td>
+      <td class="num">{{ report.remediation.cancelled_tasks }}</td>
+    </tr>
+    {% endif %}
+  </tbody>
+</table>
+<p class="small muted">
+  Work marked done is a claim; a verified fix is an observation. Where the
+  first number exceeds the second, the difference is work whose effect
+  CloudGuard has not yet seen in the environment — either because no scan has
+  run since, or because the change did not have the effect expected.
+</p>

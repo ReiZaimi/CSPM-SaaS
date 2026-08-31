@@ -28,6 +28,7 @@ POST   /api/v1/scans                       GET  /api/v1/scans
 GET    /api/v1/scans/{id}
 
 GET    /api/v1/assets                      GET  /api/v1/assets/{id}
+GET    /api/v1/assets/hierarchy
 GET    /api/v1/changes
 GET    /api/v1/findings                    GET  /api/v1/findings/{id}
 GET    /api/v1/risks                       GET  /api/v1/risks/{id}
@@ -35,12 +36,15 @@ GET    /api/v1/risks                       GET  /api/v1/risks/{id}
 POST   /api/v1/remediation                 PATCH /api/v1/remediation/{id}
 POST   /api/v1/findings/{id}/accept-risk
 POST   /api/v1/findings/{id}/rescan
+GET    /api/v1/findings/{id}/attack-paths
+
+GET    /api/v1/attack-paths                GET  /api/v1/attack-paths/blast-radius/{id}
 
 GET    /api/v1/rules                       GET  /api/v1/rules/{rule_id}
 GET    /api/v1/compliance                  GET  /api/v1/compliance/{framework_id}
 
 GET    /api/v1/dashboard
-GET    /api/v1/reports/{kind}?format=pdf|html
+GET    /api/v1/reports/{kind}?format=pdf|html&days=30&sections=a,b
 ```
 
 `/cloud-accounts` is **read-only** except for `/context`: an account is a
@@ -148,6 +152,37 @@ again" are the same open finding and three different pieces of news. Cancelling
 the task, or accepting the risk, withdraws the question rather than leaving it
 pending.
 
+`/assets/hierarchy` returns the estate as it is organised — subscriptions (and
+the directory, which belongs to no subscription) each holding their resource
+groups, with asset and open-finding counts at both levels, worst first. The
+resource group is read out of the ARM id's fifth segment in the database rather
+than stored: an id states its own subscription and group, and a stored copy is
+one more thing to keep in step. Directory assets are named as such rather than
+reported as assets whose subscription is unknown.
+
+Counted over the whole estate and returned whole, unlike `/assets`, which pages.
+A tree built from one page of a paginated list would show a resource group once
+per page its assets straddled, each time with a fraction of its findings.
+
+`/assets` accordingly takes `subscription_id` and `resource_group` so the tree
+can drill in — `subscription_id=directory` is the tenant-scoped set, and
+`resource_group` compares case-insensitively because ARM treats `Prod` and
+`prod` as the same place.
+
+`/findings/{id}/attack-paths` answers whether this finding's asset stands on a
+route from an internet-facing asset to a sensitive one, and where on it —
+`asset_role` is `ENTRY`, `STEP` or `TARGET`, which is what decides the action:
+an entry point is how somebody gets in, a target is what they came for, and a
+hop in between is usually the cheapest link to cut. Membership is asked of the
+whole route rather than of its endpoints.
+
+It is a separate request rather than a field on the finding because it costs a
+graph build, and the page that answers "what is wrong" must not wait on one. A
+finding with no asset — tenant-wide — returns an empty list rather than a 404:
+"on no route" is a true answer. An empty list is never an all-clear, and the UI
+says so: what counts as sensitive is declared per subscription, so an estate
+that has classified nothing produces no routes at all.
+
 `/reports/{kind}` renders `executive` or `technical` from the evidence that
 exists right now — nothing is queued and nothing is stored. It is the one
 endpoint that does **not** return the response envelope: the body is a PDF or an
@@ -158,6 +193,21 @@ consumer unwrap and re-encode it. Errors on this path still use the envelope.
 be read without downloading one — and a deployment whose native PDF libraries
 are missing still produces something useful while that is fixed. A server that
 cannot render PDFs answers 503 `NOT_CONFIGURED` rather than 500.
+
+`days` (1–365, default 30) is the **activity window**: how far back verified
+fixes, completed remediation work and the trend line reach. It does not filter
+the posture, which is a reading of now — a security score is not a thing that
+has a date range.
+
+`sections` is a comma-separated subset of `top_risks`, `attack_paths`,
+`compliance`, `remediation`, `findings` (`findings` only means anything in the
+technical report). Omit the parameter for all of them; pass it empty for none,
+which is a posture-only report. An unknown name is refused with 422 rather than
+ignored — a misspelling that silently produced a document without the section
+somebody asked for is the one failure a report cannot afford. Whatever is left
+out is *named on the cover as excluded*, so a reader downstream can tell a
+choice from an absence of evidence. The posture block and the evidence caveats
+are not optional either way.
 
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's

@@ -72,6 +72,14 @@ class Path:
     def describe(self) -> list[str]:
         return [step.describe() for step in self.steps]
 
+    def node_ids(self) -> frozenset[str]:
+        """Every asset on the route, endpoints included."""
+        ids = {self.entry.provider_resource_id, self.target.provider_resource_id}
+        for step in self.steps:
+            ids.add(step.source.provider_resource_id)
+            ids.add(step.target.provider_resource_id)
+        return frozenset(ids)
+
     def cheapest_break(self) -> PathStep | None:
         """The hop to cut first.
 
@@ -194,6 +202,22 @@ class AssetGraph:
                     paths.append(path)
 
         return sorted(paths, key=lambda p: (p.hops, p.target.name))
+
+    def paths_through(
+        self, resource_id: str, max_depth: int = MAX_DEPTH
+    ) -> list[Path]:
+        """The attack paths this asset is part of, wherever on them it sits.
+
+        Wherever on them, deliberately. A storage account at the end of a route
+        and the jump box at the start of it are on the same route, and a person
+        looking at one finding on either asset is looking at the same problem --
+        so membership is asked of the whole route rather than of its endpoints.
+        """
+        return [
+            path
+            for path in self.attack_paths(max_depth)
+            if resource_id in path.node_ids()
+        ]
 
     def escalation_chains(self, max_depth: int = MAX_DEPTH) -> list[Path]:
         """Routes from somewhere an attacker could start to an identity that can

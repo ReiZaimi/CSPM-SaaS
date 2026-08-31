@@ -377,3 +377,25 @@ def test_a_scope_reports_what_it_holds() -> None:
     held = {r.provider_resource_id for r in environment().contained_by(SUB)}
 
     assert held == {VM, STORAGE, QUIET_VM}
+
+
+def test_an_asset_is_on_a_route_wherever_on_it_it_sits() -> None:
+    """The question the finding page asks.
+
+    A misconfiguration on the jump box at the start and one on the storage
+    account at the end are the same problem seen from two ends, so membership
+    is asked of the whole route rather than of its endpoints. The identity in
+    between is on it too, and is usually where the route is cheapest to cut.
+    """
+    graph = environment()
+
+    assert len(graph.paths_through(VM)) == 1
+    assert len(graph.paths_through(IDENTITY)) == 1
+    assert len(graph.paths_through(STORAGE)) == 1
+
+
+def test_an_asset_on_no_route_says_so_rather_than_guessing() -> None:
+    # A quiet VM nothing reaches and nothing sensitive sits behind. "No route"
+    # here is a fact about the graph, not an all-clear about the asset.
+    assert environment().paths_through(QUIET_VM) == []
+    assert environment().paths_through("/subscriptions/sub-1/nothing") == []

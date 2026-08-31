@@ -31,8 +31,8 @@
 {% if trend %}
 {{ trend | safe }}
 <p class="small muted">
-  Security score across the last {{ report.posture.history | length }} readings,
-  on a fixed 0–100 scale.
+  Security score across the {{ report.posture.history | length }} reading{{ '' if report.posture.history | length == 1 else 's' }}
+  taken in the last {{ report.posture.window_days }} days, on a fixed 0–100 scale.
 </p>
 {% endif %}
 
@@ -55,8 +55,8 @@
     <tr><td>Assets under assessment</td><td class="num">{{ report.posture.asset_count }}</td></tr>
     <tr><td>Open findings</td><td class="num">{{ report.posture.open_finding_count }}</td></tr>
     <tr>
-      <td>Verified fixed in the last 30 days</td>
-      <td class="num">{{ report.posture.verified_resolved_last_30_days }}</td>
+      <td>Verified fixed in the last {{ report.posture.window_days }} days</td>
+      <td class="num">{{ report.posture.verified_resolved_in_window }}</td>
     </tr>
     <tr>
       <td>Share of findings ever raised that are now verified fixed</td>

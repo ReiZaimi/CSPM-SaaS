@@ -1,15 +1,12 @@
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftIcon } from "lucide-react";
-
 import { api } from "@/lib/api";
 import type { Level } from "@/lib/types";
 import { useT } from "@/i18n";
 import { StatusPill } from "@/components/security/StatusPill";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { formatDateTime, resourceTypeLabel } from "@/lib/format";
-import { DetailSkeleton, ErrorState } from "@/components/common/states";
-import { Button } from "@/components/ui/button";
+import { Breadcrumbs, DetailSkeleton, ErrorState } from "@/components/common/states";
 import {
   Card,
   CardContent,
@@ -82,15 +79,9 @@ export function AssetDetailPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-2 self-start text-muted-foreground"
-        render={<Link to="/assets" />}
-      >
-        <ArrowLeftIcon data-icon="inline-start" />
-        {t.assets.title}
-      </Button>
+      <Breadcrumbs
+        trail={[{ label: t.assets.title, to: "/assets" }, { label: data.name }]}
+      />
 
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>

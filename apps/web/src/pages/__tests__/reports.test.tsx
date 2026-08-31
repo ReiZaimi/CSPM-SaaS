@@ -9,6 +9,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReportsPage } from "../Reports";
@@ -50,7 +51,9 @@ describe("ReportsPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /Download PDF/ })[0]);
 
     await waitFor(() =>
-      expect(doc).toHaveBeenCalledWith("/api/v1/reports/executive?format=pdf"),
+      expect(doc).toHaveBeenCalledWith(
+        "/api/v1/reports/executive?format=pdf&days=30&sections=top_risks%2Cattack_paths%2Cremediation%2Ccompliance",
+      ),
     );
     // No anchor a browser could follow without the token.
     expect(screen.queryByRole("link", { name: /Download/ })).not.toBeInTheDocument();
@@ -63,7 +66,9 @@ describe("ReportsPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /Download PDF/ })[1]);
 
     await waitFor(() =>
-      expect(doc).toHaveBeenCalledWith("/api/v1/reports/technical?format=pdf"),
+      expect(doc).toHaveBeenCalledWith(
+        "/api/v1/reports/technical?format=pdf&days=30&sections=top_risks%2Cattack_paths%2Cremediation%2Ccompliance%2Cfindings",
+      ),
     );
   });
 
@@ -75,7 +80,9 @@ describe("ReportsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview: Executive report" }));
 
     await waitFor(() =>
-      expect(doc).toHaveBeenCalledWith("/api/v1/reports/executive?format=html"),
+      expect(doc).toHaveBeenCalledWith(
+        "/api/v1/reports/executive?format=html&days=30&sections=top_risks%2Cattack_paths%2Cremediation%2Ccompliance",
+      ),
     );
     expect(open).toHaveBeenCalled();
   });
@@ -108,6 +115,37 @@ describe("ReportsPage", () => {
       expect(screen.getByText("Could not generate the report")).toBeInTheDocument(),
     );
     expect(screen.queryByText("This server cannot produce PDFs")).not.toBeInTheDocument();
+  });
+
+  it("carries the window and the chosen sections into the request", async () => {
+    // `userEvent` rather than `fireEvent`: both controls are built out of
+    // pointer events, and a synthetic click never reaches either.
+    const user = userEvent.setup();
+    const doc = vi.spyOn(api, "document").mockResolvedValue(new Blob(["%PDF-"]));
+    mount();
+
+    await user.click(screen.getByLabelText("Activity window"));
+    await user.click(await screen.findByRole("option", { name: "Last 90 days" }));
+    await user.click(screen.getByRole("checkbox", { name: "Compliance coverage" }));
+    await user.click(screen.getAllByRole("button", { name: /Download PDF/ })[0]);
+
+    await waitFor(() =>
+      expect(doc).toHaveBeenCalledWith(
+        "/api/v1/reports/executive?format=pdf&days=90&sections=top_risks%2Cattack_paths%2Cremediation",
+      ),
+    );
+  });
+
+  it("never asks the executive report for the findings list", async () => {
+    // It is the one section that means nothing there: an executive summary
+    // ending in a four-hundred-row table is a technical report with a cover.
+    const doc = vi.spyOn(api, "document").mockResolvedValue(new Blob(["%PDF-"]));
+    mount();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Download PDF/ })[0]);
+
+    await waitFor(() => expect(doc).toHaveBeenCalled());
+    expect(doc.mock.calls[0][0]).not.toContain("findings");
   });
 
   it("says reports are generated rather than kept", async () => {

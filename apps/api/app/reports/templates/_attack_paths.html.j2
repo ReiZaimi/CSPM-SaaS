@@ -1,0 +1,44 @@
+{#
+  What is wrong *together*.
+
+  The findings list ranks problems one at a time; this section is the only
+  place a document says that three of them form a route. Ordered by hops rather
+  than by severity, because a shorter route is both likelier to be walked and
+  cheaper to sever — and the line that matters to whoever acts on this report
+  is the last one in each block, which names the single link to cut.
+#}
+<div class="section">
+<h2>Attack paths</h2>
+
+{% if not report.attack_paths %}
+<p class="muted">
+  No route was found from an internet-facing asset to a sensitive one. What
+  counts as sensitive is declared per subscription in CloudGuard, so an estate
+  where nothing has been classified will also report none — this is not by
+  itself an all-clear.
+</p>
+{% else %}
+<p class="small muted">
+  Each route runs from something reachable to something worth taking. Fewer
+  hops is worse: the route is shorter to walk and there are fewer places to
+  break it.
+</p>
+
+{% for path in report.attack_paths %}
+<div class="finding">
+  <div class="finding-head">
+    <span class="finding-title">{{ path.entry }} → {{ path.target }}</span>
+    <span class="muted small">{{ path.hops }} hop{{ '' if path.hops == 1 else 's' }}</span>
+  </div>
+  <ol class="small">
+    {% for step in path.steps %}
+    <li>{{ step }}</li>
+    {% endfor %}
+  </ol>
+  {% if path.cheapest_break %}
+  <p class="small"><strong>Cut here:</strong> {{ path.cheapest_break }}</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+</div>

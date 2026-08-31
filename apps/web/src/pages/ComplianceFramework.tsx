@@ -1,7 +1,5 @@
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftIcon } from "lucide-react";
-
 import { api } from "@/lib/api";
 import type { ComplianceControl, ComplianceFrameworkDetail } from "@/lib/types";
 import { useT } from "@/i18n";
@@ -12,9 +10,8 @@ import {
   ControlStatusPill,
   EvidenceNotice,
 } from "@/components/compliance";
-import { DetailSkeleton, ErrorState } from "@/components/common/states";
+import { Breadcrumbs, DetailSkeleton, ErrorState } from "@/components/common/states";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -62,15 +59,13 @@ export function ComplianceFrameworkPage() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-2 mb-1 text-muted-foreground"
-          render={<Link to="/compliance" />}
-        >
-          <ArrowLeftIcon data-icon="inline-start" />
-          {t.compliance.backToFrameworks}
-        </Button>
+        <Breadcrumbs
+          className="mb-2"
+          trail={[
+            { label: t.compliance.title, to: "/compliance" },
+            { label: data.name },
+          ]}
+        />
         <h1 className="text-xl font-semibold tracking-tight">{data.name}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {data.version} · {data.authority}

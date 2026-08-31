@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { CheckCircle2Icon, ClockIcon, TriangleAlertIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -127,14 +127,15 @@ export function CoverageIndicator({
                 </li>
               ))}
             </ul>
-            <Button
-              variant="outline"
-              size="sm"
-              className="self-start"
-              render={<Link to="/scans" />}
+            <Link
+              to="/scans"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "self-start",
+              )}
             >
               View scan detail
-            </Button>
+            </Link>
           </div>
         )}
       </CardContent>

@@ -75,6 +75,27 @@ export interface Asset extends ResourceSummary {
   last_seen_at: string;
 }
 
+/**
+ * The estate as it is organised, counted over the whole of it.
+ *
+ * Subscriptions (and the directory, which belongs to no subscription) each
+ * holding their resource groups. A group's `name` is null where the asset sits
+ * directly in the subscription rather than in a group — left null rather than
+ * called "Ungrouped", which would read as somebody's oversight.
+ */
+export interface AssetScopeNode {
+  id: string;
+  name: string;
+  kind: "SUBSCRIPTION" | "DIRECTORY";
+  asset_count: number;
+  open_findings: number;
+  groups: {
+    name: string | null;
+    asset_count: number;
+    open_findings: number;
+  }[];
+}
+
 export interface Risk {
   id: string;
   /**
@@ -467,6 +488,15 @@ export interface AttackPath {
     source_id: string;
     target_id: string;
   } | null;
+}
+
+/**
+ * A route seen from one asset on it. Same shape as an attack path, plus where
+ * on the route the asset in question sits — which is what decides what a
+ * reader should do about it.
+ */
+export interface FindingAttackPath extends AttackPath {
+  asset_role: "ENTRY" | "STEP" | "TARGET";
 }
 
 export interface AttackPathStep {

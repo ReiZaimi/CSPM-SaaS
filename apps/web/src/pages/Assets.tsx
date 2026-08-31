@@ -1,14 +1,16 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { BoxesIcon, SearchIcon } from "lucide-react";
+import { BoxesIcon, ListIcon, NetworkIcon, SearchIcon, XIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { Asset } from "@/lib/types";
 import { useT } from "@/i18n";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
+import { AssetTree } from "@/components/assets/AssetTree";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/states";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,6 +34,8 @@ import { scopeLabel } from "@/lib/scope";
 const PAGE_SIZE = 50;
 
 type GroupKey = "none" | "scope" | "resource_type" | "environment";
+
+type View = "list" | "tree";
 
 /**
  * The inventory, and what is worth knowing about each thing in it.
@@ -60,18 +64,45 @@ export function AssetsPage() {
   const [exposure, setExposure] = useState("all");
   const [type, setType] = useState("all");
   const [groupBy, setGroupBy] = useState<GroupKey>("scope");
+  const [view, setView] = useState<View>("list");
   const [page, setPage] = useState(0);
+
+  // The scope filters live in the URL rather than in state: they are arrived
+  // at from the tree, which links into this list, so they have to survive
+  // being shared and navigated back to.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const subscriptionId = searchParams.get("subscription_id") ?? "";
+  const resourceGroup = searchParams.get("resource_group") ?? "";
 
   const params = new URLSearchParams();
   if (search) params.set("search", search);
   if (environment !== "all") params.set("environment", environment);
   if (exposure !== "all") params.set("exposure", exposure);
   if (type !== "all") params.set("resource_type", type);
+  if (subscriptionId) params.set("subscription_id", subscriptionId);
+  if (resourceGroup) params.set("resource_group", resourceGroup);
   params.set("limit", String(PAGE_SIZE));
   params.set("offset", String(page * PAGE_SIZE));
 
+  function clearScope() {
+    const next = new URLSearchParams(searchParams);
+    next.delete("subscription_id");
+    next.delete("resource_group");
+    setSearchParams(next, { replace: true });
+    setPage(0);
+  }
+
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["assets", search, environment, exposure, type, page],
+    queryKey: [
+      "assets",
+      search,
+      environment,
+      exposure,
+      type,
+      subscriptionId,
+      resourceGroup,
+      page,
+    ],
     queryFn: () =>
       api.get<Asset[]>(`/api/v1/assets?${params.toString()}`).then((r) => ({
         assets: r.data,
@@ -120,7 +151,12 @@ export function AssetsPage() {
   }, [sorted, groupBy]);
 
   const filtering =
-    search !== "" || environment !== "all" || exposure !== "all" || type !== "all";
+    search !== "" ||
+    environment !== "all" ||
+    exposure !== "all" ||
+    type !== "all" ||
+    subscriptionId !== "" ||
+    resourceGroup !== "";
   const pages = Math.ceil(total / PAGE_SIZE);
 
   function resetTo(setter: (value: string) => void) {
@@ -137,8 +173,45 @@ export function AssetsPage() {
       <PageHeader
         title={t.assets.title}
         description="Everything CloudGuard has discovered, with what it is worth and how exposed it is."
+        actions={
+          // Two readings of one inventory: the queue, and the shape. The list
+          // ranks by what is wrong; the tree says which part of the estate --
+          // and so which owner -- it is wrong in.
+          <div className="flex items-center gap-1 rounded-lg border p-0.5">
+            <Button
+              variant={view === "list" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setView("list")}
+              aria-pressed={view === "list"}
+            >
+              <ListIcon data-icon="inline-start" />
+              List
+            </Button>
+            <Button
+              variant={view === "tree" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setView("tree")}
+              aria-pressed={view === "tree"}
+            >
+              <NetworkIcon data-icon="inline-start" />
+              Hierarchy
+            </Button>
+          </div>
+        }
       />
 
+      {view === "tree" && (
+        <>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Counted over the whole estate rather than over a page, and ordered
+            worst first at both levels. Opening a group lists what is in it;
+            the filters live on the list view.
+          </p>
+          <AssetTree />
+        </>
+      )}
+
+      {view === "list" && (
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
         <div className="relative flex-1 lg:max-w-xs">
           <SearchIcon
@@ -210,10 +283,34 @@ export function AssetsPage() {
           </Select>
         </div>
       </div>
+      )}
 
-      {isLoading && <TableSkeleton columns={7} />}
+      {view === "list" && (subscriptionId || resourceGroup) && (
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary" className="gap-1.5 font-normal">
+            {resourceGroup ? (
+              <>
+                Resource group <code className="font-medium">{resourceGroup}</code>
+              </>
+            ) : (
+              <>
+                Subscription <code className="font-medium">{subscriptionId}</code>
+              </>
+            )}
+            <button
+              onClick={clearScope}
+              aria-label="Clear scope filter"
+              className="rounded-full text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <XIcon className="size-3" />
+            </button>
+          </Badge>
+        </div>
+      )}
 
-      {error && (
+      {view === "list" && isLoading && <TableSkeleton columns={7} />}
+
+      {view === "list" && error && (
         <ErrorState
           title="Could not load your assets"
           detail="CloudGuard could not reach its own API to read the inventory."
@@ -222,7 +319,7 @@ export function AssetsPage() {
         />
       )}
 
-      {data && assets.length === 0 && (
+      {view === "list" && data && assets.length === 0 && (
         <EmptyState
           icon={BoxesIcon}
           title={filtering ? "No assets match these filters" : t.assets.empty}
@@ -240,21 +337,25 @@ export function AssetsPage() {
                   setEnvironment("all");
                   setExposure("all");
                   setType("all");
+                  clearScope();
                   setPage(0);
                 }}
               >
                 Clear filters
               </Button>
             ) : (
-              <Button variant="outline" render={<Link to="/scans" />}>
+              <Link
+                to="/scans"
+                className={buttonVariants({ variant: "outline" })}
+              >
                 Run a scan
-              </Button>
+              </Link>
             )
           }
         />
       )}
 
-      {data && assets.length > 0 && (
+      {view === "list" && data && assets.length > 0 && (
         <>
           <Card className="overflow-hidden py-0">
             <CardContent className="px-0">

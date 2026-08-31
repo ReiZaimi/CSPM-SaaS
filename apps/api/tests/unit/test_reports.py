@@ -18,7 +18,7 @@ import pytest
 
 from app.reports.chart import VIEW_HEIGHT, score_trend_svg
 from app.reports.render import render_html
-from app.services.reports import _evidence, _posture
+from app.services.reports import OPTIONAL_SECTIONS, _evidence, _posture
 
 
 def body(html: str) -> str:
@@ -79,9 +79,33 @@ def report(**overrides) -> dict:
         "generated_at": datetime(2026, 8, 31, 12, 0, tzinfo=UTC).isoformat(),
         "organization": {"name": "Contoso", "industry": None, "country": "AL"},
         "kind": "executive",
-        "posture": _posture(data),
+        "sections": list(OPTIONAL_SECTIONS),
+        "omitted_sections": [],
+        "window_days": 30,
+        # An early cutoff, so a fixture's readings are all inside the window
+        # unless a test is specifically about the window.
+        "posture": _posture(data, since=datetime(2026, 1, 1, tzinfo=UTC)),
         "evidence": _evidence(data),
         "top_risks": data["top_risks"],
+        "attack_paths": [
+            {
+                "entry": "vm-jump-01",
+                "target": "prodstorage",
+                "hops": 2,
+                "steps": [
+                    "vm-jump-01 runs as mi-jump",
+                    "mi-jump can act over prodstorage",
+                ],
+                "cheapest_break": "mi-jump can act over prodstorage",
+            }
+        ],
+        "remediation": {
+            "open_tasks": 4,
+            "done_tasks": 6,
+            "cancelled_tasks": 0,
+            "completed_in_window": 2,
+            "remediation_rate": 0.3,
+        },
         "compliance": {
             "frameworks": [
                 {
@@ -364,7 +388,23 @@ def test_the_report_draws_the_trend_when_there_is_one():
     html = render_html(report(dashboard={"history": readings(60, 72, 84)}))
 
     assert "<svg" in html
-    assert "across the last 3 readings" in html
+    assert "across the 3 readings" in html
+    # The window is named beside the count, because a line drawn over the last
+    # 30 days and one drawn over the last year are different claims.
+    assert "last 30 days" in html
+
+
+def test_the_trend_is_cut_to_the_window_it_was_asked_for():
+    # A report asked for the last week must not draw a line reaching back six
+    # months: the sparkline is the evidence for "is this improving", and its
+    # period has to be the period the reader chose.
+    posture = _posture(
+        dashboard(history=readings(60, 72, 84)),
+        window_days=7,
+        since=datetime(2026, 8, 3, tzinfo=UTC),
+    )
+
+    assert [entry["security_score"] for entry in posture["history"]] == [84]
 
 
 def test_the_report_draws_no_trend_from_a_single_reading():
@@ -392,3 +432,60 @@ def test_nothing_is_said_about_accepted_risk_when_there_is_none():
     html = render_html(report())
 
     assert "accepted as risk" not in html
+
+# --- what a reader chose to leave in ---------------------------------------
+
+
+def test_a_section_left_out_is_named_rather_than_silently_absent():
+    # An omission somebody chose looks exactly like an absence of evidence once
+    # a PDF has been forwarded twice, and only one of those is true.
+    html = render_html(
+        report(
+            sections=["top_risks", "attack_paths", "remediation"],
+            omitted_sections=["compliance coverage"],
+        )
+    )
+
+    assert "Sections excluded from this report" in html
+    assert "Compliance coverage" in html
+    assert "Compliance coverage</h2>" not in html
+
+
+def test_the_posture_and_the_caveats_cannot_be_switched_off():
+    # The parts that say what the numbers are worth are not optional: a report
+    # that could drop "12% of checks reached no verdict" would let somebody
+    # produce a cleaner-looking document by unticking a box.
+    html = render_html(report(sections=[], omitted_sections=["top risks"]))
+
+    assert "Security posture" in html
+    assert "3 checks" in html
+    assert "never counted as a pass" in html
+
+
+def test_attack_paths_name_the_route_and_the_link_to_cut():
+    html = render_html(report())
+
+    assert "vm-jump-01 → prodstorage" in html
+    assert "vm-jump-01 runs as mi-jump" in html
+    # The only line in that section somebody can act on without opening
+    # CloudGuard.
+    assert "Cut here" in html
+
+
+def test_remediation_reports_claims_and_proof_separately():
+    html = render_html(report())
+
+    body_html = body(html)
+    assert "Tasks marked done in the last 30 days" in body_html
+    assert "Findings verified fixed in the last 30 days" in body_html
+    # Never summed: one is a statement somebody made, the other is an
+    # observation an instrument took.
+    assert "Work marked done is a claim; a verified fix is an observation" in body_html
+
+
+def test_an_empty_attack_path_section_is_not_an_all_clear():
+    html = render_html(report(attack_paths=[]))
+
+    normalized = " ".join(html.split())
+    assert "not by itself an all-clear" in normalized
+    assert "No route was found" in normalized

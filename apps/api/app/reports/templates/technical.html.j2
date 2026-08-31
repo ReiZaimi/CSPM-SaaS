@@ -13,8 +13,39 @@
 
 {% include "_posture.html.j2" %}
 
-{% include "_compliance.html.j2" %}
+{% if 'top_risks' in report.sections and report.top_risks %}
+<h2>What is worst right now</h2>
+<table>
+  <thead>
+    <tr><th>Risk</th><th class="num">Score</th></tr>
+  </thead>
+  <tbody>
+    {% for risk in report.top_risks %}
+    <tr>
+      <td>
+        <span class="sev sev-{{ risk.risk_level }}">{{ risk.risk_level | title }}</span>
+        {{ risk.title }}
+      </td>
+      <td class="num">{{ risk.risk_score | round(0) | int }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 
+{% if 'attack_paths' in report.sections %}
+{% include "_attack_paths.html.j2" %}
+{% endif %}
+
+{% if 'remediation' in report.sections %}
+{% include "_remediation.html.j2" %}
+{% endif %}
+
+{% if 'compliance' in report.sections %}
+{% include "_compliance.html.j2" %}
+{% endif %}
+
+{% if 'findings' in report.sections %}
 <div class="section">
 <h2>Open findings</h2>
 
@@ -65,5 +96,6 @@
 </div>
 {% endfor %}
 </div>
+{% endif %}
 
 {% endblock %}

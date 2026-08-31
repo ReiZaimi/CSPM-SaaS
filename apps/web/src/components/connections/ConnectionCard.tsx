@@ -11,7 +11,7 @@ import { ScheduleControl } from "@/components/connections/ScheduleControl";
 import { ChangeEventsControl } from "@/components/connections/ChangeEventsControl";
 import { RemoveConfirm } from "@/components/connections/RemoveConfirm";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -321,9 +321,9 @@ function ConnectionCard({
             <p>
               {scoped.length} {t.connection.inScopeCount}.
             </p>
-            <Button className="mt-2" render={<Link to="/scans" />}>
+            <Link to="/scans" className={cn(buttonVariants(), "mt-2")}>
               {t.connection.runFirstScan}
-            </Button>
+            </Link>
           </AlertDescription>
         </Alert>
       )}

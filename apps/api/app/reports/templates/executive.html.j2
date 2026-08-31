@@ -13,6 +13,7 @@
 
 {% include "_posture.html.j2" %}
 
+{% if 'top_risks' in report.sections %}
 <h2>What is worst right now</h2>
 {% if report.top_risks %}
 <table>
@@ -39,7 +40,18 @@
 {% else %}
 <p class="muted">No risks are currently ranked for this organization.</p>
 {% endif %}
+{% endif %}
 
+{% if 'attack_paths' in report.sections %}
+{% include "_attack_paths.html.j2" %}
+{% endif %}
+
+{% if 'remediation' in report.sections %}
+{% include "_remediation.html.j2" %}
+{% endif %}
+
+{% if 'compliance' in report.sections %}
 {% include "_compliance.html.j2" %}
+{% endif %}
 
 {% endblock %}
