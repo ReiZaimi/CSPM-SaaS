@@ -43,6 +43,12 @@ export interface ResourceSummary {
 }
 
 export interface Asset extends ResourceSummary {
+  /**
+   * The provider's own identifier. Carries the hierarchy: an ARM id states its
+   * own subscription and resource group, which is the only way to say where an
+   * asset sits without a request per row.
+   */
+  provider_resource_id: string;
   open_findings: number;
   first_seen_at: string;
   last_seen_at: string;

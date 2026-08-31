@@ -85,6 +85,12 @@ async def list_assets(
             {
                 "id": str(r.id),
                 "name": r.name,
+                # The provider's own id, which the row id names nothing in.
+                # Returned here as well as on the detail because it is the only
+                # thing that spells out where an asset *sits*: an ARM id states
+                # its own subscription and resource group, so a client can group
+                # an inventory by scope without a second request per row.
+                "provider_resource_id": r.provider_resource_id,
                 "resource_type": r.resource_type,
                 "region": r.region,
                 "environment": r.environment,

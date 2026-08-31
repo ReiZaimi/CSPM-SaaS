@@ -27,10 +27,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn, formatDate, resourceTypeLabel } from "@/lib/format";
+import { scopeLabel } from "@/lib/scope";
 
 const PAGE_SIZE = 50;
 
-type GroupKey = "none" | "resource_type" | "environment";
+type GroupKey = "none" | "scope" | "resource_type" | "environment";
 
 /**
  * The inventory, and what is worth knowing about each thing in it.
@@ -46,12 +47,11 @@ type GroupKey = "none" | "resource_type" | "environment";
  * were everything. A tenant with four hundred assets saw a hundred, with
  * nothing on the screen suggesting the other three hundred existed.
  *
- * **Known API limitation.** `GET /assets` does not return
- * `provider_resource_id`, so the subscription/resource-group hierarchy cannot
- * be derived here -- the ARM id is the only thing that spells it out, and only
- * the detail endpoint returns it. Grouping therefore offers the two dimensions
- * the list *does* carry. Adding the id to the list response would make a real
- * tree possible and is the next thing worth doing on the API for this page.
+ * Grouping by scope is the default, because that is how an estate is actually
+ * organised and how responsibility for it is usually divided: a resource group
+ * tends to have an owner, and "which of my resource groups is the problem" is a
+ * question a flat list cannot answer. It is read out of the provider's own id
+ * (`lib/scope.ts`) rather than requested, so it costs nothing.
  */
 export function AssetsPage() {
   const t = useT();
@@ -59,7 +59,7 @@ export function AssetsPage() {
   const [environment, setEnvironment] = useState("all");
   const [exposure, setExposure] = useState("all");
   const [type, setType] = useState("all");
-  const [groupBy, setGroupBy] = useState<GroupKey>("none");
+  const [groupBy, setGroupBy] = useState<GroupKey>("scope");
   const [page, setPage] = useState(0);
 
   const params = new URLSearchParams();
@@ -109,9 +109,11 @@ export function AssetsPage() {
     const map = new Map<string, Asset[]>();
     for (const asset of sorted) {
       const key =
-        groupBy === "resource_type"
-          ? resourceTypeLabel(asset.resource_type)
-          : (asset.environment ?? "Unlabelled");
+        groupBy === "scope"
+          ? scopeLabel(asset.provider_resource_id)
+          : groupBy === "resource_type"
+            ? resourceTypeLabel(asset.resource_type)
+            : (asset.environment ?? "Unlabelled");
       map.set(key, [...(map.get(key) ?? []), asset]);
     }
     return [...map.entries()].sort((a, b) => b[1].length - a[1].length);
@@ -201,6 +203,7 @@ export function AssetsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">No grouping</SelectItem>
+              <SelectItem value="scope">By resource group</SelectItem>
               <SelectItem value="resource_type">By type</SelectItem>
               <SelectItem value="environment">By environment</SelectItem>
             </SelectContent>

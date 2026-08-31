@@ -750,3 +750,76 @@ class TestSubscriptionDiscovery:
         assert subscriptions[0]["subscription_id"] == (
             "00000000-0000-0000-0000-000000000001"
         )
+
+
+class TestAssetList:
+    """What the inventory endpoint has to carry.
+
+    The list is the only view of an estate a client gets in one request, and the
+    field it was missing decided what could be built on it: an ARM id spells out
+    its own subscription and resource group, so without it a client can render
+    an inventory but cannot say where anything *sits* -- not without one request
+    per row.
+    """
+
+    async def test_a_listed_asset_names_itself_in_the_provider(
+        self, client, cleanup_orgs
+    ) -> None:
+        import uuid as uuid_module
+        from datetime import UTC, datetime
+
+        from app.core.db import service_session
+        from app.core.enums import Level, Provider, ResourceType
+        from app.models.resource import ResourceRecord
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Inventory Ltd"))
+        cleanup_orgs.append(org_id)
+
+        arm_id = (
+            "/subscriptions/00000000-0000-0000-0000-000000000001"
+            "/resourceGroups/prod/providers/Microsoft.Storage/storageAccounts/payroll"
+        )
+        async with service_session() as session:
+            session.add(
+                ResourceRecord(
+                    organization_id=org_id,
+                    provider=Provider.AZURE,
+                    provider_resource_id=arm_id,
+                    resource_type=ResourceType.STORAGE_ACCOUNT,
+                    name="payroll",
+                    criticality=Level.HIGH,
+                    data_sensitivity=Level.HIGH,
+                    public_exposure=Level.LOW,
+                    first_seen_at=datetime.now(UTC),
+                    last_seen_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+        response = await client.get("/api/v1/assets", headers=auth_header(user))
+
+        assert response.status_code == 200
+        [asset] = response.json()["data"]
+        assert asset["provider_resource_id"] == arm_id
+        # The row id names nothing in the customer's cloud; the ARM id is what
+        # they can search for in their own portal.
+        assert asset["id"] != arm_id
+        assert uuid_module.UUID(asset["id"])
+
+    async def test_the_list_reports_the_true_total_not_the_page_size(
+        self, client, cleanup_orgs
+    ) -> None:
+        """Pagination is only usable if the count is the whole set.
+
+        A client that read `len(data)` would show a full page as the entire
+        inventory, which is exactly what the assets page used to do.
+        """
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Paged Ltd"))
+        cleanup_orgs.append(org_id)
+
+        response = await client.get("/api/v1/assets?limit=1", headers=auth_header(user))
+
+        assert response.status_code == 200
+        assert "total" in response.json()["meta"]

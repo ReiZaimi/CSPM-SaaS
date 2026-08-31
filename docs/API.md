@@ -111,6 +111,13 @@ and a carried reading keeps the time it was collected. The headline is the
 *oldest* of those readings, because an average would let a hundred fresh
 listings hide the one subscription nobody has managed to read since Tuesday.
 
+`/assets` returns `provider_resource_id` on every row, not only on the detail.
+It is the one field that says where an asset *sits*: an ARM id spells out its
+own subscription and resource group, so a client can group an inventory by scope
+without a request per row. The row `id` is a CloudGuard identifier and names
+nothing in the customer's cloud — the ARM id is what they can search for in
+their own portal.
+
 `/changes` answers "what moved while I was away": asset appearances,
 disappearances, and changes to the three attributes the risk engine multiplies a
 finding by. A feed of transitions rather than a diff of two scans, so a week in
