@@ -6,6 +6,8 @@ import { useT } from "@/i18n";
 import { Badge, Card, StatusPill } from "@/components/ui";
 import { formatDateTime, resourceTypeLabel } from "@/lib/format";
 import { DetailSkeleton, ErrorState } from "@/components/common/states";
+import { ContextRow, type ContextFact } from "@/components/security/ContextProvenance";
+import { BlastRadius } from "@/components/graph/BlastRadius";
 
 interface AssetDetail {
   id: string;
@@ -19,6 +21,16 @@ interface AssetDetail {
   data_sensitivity: Level;
   public_exposure: Level;
   metadata: Record<string, unknown>;
+  /**
+   * The same three values again, each with where it came from. Kept beside the
+   * flat fields rather than replacing them: those are what every list view and
+   * filter reads.
+   */
+  context?: {
+    criticality: ContextFact;
+    data_sensitivity: ContextFact;
+    environment: ContextFact;
+  };
   first_seen_at: string;
   last_seen_at: string;
   findings: {
@@ -66,10 +78,22 @@ export function AssetDetailPage() {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card title="Risk context" className="lg:col-span-1">
-          <dl className="space-y-3 text-sm">
-            <Row label="Criticality" value={<Badge level={data.criticality} />} />
-            <Row label="Data sensitivity" value={<Badge level={data.data_sensitivity} />} />
+          <dl className="flex flex-col gap-3 text-sm">
+            <ContextRow
+              label="Criticality"
+              fact={data.context?.criticality}
+              fallback={<Badge level={data.criticality} />}
+            />
+            <ContextRow
+              label="Data sensitivity"
+              fact={data.context?.data_sensitivity}
+              fallback={<Badge level={data.data_sensitivity} />}
+            />
+            {/* Exposure has no provenance and needs none: it is read off the
+                configuration in the capture -- a public IP is attached or it is
+                not -- so there is nothing to attribute and nothing to declare. */}
             <Row label="Internet exposure" value={<Badge level={data.public_exposure} />} />
+            <Row label="Environment" value={data.environment ?? "—"} />
             <Row label="First seen" value={formatDateTime(data.first_seen_at)} />
             <Row label="Last seen" value={formatDateTime(data.last_seen_at)} />
           </dl>
@@ -104,6 +128,8 @@ export function AssetDetailPage() {
           )}
         </Card>
       </div>
+
+      <BlastRadius providerResourceId={data.provider_resource_id} name={data.name} />
 
       <Card title="Configuration" subtitle="As collected in the most recent snapshot">
         <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
