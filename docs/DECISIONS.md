@@ -719,6 +719,37 @@ This app is on React 18, so every Base UI trigger rendering a Button
 and the element the popup anchors to was never captured. `Button` now forwards
 its ref, which fixes the existing `Sheet` trigger as well as the new menu.
 
+## 26. The command palette searches what can actually be searched
+
+**Spec:** none. `cmdk` was installed with the shadcn primitives and nothing
+used it.
+
+The palette (`components/layout/CommandPalette.tsx`, Cmd/Ctrl-K) jumps to any
+page, any asset by name, and any rule. Three decisions are worth recording
+because each one is a limit rather than a feature.
+
+**Findings are not searched, and the palette says so.** `GET /findings` has no
+text-search parameter -- it filters by severity, status, rule and resource.
+The available workarounds were to add one, or to filter the loaded page in the
+browser. The second is the dangerous one: it would search a hundred findings
+out of thousands and report "nothing matches" for the rest, which in a security
+product is a false negative dressed as an answer. So findings are reached
+through their rule (`/findings?rule_id=`) or their asset, and the empty state
+names what was searched instead of implying everything was.
+
+**One authority over what matched.** `shouldFilter={false}`: assets are matched
+by the API (`name ILIKE %search%`) and everything else by the same substring
+rule in this file. Leaving cmdk's fuzzy scoring on top would let it re-rank and
+sometimes drop rows the server had already decided matched.
+
+**No mutations in it.** No "run a scan" entry, though it would be easy: every
+row is one keystroke from being triggered by whatever happens to be
+highlighted, and a scan reads a customer's entire environment. Actions with a
+cost stay behind a button somebody meant to press.
+
+Pages come from `NAV_GROUPS`, the same source the sidebar renders, so the two
+cannot drift; a test asserts every navigable page appears.
+
 ---
 
 ## Open items carried forward

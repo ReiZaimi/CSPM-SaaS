@@ -9,6 +9,7 @@ import { useT } from "@/i18n";
 import { ShieldMark } from "@/components/Brand";
 import { AccountMenu } from "@/components/AccountMenu";
 import { SidebarNav } from "@/components/layout/Sidebar";
+import { CommandPalette } from "@/components/layout/CommandPalette";
 import { ScanIndicator } from "@/components/layout/ScanIndicator";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { Button } from "@/components/ui/button";
@@ -99,6 +100,7 @@ export function Shell() {
           </div>
 
           <div className="ml-auto flex items-center gap-3">
+            <CommandPalette />
             <ScanIndicator />
             <ThemeToggle />
             <AccountMenu organizations={orgs ?? []} current={current} />

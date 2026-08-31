@@ -35,3 +35,11 @@ globalThis.matchMedia ??= ((query: string) => ({
   removeListener: () => {},
   dispatchEvent: () => false,
 })) as unknown as typeof window.matchMedia;
+
+/**
+ * jsdom implements no `scrollIntoView`, and cmdk calls it to keep the
+ * highlighted row of the command palette visible as the arrow keys move
+ * through it. Nothing scrolls in a zero-height jsdom list, so a stub is the
+ * whole of what a faithful implementation would achieve here.
+ */
+Element.prototype.scrollIntoView ??= function scrollIntoView() {};
