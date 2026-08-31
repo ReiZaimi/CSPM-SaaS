@@ -4,17 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import type { FindingDetail } from "@/lib/types";
 import { useT } from "@/i18n";
-import {
-  Badge,
-  Button,
-  Card,
-  ErrorNote,
-  Field,
-  Input,
-  Spinner,
-  StatusPill,
-} from "@/components/ui";
-import { formatDateTime, formatEffort, resourceTypeLabel } from "@/lib/format";
+import { Badge, Button, Card, Field, Input, StatusPill } from "@/components/ui";
+import { DetailSkeleton, ErrorState } from "@/components/common/states";
+import { RemediationPanel } from "@/components/security/RemediationPanel";
+import { VerificationPanel } from "@/components/security/VerificationPanel";
+import { FindingTimeline } from "@/components/security/FindingTimeline";
+import { formatDateTime, resourceTypeLabel } from "@/lib/format";
 
 /**
  * The page the whole product is really about. It must answer, in order:
@@ -66,8 +61,16 @@ export function FindingDetailPage() {
     onError: (err) => setNotice(err instanceof ApiError ? err.message : "Could not accept risk"),
   });
 
-  if (isLoading) return <Spinner text={t.common.loading} />;
-  if (error) return <ErrorNote message={t.common.error} onRetry={() => refetch()} />;
+  if (isLoading) return <DetailSkeleton />;
+  if (error)
+    return (
+      <ErrorState
+        title="Could not load this finding"
+        detail="CloudGuard could not reach its own API."
+        impact="Nothing about your environment has changed — this is a problem displaying it."
+        onRetry={() => refetch()}
+      />
+    );
   if (!data) return null;
 
   const components = data.risk?.score_breakdown?.components ?? {};
@@ -119,24 +122,20 @@ export function FindingDetailPage() {
 
           {/* EVIDENCE */}
           <Card title={t.findings.evidence} subtitle="Exactly what CloudGuard observed">
-            <pre className="overflow-x-auto rounded-lg bg-stone-900 p-4 text-xs leading-relaxed text-stone-100">
+            <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
               {JSON.stringify(data.evidence, null, 2)}
             </pre>
           </Card>
 
           {/* HOW TO FIX */}
-          <Card
-            title={t.findings.howToFix}
-            subtitle={
-              data.estimated_effort_minutes
-                ? `${t.findings.effort}: ${formatEffort(data.estimated_effort_minutes)}`
-                : undefined
-            }
-          >
-            <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-stone-700">
-              {data.remediation}
-            </pre>
-          </Card>
+          <RemediationPanel
+            remediation={data.remediation}
+            spec={data.remediation_spec}
+            effortMinutes={data.estimated_effort_minutes}
+          />
+
+          {/* DID IT WORK — only once somebody has claimed it did. */}
+          {data.verification && <VerificationPanel verification={data.verification} />}
 
           {/* DID THE FIX WORK */}
           <Card title="Verify the fix">
@@ -191,6 +190,9 @@ export function FindingDetailPage() {
         </div>
 
         <div className="space-y-6">
+          {data.timeline && data.timeline.length > 0 && (
+            <FindingTimeline events={data.timeline} />
+          )}
           {/* HOW BAD */}
           {data.risk && (
             <Card title={t.findings.riskScore}>

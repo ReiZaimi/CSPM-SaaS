@@ -102,6 +102,54 @@ export interface Finding {
   resource: ResourceSummary | null;
 }
 
+/** One transition in a finding's life, and who or what caused it. */
+export interface FindingEvent {
+  event: "DETECTED" | "REOPENED" | "RESOLVED" | "RISK_ACCEPTED" | "STATUS_CHANGED";
+  previous_status: string | null;
+  current_status: string;
+  scan_id: string | null;
+  user_id: string | null;
+  detail: string | null;
+  observed_at: string;
+}
+
+/**
+ * Where a claimed fix has got to.
+ *
+ * Three ways of not being verified, and they are different news for different
+ * people: the fix did not work, CloudGuard could not see, or it is simply too
+ * soon. `detail` is the sentence written for the reader; the status is what the
+ * UI colours on.
+ */
+export interface Verification {
+  status: "PENDING" | "VERIFIED" | "STILL_FAILING" | "INSUFFICIENT_EVIDENCE" | "ABANDONED";
+  claimed_at: string;
+  expected_state: { field: string; comparison: string; describes: string }[];
+  attempts: number;
+  last_state: string | null;
+  next_attempt_at: string | null;
+  settled_at: string | null;
+  detail: string | null;
+}
+
+/** What must become true for a finding to close, and how to make it so. */
+export interface RemediationSpec {
+  expected_state: {
+    field: string;
+    comparison: string;
+    describes: string;
+    equals?: unknown;
+    also_accepts?: unknown[];
+    example?: unknown;
+  }[];
+  cli: string[];
+  terraform: { attribute: string; value: string; describes: string }[];
+  azure_policy: Record<string, unknown> | null;
+  enforceable: boolean;
+  applies_when?: Record<string, unknown>;
+  notes: string;
+}
+
 export interface FindingDetail extends Finding {
   rule_name?: string;
   rationale?: string;
@@ -110,6 +158,9 @@ export interface FindingDetail extends Finding {
   estimated_effort_minutes?: number;
   risk?: Risk | null;
   priority?: string;
+  remediation_spec?: RemediationSpec | null;
+  verification?: Verification | null;
+  timeline?: FindingEvent[];
 }
 
 export interface Scan {

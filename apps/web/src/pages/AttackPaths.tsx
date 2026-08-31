@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
-import type { AttackPath, AttackPathMeta, AttackPathStep } from "@/lib/types";
+import type { AttackPath, AttackPathMeta } from "@/lib/types";
 import { useT } from "@/i18n";
 import { Badge, Card, EmptyState, ErrorNote, Spinner } from "@/components/ui";
+import { AttackPathRoute } from "@/components/graph/AttackPathRoute";
 
 /**
  * Attack paths.
@@ -119,23 +120,19 @@ function PathCard({ path }: { path: AttackPath }) {
         </div>
       </div>
 
-      <div className="mt-4 border-t border-stone-100 pt-3">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-stone-400">
+      <div className="mt-4 border-t pt-3">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           {t.attackPaths.route}
         </p>
-        <ol className="mt-2 space-y-1.5">
-          {path.steps.map((step, index) => (
-            <Step
-              key={`${step.source_id}-${step.relationship}-${step.target_id}`}
-              step={step}
-              index={index}
-              isCut={
-                path.cheapest_break?.source_id === step.source_id &&
-                path.cheapest_break?.target_id === step.target_id
-              }
-            />
-          ))}
-        </ol>
+        <AttackPathRoute
+          className="mt-3"
+          steps={path.steps}
+          cutIndex={path.steps.findIndex(
+            (step) =>
+              path.cheapest_break?.source_id === step.source_id &&
+              path.cheapest_break?.target_id === step.target_id,
+          )}
+        />
       </div>
 
       {path.cheapest_break && (
@@ -148,34 +145,5 @@ function PathCard({ path }: { path: AttackPath }) {
         </div>
       )}
     </Card>
-  );
-}
-
-function Step({
-  step,
-  index,
-  isCut,
-}: {
-  step: AttackPathStep;
-  index: number;
-  isCut: boolean;
-}) {
-  return (
-    <li className="flex items-start gap-2.5 text-sm">
-      <span
-        className={
-          // The severable link is marked in the route itself as well as called
-          // out below it. Reading the route and then reading the fix separately
-          // makes the customer hold both in their head to see which hop the fix
-          // refers to.
-          isCut
-            ? "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-ok-border bg-ok-bg text-[10px] font-medium text-ok"
-            : "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-stone-200 bg-white text-[10px] font-medium text-stone-500"
-        }
-      >
-        {index + 1}
-      </span>
-      <span className={isCut ? "text-stone-900" : "text-stone-600"}>{step.description}</span>
-    </li>
   );
 }
