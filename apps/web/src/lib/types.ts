@@ -563,3 +563,25 @@ export interface ChangeEvent {
     absent_since: string | null;
   };
 }
+
+/**
+ * Whether a connection reacts to change, and what the customer must run to
+ * make it.
+ *
+ * The commands are the deliverable. CloudGuard cannot create the Event Grid
+ * subscription itself — that is a write in the customer's tenant, and holding
+ * no write permission anywhere is the strongest claim this product makes — so
+ * it generates what the customer runs, one per subscription, because that is
+ * how Event Grid is scoped.
+ */
+export interface ChangeEventSetup {
+  enabled: boolean;
+  /** Null when the API has no public base URL configured to deliver to. */
+  webhook_url: string | null;
+  /** Set while a burst of changes is settling and a scan is owed. */
+  pending_since: string | null;
+  last_event_at: string | null;
+  quiet_period_minutes: number;
+  minimum_interval_minutes: number;
+  commands: { subscription_id: string; command: string }[];
+}

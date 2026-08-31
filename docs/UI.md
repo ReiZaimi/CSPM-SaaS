@@ -38,6 +38,8 @@ Dashboard  Assets  Findings  Risks  Remediation  Compliance  Reports  Scans  Set
 
 **Scan** — live progress (discovery → rules → risk analysis) then a summary: resources, rules run, findings by severity.
 
+**Connection card** — per connection: the two grants, discovered subscriptions and their scope, **Automatic scanning** (an interval, off by default), and **React to changes** (opens CloudGuard's webhook and hands over the `az eventgrid` command per subscription). The change control has to say that turning it on wires nothing up: creating that subscription is a write in the customer's tenant, and CloudGuard holds no write permission anywhere.
+
 ---
 
 ## 4. Onboarding

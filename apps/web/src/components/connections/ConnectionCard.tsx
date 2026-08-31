@@ -8,6 +8,7 @@ import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
 import { useT } from "@/i18n";
 import { StatusPill } from "@/components/security/StatusPill";
 import { ScheduleControl } from "@/components/connections/ScheduleControl";
+import { ChangeEventsControl } from "@/components/connections/ChangeEventsControl";
 import { RemoveConfirm } from "@/components/connections/RemoveConfirm";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -333,6 +334,13 @@ function ConnectionCard({
           time somebody forgets. */}
       {connection.is_verified && scoped.length > 0 && (
         <ScheduleControl connection={connection} onError={setError} />
+      )}
+
+      {/* And beneath the clock, the thing the clock cannot do. A schedule
+          bounds how stale a report gets; this bounds how long a change goes
+          unnoticed, and the two are worth setting in that order. */}
+      {connection.is_verified && scoped.length > 0 && (
+        <ChangeEventsControl connection={connection} onError={setError} />
       )}
 
       {cancelled && (

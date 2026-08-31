@@ -151,6 +151,31 @@ export const en = {
     scheduleFloorNote:
       "An interval rather than a time of day: CloudGuard promises to read this environment at least this often, not to start at a particular minute.",
 
+    // Change-triggered scanning. Two things have to survive the copy: that
+    // turning it on wires nothing up on its own, and *why* -- CloudGuard holds
+    // no write permission in the customer's tenant and will not ask for one.
+    changeTitle: "React to changes",
+    changeHelp:
+      "A schedule reads this environment on a clock. This reads it when something actually moves \u2014 a port opened, a role assigned, a storage account made public \u2014 so the finding arrives while whoever made the change is still at their desk.",
+    changeOn: "Listening for changes",
+    changeOff: "Not listening",
+    changeEnable: "Turn on change detection",
+    changeDisable: "Turn off",
+    changeSaving: "Saving\u2026",
+    changeNotWired:
+      "The webhook is open. Nothing reaches it until you run the command below in each subscription \u2014 CloudGuard cannot create that subscription for you, because it holds no write permission in your tenant and does not ask for one.",
+    changeCommandsLabel: "Run this once per subscription",
+    changeCopyCommand: "Copy command",
+    changeCopied: "Copied",
+    changeNoEndpoint: "CloudGuard has no public address to receive deliveries",
+    changeNoEndpointHelp:
+      "This deployment has no public API base URL configured, so there is no endpoint for Event Grid to deliver to. Change detection cannot be wired up until that is set.",
+    changeLastEvent: "Last change heard",
+    changeNeverHeard: "Nothing yet",
+    changePending: "A change is settling; a scan starts once the environment is quiet",
+    changeTiming:
+      "A burst of changes becomes one scan, not one per event: CloudGuard waits for {quiet} minutes of quiet, and scans a connection at most once every {interval} minutes for change.",
+
     noSubscriptionsTitle: "No subscriptions found yet",
     noSubscriptionsBody:
       "Both grants are working, but CloudGuard cannot see any subscription to scan. A role assigned moments ago can take a few minutes to show up, and a role deployed to the wrong scope will never show up at all.",
