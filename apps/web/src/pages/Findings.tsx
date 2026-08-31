@@ -19,13 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import {
   Table,
   TableBody,
@@ -168,46 +162,33 @@ export function FindingsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Select
+          <SelectField
             value={severity}
-            onValueChange={(v) => refilter(() => setSeverity(v ?? "all"))}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-[150px]"
-              aria-label="Filter by severity"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All severities</SelectItem>
-              {SEVERITIES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s.charAt(0) + s.slice(1).toLowerCase()}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            onValueChange={(value) => refilter(() => setSeverity(value || "all"))}
+            ariaLabel="Filter by severity"
+            className="w-[150px]"
+            options={[
+              { value: "all", label: "All severities" },
+              ...SEVERITIES.map((level) => ({
+                value: level,
+                label: level.charAt(0) + level.slice(1).toLowerCase(),
+              })),
+            ]}
+          />
 
-          <Select
+          <SelectField
             value={status}
-            onValueChange={(v) => refilter(() => setStatus(v ?? "all"))}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-[160px]"
-              aria-label="Filter by status"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="IN_PROGRESS">In progress</SelectItem>
-              <SelectItem value="RESOLVED">Verified fixed</SelectItem>
-              <SelectItem value="ACCEPTED_RISK">Risk accepted</SelectItem>
-            </SelectContent>
-          </Select>
+            onValueChange={(value) => refilter(() => setStatus(value || "all"))}
+            ariaLabel="Filter by status"
+            className="w-[160px]"
+            options={[
+              { value: "all", label: "All statuses" },
+              { value: "OPEN", label: "Open" },
+              { value: "IN_PROGRESS", label: "In progress" },
+              { value: "RESOLVED", label: "Verified fixed" },
+              { value: "ACCEPTED_RISK", label: "Risk accepted" },
+            ]}
+          />
         </div>
       </div>
 

@@ -19,13 +19,7 @@ import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import {
   CardsSkeleton,
   EmptyState,
@@ -85,46 +79,30 @@ export function ChangesPage() {
       <PageHeader title={t.changes.title} description={t.changes.intro} />
 
       <div className="flex flex-wrap items-center gap-2">
-        <Select
+        <SelectField
           value={String(days)}
-          onValueChange={(v) => rewindow(() => setDays(Number(v ?? 7)))}
-        >
-          <SelectTrigger
-            size="sm"
-            className="w-[170px]"
-            aria-label={t.changes.windowLabel}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {WINDOWS.map((window) => (
-              <SelectItem key={window} value={String(window)}>
-                {t.changes.windows[window]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          onValueChange={(value) => rewindow(() => setDays(Number(value)))}
+          ariaLabel={t.changes.windowLabel}
+          className="w-[170px]"
+          options={WINDOWS.map((window) => ({
+            value: String(window),
+            label: t.changes.windows[window],
+          }))}
+        />
 
-        <Select
+        <SelectField
           value={kind}
-          onValueChange={(v) => rewindow(() => setKind(v ?? "all"))}
-        >
-          <SelectTrigger
-            size="sm"
-            className="w-[210px]"
-            aria-label={t.changes.kindLabel}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{t.changes.allKinds}</SelectItem>
-            {(Object.keys(t.changes.kind) as AssetChange[]).map((value) => (
-              <SelectItem key={value} value={value}>
-                {t.changes.kind[value]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          onValueChange={(value) => rewindow(() => setKind(value || "all"))}
+          ariaLabel={t.changes.kindLabel}
+          className="w-[210px]"
+          options={[
+            { value: "all", label: t.changes.allKinds },
+            ...(Object.keys(t.changes.kind) as AssetChange[]).map((value) => ({
+              value,
+              label: t.changes.kind[value],
+            })),
+          ]}
+        />
       </div>
 
       {isLoading && <CardsSkeleton count={2} />}

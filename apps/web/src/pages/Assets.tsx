@@ -13,13 +13,7 @@ import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import {
   Table,
   TableBody,
@@ -231,56 +225,59 @@ export function AssetsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={type} onValueChange={resetTo(setType)}>
-            <SelectTrigger size="sm" className="w-[150px]" aria-label="Filter by type">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All types</SelectItem>
-              {types.map((value) => (
-                <SelectItem key={value} value={value}>
-                  {resourceTypeLabel(value)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SelectField
+            value={type}
+            onValueChange={resetTo(setType)}
+            ariaLabel="Filter by type"
+            className="w-[150px]"
+            options={[
+              { value: "all", label: "All types" },
+              ...types.map((value) => ({
+                value,
+                label: resourceTypeLabel(value),
+              })),
+            ]}
+          />
 
-          <Select value={environment} onValueChange={resetTo(setEnvironment)}>
-            <SelectTrigger size="sm" className="w-[160px]" aria-label="Filter by environment">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All environments</SelectItem>
-              <SelectItem value="production">Production</SelectItem>
-              <SelectItem value="development">Development</SelectItem>
-            </SelectContent>
-          </Select>
+          <SelectField
+            value={environment}
+            onValueChange={resetTo(setEnvironment)}
+            ariaLabel="Filter by environment"
+            className="w-[160px]"
+            options={[
+              { value: "all", label: "All environments" },
+              { value: "production", label: "Production" },
+              { value: "development", label: "Development" },
+            ]}
+          />
 
-          <Select value={exposure} onValueChange={resetTo(setExposure)}>
-            <SelectTrigger size="sm" className="w-[150px]" aria-label="Filter by exposure">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All exposure</SelectItem>
-              <SelectItem value="CRITICAL">Critical</SelectItem>
-              <SelectItem value="HIGH">High</SelectItem>
-              <SelectItem value="MEDIUM">Medium</SelectItem>
-              <SelectItem value="LOW">Low</SelectItem>
-              <SelectItem value="UNKNOWN">Unknown</SelectItem>
-            </SelectContent>
-          </Select>
+          <SelectField
+            value={exposure}
+            onValueChange={resetTo(setExposure)}
+            ariaLabel="Filter by exposure"
+            className="w-[150px]"
+            options={[
+              { value: "all", label: "All exposure" },
+              { value: "CRITICAL", label: "Critical" },
+              { value: "HIGH", label: "High" },
+              { value: "MEDIUM", label: "Medium" },
+              { value: "LOW", label: "Low" },
+              { value: "UNKNOWN", label: "Unknown" },
+            ]}
+          />
 
-          <Select value={groupBy} onValueChange={(v) => setGroupBy((v as GroupKey) ?? "none")}>
-            <SelectTrigger size="sm" className="w-[150px]" aria-label="Group assets">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No grouping</SelectItem>
-              <SelectItem value="scope">By resource group</SelectItem>
-              <SelectItem value="resource_type">By type</SelectItem>
-              <SelectItem value="environment">By environment</SelectItem>
-            </SelectContent>
-          </Select>
+          <SelectField
+            value={groupBy}
+            onValueChange={(value) => setGroupBy((value as GroupKey) || "none")}
+            ariaLabel="Group assets"
+            className="w-[150px]"
+            options={[
+              { value: "none", label: "No grouping" },
+              { value: "scope", label: "By resource group" },
+              { value: "resource_type", label: "By type" },
+              { value: "environment", label: "By environment" },
+            ]}
+          />
         </div>
       </div>
       )}

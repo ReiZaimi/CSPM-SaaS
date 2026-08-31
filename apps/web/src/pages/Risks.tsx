@@ -23,13 +23,7 @@ import {
 } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 
 const PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -128,68 +122,50 @@ export function RisksPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Select
+          <SelectField
             value={level}
-            onValueChange={(v) => refilter(() => setLevel(v ?? "all"))}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-[150px]"
-              aria-label="Filter by risk level"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All levels</SelectItem>
-              <SelectItem value="CRITICAL">Critical</SelectItem>
-              <SelectItem value="HIGH">High</SelectItem>
-              <SelectItem value="MEDIUM">Medium</SelectItem>
-              <SelectItem value="LOW">Low</SelectItem>
-              {/* UNKNOWN is a level the risk engine really assigns, and
-                  leaving it out of the filter would hide the risks CloudGuard
-                  could not score -- the ones most worth looking at. */}
-              <SelectItem value="UNKNOWN">Unknown</SelectItem>
-            </SelectContent>
-          </Select>
+            onValueChange={(value) => refilter(() => setLevel(value || "all"))}
+            ariaLabel="Filter by risk level"
+            className="w-[150px]"
+            options={[
+              { value: "all", label: "All levels" },
+              { value: "CRITICAL", label: "Critical" },
+              { value: "HIGH", label: "High" },
+              { value: "MEDIUM", label: "Medium" },
+              { value: "LOW", label: "Low" },
+              // UNKNOWN is a level the risk engine really assigns, and leaving
+              // it out of the filter would hide the risks CloudGuard could not
+              // score — the ones most worth looking at.
+              { value: "UNKNOWN", label: "Unknown" },
+            ]}
+          />
 
-          <Select
+          <SelectField
             value={status}
-            onValueChange={(v) => refilter(() => setStatus(v ?? "all"))}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-[160px]"
-              aria-label="Filter by status"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="IN_PROGRESS">In progress</SelectItem>
-              <SelectItem value="ACCEPTED">Accepted</SelectItem>
-              <SelectItem value="RESOLVED">Resolved</SelectItem>
-            </SelectContent>
-          </Select>
+            onValueChange={(value) => refilter(() => setStatus(value || "all"))}
+            ariaLabel="Filter by status"
+            className="w-[160px]"
+            options={[
+              { value: "all", label: "All statuses" },
+              { value: "OPEN", label: "Open" },
+              { value: "IN_PROGRESS", label: "In progress" },
+              { value: "ACCEPTED", label: "Accepted" },
+              { value: "RESOLVED", label: "Resolved" },
+            ]}
+          />
 
-          <Select
+          <SelectField
             value={kind}
-            onValueChange={(v) => refilter(() => setKind(v ?? "all"))}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-[150px]"
-              aria-label="Filter by kind"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Findings and routes</SelectItem>
-              <SelectItem value="FINDING">Findings only</SelectItem>
-              <SelectItem value="ATTACK_PATH">Attack paths</SelectItem>
-              <SelectItem value="ESCALATION">Escalations</SelectItem>
-            </SelectContent>
-          </Select>
+            onValueChange={(value) => refilter(() => setKind(value || "all"))}
+            ariaLabel="Filter by kind"
+            className="w-[150px]"
+            options={[
+              { value: "all", label: "Findings and routes" },
+              { value: "FINDING", label: "Findings only" },
+              { value: "ATTACK_PATH", label: "Attack paths" },
+              { value: "ESCALATION", label: "Escalations" },
+            ]}
+          />
         </div>
       </div>
 

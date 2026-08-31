@@ -9,13 +9,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const NOT_DECLARED = "none";
@@ -229,19 +223,19 @@ function LevelField({
   return (
     <Field>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Select value={value} onValueChange={(v) => onChange(v ?? NOT_DECLARED)}>
-        <SelectTrigger id={id} size="sm" aria-label={label}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={NOT_DECLARED}>{t.settings.notDeclared}</SelectItem>
-          {LEVELS.map((level) => (
-            <SelectItem key={level} value={level}>
-              {level.charAt(0) + level.slice(1).toLowerCase()}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <SelectField
+        id={id}
+        value={value}
+        onValueChange={(next) => onChange(next || NOT_DECLARED)}
+        ariaLabel={label}
+        options={[
+          { value: NOT_DECLARED, label: t.settings.notDeclared },
+          ...LEVELS.map((level) => ({
+            value: level,
+            label: level.charAt(0) + level.slice(1).toLowerCase(),
+          })),
+        ]}
+      />
     </Field>
   );
 }

@@ -22,13 +22,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import { RemediationPanel } from "@/components/security/RemediationPanel";
 import { cn, formatEffort, resourceTypeLabel } from "@/lib/format";
 
@@ -100,23 +94,19 @@ export function RulesPage() {
             className="pl-8"
           />
         </div>
-        <Select value={severity} onValueChange={(v) => setSeverity(v ?? "all")}>
-          <SelectTrigger
-            size="sm"
-            className="w-[150px]"
-            aria-label="Filter by severity"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All severities</SelectItem>
-            {SEVERITIES.map((value) => (
-              <SelectItem key={value} value={value}>
-                {value.charAt(0) + value.slice(1).toLowerCase()}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <SelectField
+          value={severity}
+          onValueChange={(value) => setSeverity(value || "all")}
+          ariaLabel="Filter by severity"
+          className="w-[150px]"
+          options={[
+            { value: "all", label: "All severities" },
+            ...SEVERITIES.map((value) => ({
+              value,
+              label: value.charAt(0) + value.slice(1).toLowerCase(),
+            })),
+          ]}
+        />
         {/* Offered only when there is something to reveal. A permanent toggle
             on a catalogue with nothing withdrawn implies rules are missing. */}
         {withdrawnCount > 0 && (

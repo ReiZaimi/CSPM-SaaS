@@ -1183,6 +1183,32 @@ the charts were written for.
 
 ---
 
+## 39. A select's trigger renders its own label, everywhere
+
+**Spec:** none. Reported from a screenshot: the changes window read `30`
+instead of "Last 30 days".
+
+§28 recorded this once, for the schedule dropdown, and fixed it there: Base UI
+keeps a select's options in a portal that is **not mounted while the control is
+closed**, so `<SelectValue />` has no item to read a label from and falls back
+to the raw value. What that entry did not do was generalise, and every other
+filter in the product carried the same bug — severity reading `CRITICAL`, group-
+by reading `resource_type`, the report window reading `90`. The machine's word
+for the thing, shown to the person.
+
+So the pattern is a component now. `SelectField` takes one list of options and
+feeds both the trigger and the menu, which closes the second half of the same
+problem: a label that was written twice and updated once. Eleven call sites
+across seven files moved onto it, and there are no bare `<SelectValue />` left
+outside the vendored primitive.
+
+Two details worth keeping: `id` is forwarded so a `FieldLabel`'s `htmlFor`
+still lands on the trigger, and an unrecognised value falls back to printing
+itself — a stored filter from an older build should look odd rather than make
+the control look broken.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

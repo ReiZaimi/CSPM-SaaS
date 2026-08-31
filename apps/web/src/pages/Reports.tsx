@@ -14,13 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import { Spinner } from "@/components/ui/spinner";
 
 type Kind = "executive" | "technical";
@@ -181,21 +175,16 @@ export function ReportsPage() {
           <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Activity window</span>
-              <Select
+              <SelectField
                 value={String(days)}
-                onValueChange={(value) => setDays(Number(value ?? 30))}
-              >
-                <SelectTrigger size="sm" className="w-[150px]" aria-label="Activity window">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {WINDOWS.map((window) => (
-                    <SelectItem key={window} value={String(window)}>
-                      Last {window} days
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onValueChange={(value) => setDays(Number(value))}
+                ariaLabel="Activity window"
+                className="w-[150px]"
+                options={WINDOWS.map((window) => ({
+                  value: String(window),
+                  label: `Last ${window} days`,
+                }))}
+              />
             </div>
             <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
               Sets how far back verified fixes, completed work and the trend line

@@ -10,6 +10,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -156,13 +157,26 @@ describe("SettingsPage", () => {
   });
 
   it("does not offer UNKNOWN as something a customer can declare", async () => {
+    // `userEvent`, because the listbox is built out of pointer events and a
+    // synthetic click never opens it.
+    const user = userEvent.setup();
     mount();
 
-    fireEvent.click(await screen.findByRole("combobox", { name: "Criticality" }));
+    await user.click(await screen.findByRole("combobox", { name: "Criticality" }));
 
-    await waitFor(() => expect(screen.getByText("Not declared")).toBeInTheDocument());
-    expect(screen.getByText("Critical")).toBeInTheDocument();
-    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+    // Asserted on the options rather than on the page text: the trigger now
+    // says the chosen label too, which is the point of the control and would
+    // otherwise make every one of these match twice.
+    const offered = (await screen.findAllByRole("option")).map(
+      (option) => option.textContent,
+    );
+
+    expect(offered).toContain("Not declared");
+    expect(offered).toContain("Critical");
+    // UNKNOWN is CloudGuard's word for "nothing said anything". A customer
+    // declaring it would assert an absence that leaving the field unset
+    // already asserts.
+    expect(offered).not.toContain("Unknown");
   });
 
   it("seeds the form from an existing declaration rather than showing it as undeclared", async () => {
