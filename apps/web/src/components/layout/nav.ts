@@ -9,6 +9,7 @@ import {
   ListChecksIcon,
   RadarIcon,
   RouteIcon,
+  SettingsIcon,
   ShieldAlertIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -61,6 +62,10 @@ export const NAV_GROUPS = [
       { to: "/scans", label: "Scans", icon: ActivityIcon },
       { to: "/rules", label: "Rules", icon: ListChecksIcon },
       { to: "/connections", label: "Cloud", icon: CloudIcon },
+      // Last, and in this group on purpose: everything here is something a
+      // person told CloudGuard, which is evidence of exactly the same kind as
+      // a scan — just from a different source.
+      { to: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
 ] as const;

@@ -834,6 +834,26 @@ operate.
 
 ---
 
+## Settings: the evidence a person supplies
+
+`PATCH /organizations` takes no id in the path. Deleting a *different*
+organization from the one on screen is a real thing to want and DELETE keeps
+its id; editing one is not, so the target comes from the tenant context and the
+membership check has already happened.
+
+Two write shapes sit on this screen and they are deliberately opposite. The
+organization profile is patched — only the fields sent are written, so saving a
+corrected name cannot clear a country nobody touched. A context declaration is
+a *statement*, replaced whole, so a reader always knows what it currently
+claims without diffing. `UNKNOWN` is refused by the API and absent from the
+menus for the same reason: it is CloudGuard's own answer for "nothing said
+anything", and a customer declaring it would assert an absence that leaving the
+field unset already asserts.
+
+Declarations are not retroactive and the screen says so. A risk score is what a
+scan concluded; rewriting stored scores from a form would leave findings
+carrying numbers no observation ever produced.
+
 ## Open items carried forward
 
 **The security score floors at zero quickly.** The deductions in

@@ -8,11 +8,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
+from app.core.deps import TenantContext
 from app.core.enums import Role
 from app.core.errors import OrganizationNotFound, PermissionDenied
 from app.core.security import AuthenticatedUser
 from app.models.organization import Organization, OrganizationMember
-from app.schemas.organization import OrganizationCreate
+from app.schemas.organization import OrganizationCreate, OrganizationUpdate
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 
@@ -63,6 +64,38 @@ async def list_memberships(
     )
     rows = (await session.execute(stmt)).all()
     return [(org, Role(role)) for org, role in rows]
+
+
+async def update_organization(
+    session: AsyncSession,
+    tenant: TenantContext,
+    payload: OrganizationUpdate,
+) -> Organization:
+    """Correct how an organization describes itself. Owners and admins.
+
+    Scoped to the organization the request is already acting in rather than an
+    id in the path: unlike deletion, there is no reason to edit a *different*
+    organization from the one on screen, and taking the id from the tenant
+    context means the membership check has already happened.
+
+    Only the fields present in the payload are written. ``model_dump`` with
+    ``exclude_unset`` is what makes that true -- without it, a form that submits
+    a name would post ``country: null`` and clear a value nobody edited.
+    """
+    tenant.require_role(Role.OWNER, Role.ADMIN)
+
+    org = await session.get(Organization, tenant.organization_id)
+    if org is None:  # pragma: no cover -- the tenant context resolved it
+        raise OrganizationNotFound()
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(org, field, value)
+
+    # Not ``session.commit()``. On the API path this session is inside
+    # ``rls_session``'s ``session.begin()``, and committing there tears down the
+    # transaction-scoped ``SET LOCAL ROLE authenticated`` that RLS depends on.
+    await commit_unless_externally_managed(session)
+    return org
 
 
 async def delete_organization(

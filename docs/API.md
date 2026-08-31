@@ -4,7 +4,8 @@
 
 ```
 POST   /api/v1/organizations              GET  /api/v1/organizations
-GET    /api/v1/organizations/{id}
+GET    /api/v1/organizations/{id}          PATCH /api/v1/organizations
+DELETE /api/v1/organizations/{id}
 
 POST   /api/v1/cloud-connections           GET  /api/v1/cloud-connections
 GET    /api/v1/cloud-connections/options   GET  /api/v1/cloud-connections/{id}

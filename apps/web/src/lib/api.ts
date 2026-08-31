@@ -163,5 +163,8 @@ export const api = {
     request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}), ...opts }),
   patch: <T,>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
+  /** A full replacement. Used where the API stores a statement, not a profile. */
+  put: <T,>(path: string, body: unknown) =>
+    request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
   del: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
 };

@@ -15,6 +15,7 @@ export const en = {
     dashboard: "Dashboard",
     changes: "Changes",
     reports: "Reports",
+    settings: "Settings",
     assets: "Assets",
     findings: "Findings",
     risks: "Risks",
@@ -557,6 +558,68 @@ export const en = {
     // libraries, which is an operator problem and not something a retry fixes.
     noPdfTitle: "This server cannot produce PDFs",
     failed: "Could not generate the report",
+  },
+  settings: {
+    title: "Settings",
+    intro:
+      "What CloudGuard knows about you and your environment that it could not find out by looking.",
+
+    // The organization profile. A correction, not a statement: saving a name
+    // must not clear a country nobody touched.
+    orgTitle: "Organization",
+    orgHelp: "How this organization is named in CloudGuard and on its reports.",
+    orgName: "Name",
+    orgIndustry: "Industry",
+    orgCountry: "Country",
+    orgCountryHelp: "Two-letter country code, e.g. AL.",
+    orgSlug: "Identifier",
+    orgSlugHelp:
+      "Fixed when the organization was created and unchanged by a rename \u2014 it appears in stored references, so changing it would rename the thing rather than relabel it.",
+    save: "Save changes",
+    saving: "Saving\u2026",
+    saved: "Saved",
+    orgFailed: "Could not save the organization",
+    // Only owners and admins may edit, and a reader who cannot should be told
+    // why rather than meeting disabled fields with no explanation.
+    orgReadOnly:
+      "Your role can read this but not change it. An owner or an admin can edit the organization.",
+
+    // The declarations. This is the part that changes what CloudGuard reports.
+    contextTitle: "What your subscriptions are for",
+    contextHelp:
+      "CloudGuard scores a finding by what it would cost you \u2014 how critical the asset is, how sensitive its data, how exposed it is. It infers those from names and tags where it can, and inference is the weakest evidence it has. Anything you declare here beats it.",
+    contextEmpty: "No subscriptions have been discovered yet",
+    contextEmptyDetail:
+      "Connect a cloud environment and CloudGuard will discover the subscriptions beneath it. There is nothing to describe until then.",
+    environment: "Environment",
+    criticality: "Criticality",
+    dataSensitivity: "Data sensitivity",
+    note: "Note",
+    noteHelp: "Why this is what it is. Recorded with the declaration.",
+    environmentPlaceholder: "production, staging, sandbox\u2026",
+    // UNKNOWN is deliberately absent from these menus, and the copy says so:
+    // it is CloudGuard's own word for "nothing said anything", so declaring it
+    // would assert an absence that saying nothing already asserts.
+    notDeclared: "Not declared",
+    notDeclaredHelp:
+      "Leaving a field unset is not the same as declaring it unknown \u2014 CloudGuard goes back to working it out for itself.",
+    declaredBy: "Declared",
+    declare: "Save declaration",
+    clear: "Clear declaration",
+    clearing: "Clearing\u2026",
+    contextFailed: "Could not save the declaration",
+    // The honest bit: a declaration is not retroactive.
+    appliesNext:
+      "Applied by the next evaluation of this subscription \u2014 the next scan, or a replay of its latest capture. Existing scores are left alone: a risk score is what a scan concluded, and rewriting stored numbers from a form would leave findings carrying figures no observation ever produced.",
+
+    dangerTitle: "Delete this organization",
+    dangerHelp:
+      "Removes the organization and everything under it: connections, discovered subscriptions, assets, scans, findings, risks and audit history. There is no soft delete and no undo.",
+    dangerConfirmLabel: "Type the organization name to confirm",
+    delete: "Delete organization",
+    deleting: "Deleting\u2026",
+    deleteFailed: "Could not delete the organization",
+    dangerOwnerOnly: "Only an owner can delete an organization.",
   },
   remediation: { title: "Remediation", empty: "No remediation tasks yet." },
   common: {

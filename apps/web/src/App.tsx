@@ -11,6 +11,7 @@ import { ConnectPage } from "@/pages/Connect";
 import { DashboardPage } from "@/pages/Dashboard";
 import { ChangesPage } from "@/pages/Changes";
 import { ReportsPage } from "@/pages/Reports";
+import { SettingsPage } from "@/pages/Settings";
 import { AssetsPage } from "@/pages/Assets";
 import { AssetDetailPage } from "@/pages/AssetDetail";
 import { FindingsPage } from "@/pages/Findings";
@@ -85,6 +86,7 @@ export function App() {
         <Route path="/compliance" element={<CompliancePage />} />
         <Route path="/compliance/:frameworkId" element={<ComplianceFrameworkPage />} />
         <Route path="/connections" element={<ConnectPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

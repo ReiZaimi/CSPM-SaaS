@@ -17,6 +17,27 @@ export interface Organization {
   role?: string;
 }
 
+/**
+ * What a customer has said about a subscription that CloudGuard could not
+ * discover.
+ *
+ * The risk engine multiplies a finding's severity by asset criticality, data
+ * sensitivity and exposure — so a declaration is the highest-leverage input a
+ * customer can give, and it beats anything inferred from a name or a tag.
+ *
+ * A statement rather than a profile: the PUT replaces the whole thing, and a
+ * field left out is one the customer is no longer claiming.
+ */
+export interface ContextDeclaration {
+  cloud_account_id: string;
+  environment: string | null;
+  criticality: Level | null;
+  data_sensitivity: Level | null;
+  note: string | null;
+  declared_by_user_id: string | null;
+  declared_at: string;
+}
+
 export interface CloudAccount {
   id: string;
   provider: string;

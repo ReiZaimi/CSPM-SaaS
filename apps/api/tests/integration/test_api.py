@@ -1139,3 +1139,91 @@ class TestReports:
         assert response.content.startswith(b"%PDF-")
         assert "attachment" in response.headers["content-disposition"]
         assert "cloudguard-contoso-technical.pdf" in response.headers["content-disposition"]
+
+
+class TestOrganizationProfile:
+    """Correcting how an organization describes itself.
+
+    A profile, not a statement: only the fields present are written, because a
+    form that saves a name must not clear a country nobody touched. That is the
+    opposite of a context declaration, and the difference is worth pinning.
+    """
+
+    async def test_a_name_can_be_corrected(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.patch(
+            "/api/v1/organizations", json={"name": "Contoso"}, headers=auth_header(user)
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["name"] == "Contoso"
+
+    async def test_a_field_left_out_is_left_alone(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        await client.patch(
+            "/api/v1/organizations",
+            json={"industry": "Banking", "country": "al"},
+            headers=auth_header(user),
+        )
+        response = await client.patch(
+            "/api/v1/organizations", json={"name": "Contoso Group"}, headers=auth_header(user)
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()["data"]
+        assert body["name"] == "Contoso Group"
+        # Neither was in the second request, and neither may be cleared by it.
+        assert body["industry"] == "Banking"
+        assert body["country"] == "AL"
+
+    async def test_the_slug_survives_a_rename(self, client, cleanup_orgs) -> None:
+        # It is an identifier that already appears in stored references.
+        # Changing it because somebody fixed a display name would be renaming
+        # the thing rather than relabelling it.
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        before = await client.get(f"/api/v1/organizations/{org}", headers=auth_header(user))
+        after = await client.patch(
+            "/api/v1/organizations", json={"name": "Something Else"}, headers=auth_header(user)
+        )
+
+        assert after.json()["data"]["slug"] == before.json()["data"]["slug"]
+
+    async def test_an_edit_cannot_reach_another_organization(
+        self, client, cleanup_orgs
+    ) -> None:
+        user_a, user_b = uuid.uuid4(), uuid.uuid4()
+        org_a = await make_org(client, user_a, "Contoso")
+        org_b = await make_org(client, user_b, "Fabrikam")
+        cleanup_orgs.extend([uuid.UUID(org_a), uuid.UUID(org_b)])
+
+        # The target comes from the tenant context, so naming another
+        # organization in the header is refused rather than honoured.
+        response = await client.patch(
+            "/api/v1/organizations",
+            json={"name": "Taken over"},
+            headers={**auth_header(user_a), "X-Organization-Id": org_b},
+        )
+
+        assert response.status_code == 404
+        still = await client.get(f"/api/v1/organizations/{org_b}", headers=auth_header(user_b))
+        assert still.json()["data"]["name"] == "Fabrikam"
+
+    async def test_a_name_that_is_too_short_is_refused(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.patch(
+            "/api/v1/organizations", json={"name": "X"}, headers=auth_header(user)
+        )
+
+        assert response.status_code == 422
