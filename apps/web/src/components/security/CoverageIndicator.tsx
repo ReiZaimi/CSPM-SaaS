@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { CheckCircle2Icon, ClockIcon, TriangleAlertIcon } from "lucide-react";
 
@@ -10,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { cn } from "@/lib/format";
+import { groupCauses } from "@/lib/collectionErrors";
 
 /**
  * How much of the environment the verdicts above were actually formed from.
@@ -25,6 +27,45 @@ import { cn } from "@/lib/format";
  * are, and which categories could not be collected. The third is the one people
  * act on, and it was previously a wall of `category: raw error` text.
  */
+/**
+ * One cause, and everything it stopped.
+ *
+ * The provider reports a failure per evidence key, and a single missing admin
+ * consent fails several of them with the same nine-hundred-character sentence
+ * about which Graph scopes were not granted. Printed verbatim, that arrived as
+ * the same paragraph three times over and buried the one line worth reading.
+ *
+ * So identical causes are stated once with the keys they cost named beside
+ * them, and the provider's own words are kept -- clipped, with the rest one
+ * click away. Kept rather than paraphrased: this is the text an administrator
+ * will search for, and a summary of an Azure error is not an Azure error.
+ */
+function GapCause({ keys, message }: { keys: string[]; message: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = message.length > 180;
+
+  return (
+    <li>
+      {keys.length > 0 && (
+        <span className="font-medium text-foreground">{keys.join(", ")}</span>
+      )}
+      <span className="text-muted-foreground">
+        {keys.length > 0 && " — "}
+        {long && !expanded ? `${message.slice(0, 180).trimEnd()}…` : message}
+      </span>
+      {long && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="ml-1.5 whitespace-nowrap underline underline-offset-2 transition-colors hover:text-foreground"
+        >
+          {expanded ? "Show less" : "Show the whole message"}
+        </button>
+      )}
+    </li>
+  );
+}
+
 export function CoverageIndicator({
   ratio,
   unknown,
@@ -114,16 +155,24 @@ export function CoverageIndicator({
         )}
 
         {gaps.length > 0 && (
-          <div className="flex flex-col gap-2 rounded-lg border border-dashed border-medium-border bg-medium-bg/40 p-3">
+          <div className="flex flex-col gap-2.5 rounded-lg border border-dashed border-medium-border bg-medium-bg/40 p-3">
             <p className="text-xs font-medium text-medium">
               {gaps.length} {gaps.length === 1 ? "category" : "categories"} could not be
               collected
             </p>
-            <ul className="flex flex-col gap-1.5">
+            <ul className="flex flex-col gap-2.5">
               {gaps.map(([category, reason]) => (
                 <li key={category} className="text-xs leading-relaxed">
                   <span className="font-medium capitalize">{category}</span>
-                  <span className="text-muted-foreground"> — {reason}</span>
+                  <ul className="mt-1 flex flex-col gap-1.5">
+                    {groupCauses(reason).map((cause) => (
+                      <GapCause
+                        key={cause.message}
+                        keys={cause.keys}
+                        message={cause.message}
+                      />
+                    ))}
+                  </ul>
                 </li>
               ))}
             </ul>

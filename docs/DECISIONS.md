@@ -1012,6 +1012,61 @@ where they actually are.
 
 ---
 
+## 35. Tailwind v4, because the primitives were already written in it
+
+**Spec:** none. §24 adopted shadcn/ui through the CLI and recorded that the CLI
+wrote v4 CSS against a v3 config, patched at the time with a hand-written
+bridge in `tailwind.config.js`.
+
+The bridge was not enough, and the way it failed is the point: **v3 does not
+error on v4 syntax, it emits nothing.** Four constructs in the vendored
+components compiled to empty:
+
+* `p-(--card-spacing)`, `w-(--anchor-width)`, `origin-(--transform-origin)` —
+  the parenthesis shorthand. Cards lost every scrap of internal padding;
+  popovers, selects and tooltips lost their anchor sizing.
+* `[--card-spacing:--spacing(4)]` — emitted the literal `var(--spacing(4))`,
+  which is not a value, so the variable was never set either.
+* `in-data-[...]`, `@container/...` — dropped variants.
+* `ring-foreground/10` — an opacity modifier against an oklch `var()` colour,
+  which v3 cannot compute. **This is the one that was visible from across the
+  room.** The class was dropped while the `ring-1` beside it survived, so every
+  card, dropdown and tooltip fell back to Tailwind's default ring colour —
+  blue — and the whole dark theme was outlined in it.
+
+So the app is on v4, which is what the components were written for. The theme
+moved into `src/index.css` as `@theme inline` and `tailwind.config.js` is
+deleted; `@custom-variant dark (&:is(.dark *))` keeps the class-based theme
+§25 requires, and `* { @apply border-border outline-ring/50 }` now resolves,
+which is the recipe §24 had to work around.
+
+**The severity scale keeps its own layer, unchanged.** `--color-critical` and
+friends are declared beside the semantic tokens and mapped from the same
+`--sev-*` variables, for the reason §24 gave: `destructive` says a button
+deletes something and `critical` says an attacker can reach your data.
+
+Autoprefixer is gone — v4 prefixes and inlines `@import` itself.
+
+## 36. A provider's failure is stated once, not once per key it cost
+
+**Spec:** none.
+
+Azure reports collection failures per evidence key, so a single missing admin
+consent arrives as three entries carrying the same nine-hundred-character
+sentence about ungranted Graph scopes. The dashboard printed the joined string
+verbatim, and the coverage card — the place a customer goes to find out what
+CloudGuard could not see — became a wall of the same paragraph repeated.
+
+Identical causes are now stated once with the keys they cost named beside them,
+and the message is clipped with the rest one click away. Clipped rather than
+summarised: this is the text an administrator will paste into a search box, and
+a paraphrase of an Azure error is not an Azure error. The splitting is
+defensive about the provider's own punctuation — a part that does not look like
+`key: message` is joined back onto the one before it, because a message cut in
+half on its own semicolon is worse than a long one.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
