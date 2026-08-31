@@ -10,13 +10,7 @@ import { IN_FLIGHT } from "@/components/scans/status";
 import { CardsSkeleton, EmptyState, PageHeader } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import { Spinner } from "@/components/ui/spinner";
 
 /**
@@ -72,22 +66,22 @@ export function ScansPage() {
           description="Every time CloudGuard has read your environment, and what it could reach."
         />
         <div className="flex shrink-0 gap-2">
-          <Select
+          {/* The subscription's name, not its row id. Closed, the primitive
+              had no mounted option to read a label from and printed the UUID —
+              an identifier the customer has never seen and cannot act on. */}
+          <SelectField
             value={selected}
-            onValueChange={(v) => setAccountId(v ?? "")}
+            onValueChange={(value) => setAccountId(value)}
             disabled={scannable.length === 0}
-          >
-            <SelectTrigger size="sm" className="w-[200px]" aria-label="Subscription to scan">
-              <SelectValue placeholder="No verified connections" />
-            </SelectTrigger>
-            <SelectContent>
-              {scannable.map((account) => (
-                <SelectItem key={account.id} value={account.id}>
-                  {account.account_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            ariaLabel="Subscription to scan"
+            className="w-[200px]"
+            placeholder="No verified connections"
+            fallbackLabel={() => "Unknown subscription"}
+            options={scannable.map((account) => ({
+              value: account.id,
+              label: account.account_name,
+            }))}
+          />
           <Button
             size="sm"
             onClick={() => selected && start.mutate(selected)}

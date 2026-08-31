@@ -1198,14 +1198,22 @@ for the thing, shown to the person.
 
 So the pattern is a component now. `SelectField` takes one list of options and
 feeds both the trigger and the menu, which closes the second half of the same
-problem: a label that was written twice and updated once. Eleven call sites
-across seven files moved onto it, and there are no bare `<SelectValue />` left
-outside the vendored primitive.
+problem: a label that was written twice and updated once. Every select in the
+product — sixteen of them across nine files — goes through it, and
+`components/ui/select.tsx` is imported by nothing else.
 
-Two details worth keeping: `id` is forwarded so a `FieldLabel`'s `htmlFor`
-still lands on the trigger, and an unrecognised value falls back to printing
-itself — a stored filter from an older build should look odd rather than make
-the control look broken.
+**The worst instance was not a filter.** The scans page picks which
+subscription to read, keyed by the account's row id, so closed it displayed a
+UUID: an identifier the customer has never seen, cannot recognise and cannot
+act on. `ScheduleControl`, which §28 had already fixed by hand, moved onto the
+same component rather than staying a second implementation of it.
+
+Three details worth keeping: `id` is forwarded so a `FieldLabel`'s `htmlFor`
+still lands on the trigger; an unrecognised value falls back to printing itself
+— a stored filter from an older build should look odd rather than make the
+control look broken; and `fallbackLabel` overrides that where the value is an
+identifier rather than a word, so an unknown subscription reads "Unknown
+subscription" and an interval the list does not offer keeps its own "18 h".
 
 ---
 

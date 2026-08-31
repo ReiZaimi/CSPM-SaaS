@@ -31,6 +31,9 @@ export function SelectField({
   ariaLabel,
   className,
   size = "sm",
+  disabled,
+  placeholder,
+  fallbackLabel,
 }: {
   /** Forwarded to the trigger, so a `FieldLabel`'s `htmlFor` still lands. */
   id?: string;
@@ -41,20 +44,38 @@ export function SelectField({
   ariaLabel: string;
   className?: string;
   size?: "sm" | "default";
+  disabled?: boolean;
+  /** Shown when nothing is selected — usually because there is nothing to pick. */
+  placeholder?: string;
+  /**
+   * What to call a value the option list does not carry. Without it the raw
+   * value is printed, which is right for a stale filter and wrong for anything
+   * whose value is an identifier a person never chose to read.
+   */
+  fallbackLabel?: (value: string) => string;
 }) {
   return (
-    <Select value={value} onValueChange={(next) => onValueChange(String(next ?? ""))}>
+    <Select
+      value={value}
+      disabled={disabled}
+      onValueChange={(next) => onValueChange(String(next ?? ""))}
+    >
       <SelectTrigger
         id={id}
         size={size}
         className={className}
         aria-label={ariaLabel}
       >
-        <SelectValue>
-          {(current) =>
-            options.find((option) => option.value === String(current))?.label ??
-            String(current ?? "")
-          }
+        <SelectValue placeholder={placeholder}>
+          {(current) => {
+            const chosen = String(current ?? "");
+            if (!chosen) return placeholder ?? "";
+            return (
+              options.find((option) => option.value === chosen)?.label ??
+              fallbackLabel?.(chosen) ??
+              chosen
+            );
+          }}
         </SelectValue>
       </SelectTrigger>
       <SelectContent>

@@ -4,13 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { CloudConnection } from "@/lib/types";
 import { useT } from "@/i18n";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectField } from "@/components/common/SelectField";
 import { cn } from "@/lib/format";
 
 /**
@@ -99,39 +93,23 @@ export function ScheduleControl({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <Select
+        <SelectField
           value={known ? String(current ?? "") : String(current)}
           disabled={save.isPending}
-          onValueChange={(value) =>
-            save.mutate(value === null || value === "" ? null : Number(value))
-          }
-        >
-          <SelectTrigger size="sm" className="w-[190px]" aria-label={t.connection.scheduleLabel}>
-            {/* Rendered from the value rather than left to the primitive: the
-                options live in a portal that is not mounted while the control
-                is closed, so the trigger would otherwise show the raw number
-                of hours instead of what it means. */}
-            <SelectValue>
-              {(value) =>
-                options.find((option) => option.value === value)?.label ??
-                (value ? `${value} h` : t.connection.scheduleManual)
-              }
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {/* An interval the list does not offer stays selectable, so
-                choosing something else is a decision rather than the only way
-                out of a dropdown that cannot show the current value. */}
-            {!known && current !== null && (
-              <SelectItem value={String(current)}>{current} h</SelectItem>
-            )}
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          onValueChange={(value) => save.mutate(value === "" ? null : Number(value))}
+          ariaLabel={t.connection.scheduleLabel}
+          className="w-[190px]"
+          // An interval the list does not offer stays selectable and keeps its
+          // own label, so choosing something else is a decision rather than the
+          // only way out of a dropdown that cannot show the current value.
+          fallbackLabel={(value) => `${value} h`}
+          options={[
+            ...(!known && current !== null
+              ? [{ value: String(current), label: `${current} h` }]
+              : []),
+            ...options,
+          ]}
+        />
         {save.isPending && (
           <span className="text-xs text-muted-foreground">{t.connection.scheduleSaving}</span>
         )}
