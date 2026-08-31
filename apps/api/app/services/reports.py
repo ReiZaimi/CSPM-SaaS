@@ -109,6 +109,7 @@ def _posture(dashboard: dict) -> dict:
     is "whatever happened to exist" -- so a report could open with LOW.
     """
     severity = dashboard["findings_by_severity"]
+    status = dashboard["findings_by_status"]
     return {
         "security_score": dashboard["security_score"],
         "score_delta": dashboard["score_delta"],
@@ -120,7 +121,11 @@ def _posture(dashboard: dict) -> dict:
             {"severity": level.value, "count": int(severity.get(level.value, 0))}
             for level in SEVERITY_ORDER
         ],
-        "by_status": dashboard["findings_by_status"],
+        "by_status": status,
+        # Named separately because it is the one status a summary must not
+        # quietly absorb: a finding accepted as risk is still in the
+        # environment, and is counted neither as open nor as fixed.
+        "accepted_risk_count": int(status.get(FindingStatus.ACCEPTED_RISK.value, 0)),
         "history": dashboard["history"],
     }
 

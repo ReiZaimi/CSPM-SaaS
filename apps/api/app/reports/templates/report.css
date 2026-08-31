@@ -49,6 +49,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .sev-LOW      { color: #3f6212; background: #f7fee7; border-color: #d9f99d; }
 .sev-UNKNOWN  { color: #44403c; background: #fafaf9; border-color: #a8a29e; border-style: dashed; }
 
+/* The sparkline. Sized in mm so it prints at a known width rather than
+   inheriting whatever the page happens to be. */
+.trend { width: 100%; height: 24mm; display: block; margin: 2mm 0 1mm; }
+
 .note { border: 0.4pt solid #d6d3d1; background: #fafaf9; padding: 2.5mm 3mm; margin: 3mm 0; }
 .note-warn { border-color: #fde68a; background: #fefce8; }
 .note-title { font-weight: 600; margin-bottom: 1mm; }

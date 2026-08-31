@@ -20,6 +20,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.errors import NotConfigured
+from app.reports.chart import score_trend_svg
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -52,6 +53,10 @@ def _format_datetime(value: str | None) -> str:
 
 
 _env.filters["datetime"] = _format_datetime
+# Marked safe by the template rather than here: the function builds the SVG
+# from integers it has already bounded, and nothing a customer can name reaches
+# it.
+_env.filters["score_trend"] = score_trend_svg
 
 
 def render_html(report: dict[str, Any]) -> str:

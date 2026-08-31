@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.reports.chart import VIEW_HEIGHT, score_trend_svg
 from app.reports.render import render_html
 from app.services.reports import _evidence, _posture
 
@@ -314,3 +315,80 @@ def test_both_reports_carry_the_same_posture_block(kind: str):
 
     assert "84" in html
     assert "Assets under assessment" in html
+
+
+# --- the trend ------------------------------------------------------------
+
+
+def readings(*scores: int) -> list[dict]:
+    return [
+        {"observed_at": f"2026-08-{day + 1:02d}T09:00:00+00:00", "security_score": score}
+        for day, score in enumerate(scores)
+    ]
+
+
+def test_one_reading_draws_no_trend():
+    # A line through a single point invites the reader to see a direction
+    # nobody has measured.
+    assert score_trend_svg(readings(84)) == ""
+    assert score_trend_svg([]) == ""
+
+
+def test_a_trend_is_drawn_on_a_fixed_scale_not_a_fitted_one():
+    # Fitting the axis to the observed range is the most common way a
+    # sparkline lies: a wobble would climb as steeply as a real recovery.
+    wobble = score_trend_svg(readings(81, 84))
+    climb = score_trend_svg(readings(20, 84))
+
+    def last_y(svg: str) -> float:
+        return float(svg.split('<circle cx="')[1].split('cy="')[1].split('"')[0])
+
+    def first_y(svg: str) -> float:
+        return float(svg.split('<polyline points="')[1].split(",")[1].split(" ")[0])
+
+    # Same endpoint on both, because both end at 84 on a 0-100 scale.
+    assert last_y(wobble) == pytest.approx(last_y(climb))
+    # And a genuinely different start.
+    assert first_y(climb) > first_y(wobble)
+
+
+def test_a_score_outside_the_scale_is_clamped_rather_than_drawn_off_the_chart():
+    svg = score_trend_svg(readings(-10, 140))
+
+    ys = [float(pair.split(",")[1]) for pair in
+          svg.split('<polyline points="')[1].split('"')[0].split(" ")]
+    assert all(0 <= y <= VIEW_HEIGHT for y in ys)
+
+
+def test_the_report_draws_the_trend_when_there_is_one():
+    html = render_html(report(dashboard={"history": readings(60, 72, 84)}))
+
+    assert "<svg" in html
+    assert "across the last 3 readings" in html
+
+
+def test_the_report_draws_no_trend_from_a_single_reading():
+    html = render_html(report(dashboard={"history": readings(84)}))
+
+    assert "<svg" not in html
+
+
+# --- accepted risk ---------------------------------------------------------
+
+
+def test_an_accepted_risk_is_counted_rather_than_absorbed_into_not_open():
+    # A finding somebody decided to live with is still in the environment.
+    # Silently excluding it lets a report claim an estate that is clean by
+    # decision rather than by remediation.
+    html = render_html(
+        report(dashboard={"findings_by_status": {"OPEN": 7, "ACCEPTED_RISK": 4}})
+    )
+
+    assert "accepted as risk" in html
+    assert "not a fix" in html
+
+
+def test_nothing_is_said_about_accepted_risk_when_there_is_none():
+    html = render_html(report())
+
+    assert "accepted as risk" not in html

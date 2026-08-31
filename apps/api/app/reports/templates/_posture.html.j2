@@ -19,6 +19,23 @@
   {% endif %}
 </div>
 
+{#
+  The shape behind the delta. One number says something moved; the line says
+  whether that is a trend or a wobble, which is the difference between a
+  customer acting on this report and filing it.
+
+  `safe` because the SVG is built from integers the chart module has already
+  bounded to 0-100 -- no customer-supplied string reaches it.
+#}
+{% set trend = report.posture.history | score_trend %}
+{% if trend %}
+{{ trend | safe }}
+<p class="small muted">
+  Security score across the last {{ report.posture.history | length }} readings,
+  on a fixed 0–100 scale.
+</p>
+{% endif %}
+
 <table>
   <thead>
     <tr><th>Severity</th><th class="num">Open findings</th></tr>
@@ -45,9 +62,25 @@
       <td>Share of findings ever raised that are now verified fixed</td>
       <td class="num">{{ (report.posture.remediation_rate * 100) | round(0) | int }}%</td>
     </tr>
+    {#
+      A finding somebody decided to live with is not a finding that went away.
+      Folding accepted risks into "not open" would let a report claim a clean
+      environment that is clean by decision rather than by remediation, so the
+      count is stated wherever it is not zero.
+    #}
+    {% if report.posture.accepted_risk_count %}
+    <tr>
+      <td>Open findings accepted as risk</td>
+      <td class="num">{{ report.posture.accepted_risk_count }}</td>
+    </tr>
+    {% endif %}
   </tbody>
 </table>
 <p class="small muted">
   "Verified fixed" means a later scan observed the check passing. CloudGuard
   never closes a finding because somebody said it was fixed.
+  {% if report.posture.accepted_risk_count %}
+  An accepted risk is a decision to live with a finding, not a fix — it is
+  excluded from the counts above and is still present in the environment.
+  {% endif %}
 </p>
