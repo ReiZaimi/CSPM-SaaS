@@ -6,6 +6,7 @@ import { RiskScore } from "@/components/security/SecurityScore";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
+import { stagger } from "@/lib/motion";
 import { cn } from "@/lib/format";
 
 type Risk = Dashboard["top_risks"][number];
@@ -59,7 +60,11 @@ export function PriorityRisks({ risks }: { risks: Risk[] }) {
       ) : (
         <ol className="border-t">
           {risks.map((risk, index) => (
-            <li key={risk.id}>
+            <li
+              key={risk.id}
+              className="[animation:cg-rise_260ms_ease-out_both]"
+              style={stagger(index)}
+            >
               <Link
                 to={`/risks/${risk.id}`}
                 className="group flex items-start gap-4 border-b px-5 py-3.5 transition-colors last:border-0 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"

@@ -34,7 +34,7 @@ describe("ScoreTrend", () => {
     render(<ScoreTrend history={[reading(41, 1)]} />);
 
     expect(screen.getByText(/One scan so far/)).toBeInTheDocument();
-    expect(screen.queryByText("Score over time")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Score over time/)).not.toBeInTheDocument();
   });
 
   it("says so on a first-ever scan too", () => {
@@ -51,7 +51,12 @@ describe("ScoreTrend", () => {
     // renders nothing — an assertion on the SVG would be testing jsdom's
     // layout engine, and one on the absence of a legend would pass for the
     // same empty reason whether the rule held or not.
-    expect(screen.getByText("Score over time")).toBeInTheDocument();
+    // The description is the signal that the component chose to chart — and it
+    // is the chart *in words*, which is what a screen reader gets from a canvas
+    // of marks. The marks themselves are deliberately not asserted: jsdom gives
+    // every element a zero-size box, so `ResponsiveContainer` measures 0x0 and
+    // correctly renders nothing.
+    expect(screen.getByText(/Score over time: 2 readings/)).toBeInTheDocument();
     expect(screen.queryByText(/One scan so far/)).not.toBeInTheDocument();
   });
 });

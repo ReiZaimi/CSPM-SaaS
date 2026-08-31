@@ -10,6 +10,7 @@ import {
 import type { ChangeEvent } from "@/lib/types";
 import { useT } from "@/i18n";
 import { changeDirection } from "@/lib/changes";
+import { stagger } from "@/lib/motion";
 import { buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatDate } from "@/lib/format";
@@ -77,8 +78,8 @@ export function RecentChanges({
 
         {!loading && rows.length > 0 && (
           <ul>
-            {rows.map((event) => (
-              <ChangeLine key={event.id} event={event} />
+            {rows.map((event, index) => (
+              <ChangeLine key={event.id} event={event} index={index} />
             ))}
           </ul>
         )}
@@ -87,7 +88,7 @@ export function RecentChanges({
   );
 }
 
-function ChangeLine({ event }: { event: ChangeEvent }) {
+function ChangeLine({ event, index }: { event: ChangeEvent; index: number }) {
   const t = useT();
   const attribute = event.change.endsWith("_CHANGED");
   const moved = attribute
@@ -97,7 +98,10 @@ function ChangeLine({ event }: { event: ChangeEvent }) {
   const { Icon, tone } = mark(event.change, moved);
 
   return (
-    <li className="flex items-center gap-3 border-b px-5 py-2.5 last:border-0">
+    <li
+      className="flex items-center gap-3 border-b px-5 py-2.5 last:border-0 [animation:cg-rise_260ms_ease-out_both]"
+      style={stagger(index)}
+    >
       <Icon className={cn("size-4 shrink-0", tone)} aria-hidden />
 
       <div className="min-w-0 flex-1">

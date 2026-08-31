@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import (
+    FindingEvent,
     FindingStatus,
     Level,
     RiskKind,
@@ -21,6 +22,7 @@ from app.core.enums import (
     TaskOutcome,
 )
 from app.models.finding import Finding
+from app.models.history import FindingEventRecord
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding, RiskHistory
 from app.models.scan import Evidence, Scan, ScanRuleResult
@@ -156,6 +158,10 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
         "asset_count": int(asset_count),
         "verified_resolved_last_30_days": int(resolved_recently),
         "remediation_rate": _remediation_rate(status_counts),
+        # What actually happened week by week, rather than the standing total.
+        # A rate cannot tell a team that fixed everything last year from one
+        # fixing things this week, and "did it come back" is invisible in both.
+        "remediation_activity": await _remediation_activity(session, organization_id),
         "top_risks": [
             {
                 "id": str(r.id),
@@ -196,6 +202,56 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
             else None
         ),
     }
+
+
+REMEDIATION_WEEKS = 8
+
+
+async def _remediation_activity(
+    session: AsyncSession, organization_id: UUID
+) -> list[dict]:
+    """Findings raised, fixed and *come back*, by week.
+
+    Read from the transition log rather than from the findings themselves.
+    ``first_detected_at`` and ``resolved_at`` are two points on a line: a
+    finding raised, fixed, regressed and fixed again is indistinguishable from
+    one raised and fixed once, and the second is a very different week's work.
+
+    Reopenings are counted separately and never subtracted from fixes. A fix
+    that did not hold happened; netting the two would hide exactly the pattern
+    a security team needs to see.
+    """
+    since = datetime.now(UTC) - timedelta(weeks=REMEDIATION_WEEKS)
+    week = func.date_trunc("week", FindingEventRecord.observed_at)
+
+    rows = (
+        await session.execute(
+            select(week, FindingEventRecord.event, func.count())
+            .where(
+                FindingEventRecord.organization_id == organization_id,
+                FindingEventRecord.observed_at >= since,
+                FindingEventRecord.event.in_(
+                    [
+                        FindingEvent.DETECTED,
+                        FindingEvent.RESOLVED,
+                        FindingEvent.REOPENED,
+                    ]
+                ),
+            )
+            .group_by(week, FindingEventRecord.event)
+            .order_by(week)
+        )
+    ).all()
+
+    weeks: dict[str, dict] = {}
+    for start, event, count in rows:
+        key = _aware(start).date().isoformat()
+        entry = weeks.setdefault(
+            key, {"week": key, "detected": 0, "resolved": 0, "reopened": 0}
+        )
+        entry[str(event).lower()] = int(count)
+
+    return list(weeks.values())
 
 
 def _remediation_rate(status_counts: dict[str, int]) -> float:

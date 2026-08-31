@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   CheckIcon,
@@ -8,11 +8,18 @@ import {
 
 import type { Dashboard } from "@/lib/types";
 import { groupCauses } from "@/lib/collectionErrors";
+import { DonutLegend, type Slice } from "@/components/charts/DonutLegend";
+import { Skeleton } from "@/components/ui/skeleton";
 import { buttonVariants } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, label } from "@/lib/format";
 
 type Category = NonNullable<Dashboard["coverage"]["categories"]>[number];
+
+/** Recharts is lazy everywhere in this app; a ring is not worth blocking on. */
+const Donut = lazy(() =>
+  import("@/components/charts/Donut").then((m) => ({ default: m.Donut })),
+);
 
 /**
  * How much of the environment the numbers above were actually formed from.
@@ -73,16 +80,7 @@ export function CoveragePanel({
           </p>
         </div>
 
-        <div className="flex items-center gap-6">
-          <div className="text-right">
-            <p className="text-3xl font-semibold leading-none tabular-nums">
-              {pct === null ? "—" : `${pct}%`}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {conclusive} conclusive · {unknown} unknown
-            </p>
-          </div>
-
+        <div className="flex items-center gap-5">
           {freshness && freshness.readings > 0 && (
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <ClockIcon className="size-3.5 shrink-0" aria-hidden />
@@ -100,6 +98,24 @@ export function CoveragePanel({
                   </>
                 )}
               </span>
+            </div>
+          )}
+
+          {/* A ring, because this genuinely is a whole divided in two: checks
+              that reached a verdict, and checks that could not. The percentage
+              in the middle is the same number the sentence uses. */}
+          {pct !== null && (
+            <div className="flex items-center gap-4">
+              <Suspense fallback={<Skeleton className="size-20 rounded-full" />}>
+                <Donut
+                  slices={verdictSlices(conclusive, unknown)}
+                  centerValue={`${pct}%`}
+                  centerLabel="verdicts"
+                  ariaLabel={`${conclusive} checks reached a verdict, ${unknown} did not`}
+                  className="size-20 shrink-0"
+                />
+              </Suspense>
+              <DonutLegend slices={verdictSlices(conclusive, unknown)} />
             </div>
           )}
         </div>
@@ -244,6 +260,30 @@ function GapCause({ keys, message }: { keys: string[]; message: string }) {
       )}
     </li>
   );
+}
+
+/**
+ * The two things a check can be: answered, or not.
+ *
+ * Two slices and no third, because "unknown" is not a middle state between pass
+ * and fail — it is the absence of a verdict, and the whole point of the panel
+ * is that it is never counted as either.
+ */
+function verdictSlices(conclusive: number, unknown: number): Slice[] {
+  return [
+    {
+      key: "conclusive",
+      label: "Reached a verdict",
+      value: conclusive,
+      tone: "var(--sev-ok)",
+    },
+    {
+      key: "unknown",
+      label: "No verdict",
+      value: unknown,
+      tone: "var(--sev-unknown)",
+    },
+  ].filter((slice) => slice.value > 0);
 }
 
 function formatAge(hours: number | null): string {

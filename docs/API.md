@@ -219,6 +219,13 @@ from (`internet_exposure`, `data_sensitivity`, `asset_criticality`), which are
 already columns on the row and cost no extra query; they let a rank be read as a
 reason rather than as an assertion.
 
+`remediation_activity` is eight weeks of findings raised, verified fixed and
+reopened, grouped from the finding-event log rather than from the findings
+themselves — `first_detected_at` and `resolved_at` are two points on a line, and
+a finding raised, fixed, regressed and fixed again is indistinguishable from one
+raised and fixed once. Reopenings are reported separately and never netted
+against fixes.
+
 Attack paths and changes stay on their own endpoints and are fetched separately
 by the dashboard. A path costs a graph build and changes are a windowed feed, so
 folding either into this payload would make the numbers everybody came for wait

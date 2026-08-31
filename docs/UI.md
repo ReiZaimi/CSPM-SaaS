@@ -57,6 +57,16 @@ sensitive data, business-critical — so a rank reads as a reason rather than as
 an assertion. A scenario is marked as a route, because it groups findings that
 are already counted individually.
 
+**The charts follow the question, not the variety.** Rings only where the data
+is a whole divided in two or three (coverage; finding status); severity as one
+stacked bar; risk bands and framework coverage as bars from a common baseline;
+the trend as an area on a fixed 0–100 scale with the score bands painted behind
+it; a treemap on the Assets hierarchy, the one place area is the right encoding.
+Sparklines under each severity count and beside the attack-path panel come from
+posture history the payload already carried. No dual axes anywhere. Motion
+counts numbers up when they change, animates a chart once on mount, and honours
+`prefers-reduced-motion` by arriving rather than crawling.
+
 **Inventory counts are not headline figures here.** Assets, subscriptions and
 resources are true and answer a different question; every pixel one takes is a
 pixel not spent on what is wrong.

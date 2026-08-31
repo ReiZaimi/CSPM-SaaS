@@ -1,8 +1,18 @@
+import { lazy, Suspense } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRightIcon } from "lucide-react";
 
+import type { ActivityWeek } from "@/components/charts/ActivityBars";
 import { buttonVariants } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useCountUp } from "@/lib/motion";
 import { cn } from "@/lib/format";
+
+const ActivityBars = lazy(() =>
+  import("@/components/charts/ActivityBars").then((m) => ({
+    default: m.ActivityBars,
+  })),
+);
 
 /**
  * Whether any of this is actually getting fixed.
@@ -20,12 +30,15 @@ export function RemediationProgress({
   rate,
   verifiedLast30Days,
   openFindings,
+  activity = [],
 }: {
   rate: number;
   verifiedLast30Days: number;
   openFindings: number;
+  activity?: ActivityWeek[];
 }) {
   const pct = Math.round(Math.max(0, Math.min(1, rate)) * 100);
+  const shownPct = Math.round(useCountUp(pct));
 
   return (
     <section
@@ -53,7 +66,7 @@ export function RemediationProgress({
       <div className="flex flex-col gap-4 border-t px-5 py-4">
         <div className="flex items-baseline gap-2">
           <span className="text-3xl font-semibold leading-none tabular-nums">
-            {pct}%
+            {shownPct}%
           </span>
           <span className="text-xs text-muted-foreground">
             of findings ever raised are verified fixed
@@ -73,6 +86,15 @@ export function RemediationProgress({
             style={{ width: `${pct}%` }}
           />
         </div>
+
+        {/* The standing rate cannot tell a team that fixed everything last year
+            from one fixing things this week, and neither can say whether the
+            fixes held. This can. */}
+        {activity.length > 0 && (
+          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+            <ActivityBars weeks={activity} />
+          </Suspense>
+        )}
 
         <dl className="grid grid-cols-2 gap-4">
           <div>

@@ -1121,6 +1121,68 @@ start disagreeing about it.
 
 ---
 
+## 38. Every chart has to earn its form
+
+**Spec:** none. A request for "prettier, with charts" — which is a request to
+*show* more, and the way that goes wrong is showing it in shapes that flatter
+the data.
+
+Five forms, each chosen by the question rather than by variety:
+
+* **Rings only for a whole divided in two or three.** Coverage — reached a
+  verdict versus did not — and finding status. A ring encodes one share well
+  and comparison badly, so nothing ranked is ever drawn as one.
+* **Severity is a single stacked bar**, not a five-slice pie: lengths on one
+  line are compared exactly, angles around a circle are not, and it costs 8px
+  of height rather than a panel.
+* **Risk bands and framework coverage are bars from a common baseline**, which
+  is the form a ranking asks for. Both are plain elements — a list of widths
+  does not need a charting runtime, a canvas and a resize observer.
+* **The posture trend is an area on a fixed 0–100 axis**, with the score bands
+  painted behind it at 8% so the height *means* something without the line
+  changing colour as the data does. Every reading is dotted, because the points
+  are the moments CloudGuard actually looked and a smooth line between them
+  invites belief in measurements that were never taken.
+* **The estate treemap is the one place area is the right encoding.** A tree
+  names the parts and a table ranks them; neither answers "is my problem
+  concentrated or spread out", which decides whether a customer sends one team
+  or six. Tint is a *rate* — findings per asset — so a large group is not darker
+  merely for being large.
+
+**Sparklines carry the series the payload already had and nothing rendered.**
+`history[].findings_by_severity` and `attack_path_count` were in every dashboard
+response and shown nowhere; they are now the line under each severity count and
+beside the attack-path panel. "One critical" and "one critical, and there were
+none last week" are the same number and a different Monday.
+
+**No dual axes anywhere.** Route counts and a 0–100 score share no scale; two
+y-axes in one frame let any two shapes be made to look correlated, so the second
+series is a sparkline of its own instead.
+
+**Status colours stay reserved.** Severity is a status palette, not a
+categorical one: it is never spent on "series 4", and every chart that uses it
+also prints the label, so nothing is carried by hue alone.
+
+**Motion is a statement about honesty, not polish.** Numbers count up on mount
+and when the value actually changes — never on a poll that returned the same
+figure, which would make an untouched page twitch three times a minute. Charts
+animate once on mount and not on update. Lists stagger by 30ms and cap at eight
+rows, past which it reads as a slow page rather than as arrival.
+`prefers-reduced-motion` is honoured globally in `index.css` and again per
+component, and it degrades to the *finished* state rather than a slower one.
+
+**One backend addition:** `remediation_activity`, eight weeks of findings
+raised, verified fixed, and reopened, read from the transition log. Reopenings
+are counted separately and never netted against fixes — a fix that did not hold
+happened, and subtracting it would hide the pattern the panel exists to show.
+
+**A chunking trap worth recording.** `DonutLegend` lives in its own module away
+from `Donut`. Imported from beside the ring, it dragged Recharts into the
+dashboard's own chunk — 15kB became 206kB — and quietly undid the lazy loading
+the charts were written for.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import { ArrowRightIcon, RouteIcon, ScissorsIcon } from "lucide-react";
 
-import type { AttackPath } from "@/lib/types";
+import type { AttackPath, PostureReading } from "@/lib/types";
+import { Sparkline } from "@/components/charts/Sparkline";
 import { AttackPathRoute } from "@/components/graph/AttackPathRoute";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { buttonVariants } from "@/components/ui/button";
@@ -23,10 +24,17 @@ import { cn } from "@/lib/format";
 export function AttackPathPanel({
   paths,
   loading,
+  history = [],
 }: {
   paths: AttackPath[] | undefined;
   loading: boolean;
+  history?: PostureReading[];
 }) {
+  // How many routes existed at each reading. Its own series rather than a
+  // second line on the score chart: a count of routes and a 0-100 score share
+  // no scale, and two y-axes in one frame let any two shapes be made to look
+  // correlated.
+  const routeCounts = history.map((reading) => reading.attack_path_count ?? 0);
   const path = Array.isArray(paths) ? paths[0] : undefined;
   const cutIndex = path
     ? path.steps.findIndex(
@@ -51,13 +59,23 @@ export function AttackPathPanel({
             something worth taking
           </p>
         </div>
-        <Link
-          to="/attack-paths"
-          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "shrink-0")}
-        >
-          All paths
-          <ArrowRightIcon data-icon="inline-end" />
-        </Link>
+        <div className="flex shrink-0 items-center gap-3">
+          {routeCounts.length > 1 && (
+            <Sparkline
+              values={routeCounts}
+              label="Attack paths"
+              tone="var(--muted-foreground)"
+              className="h-6 w-24"
+            />
+          )}
+          <Link
+            to="/attack-paths"
+            className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
+          >
+            All paths
+            <ArrowRightIcon data-icon="inline-end" />
+          </Link>
+        </div>
       </header>
 
       <div className="flex flex-1 flex-col gap-4 border-t px-5 py-4">

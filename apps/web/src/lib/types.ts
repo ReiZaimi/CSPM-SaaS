@@ -294,6 +294,18 @@ export interface Dashboard {
   asset_count: number;
   verified_resolved_last_30_days: number;
   remediation_rate: number;
+  /**
+   * What actually happened, week by week: findings raised, verified fixed, and
+   * come back. Read from the transition log rather than from the findings
+   * themselves — `first_detected_at` and `resolved_at` are two points on a
+   * line, and a finding fixed twice looks like one fixed once.
+   */
+  remediation_activity?: {
+    week: string;
+    detected: number;
+    resolved: number;
+    reopened: number;
+  }[];
   top_risks: {
     id: string;
     title: string;

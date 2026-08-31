@@ -8,6 +8,7 @@ import type {
   AttackPath,
   ChangeEvent,
   CloudAccount,
+  ComplianceFramework,
   Dashboard,
   Scan,
 } from "@/lib/types";
@@ -15,6 +16,8 @@ import { useT } from "@/i18n";
 import { PostureHeader } from "@/components/dashboard/PostureHeader";
 import { ScorePanel } from "@/components/dashboard/ScorePanel";
 import { SeverityStrip } from "@/components/dashboard/SeverityStrip";
+import { PostureBreakdown } from "@/components/dashboard/PostureBreakdown";
+import { ComplianceSummary } from "@/components/dashboard/ComplianceSummary";
 import { CoveragePanel } from "@/components/dashboard/CoveragePanel";
 import { PriorityRisks } from "@/components/dashboard/PriorityRisks";
 import { AttackPathPanel } from "@/components/dashboard/AttackPathPanel";
@@ -87,6 +90,13 @@ export function DashboardPage() {
     queryKey: ["dashboard-changes"],
     queryFn: () =>
       api.get<ChangeEvent[]>("/api/v1/changes?days=7&limit=5").then((r) => r.data),
+    retry: false,
+  });
+
+  const compliance = useQuery({
+    queryKey: ["compliance"],
+    queryFn: () =>
+      api.get<ComplianceFramework[]>("/api/v1/compliance").then((r) => r.data),
     retry: false,
   });
 
@@ -167,6 +177,14 @@ export function DashboardPage() {
       <SeverityStrip
         counts={data.findings_by_severity}
         unknown={data.coverage.unknown}
+        history={data.history ?? []}
+      />
+
+      {/* 2b — the shape of what is open: mix, standing, and risk bands */}
+      <PostureBreakdown
+        bySeverity={data.findings_by_severity}
+        byStatus={data.findings_by_status}
+        riskBands={data.risk_bands}
       />
 
       {/* 3 — how much of the estate the opinion was formed from */}
@@ -182,7 +200,11 @@ export function DashboardPage() {
       {/* 4 — what to deal with, and what those faults form together */}
       <div className="grid gap-4 lg:grid-cols-2">
         <PriorityRisks risks={data.top_risks} />
-        <AttackPathPanel paths={paths.data} loading={paths.isLoading} />
+        <AttackPathPanel
+          paths={paths.data}
+          loading={paths.isLoading}
+          history={data.history ?? []}
+        />
       </div>
 
       {/* 5 — whether any of it is being fixed, and what moved meanwhile */}
@@ -191,9 +213,18 @@ export function DashboardPage() {
           rate={data.remediation_rate}
           verifiedLast30Days={data.verified_resolved_last_30_days}
           openFindings={data.open_finding_count}
+          activity={data.remediation_activity ?? []}
         />
         <RecentChanges events={changes.data} loading={changes.isLoading} />
       </div>
+
+      {/* 6 — what the evidence adds up to for somebody who reports on it */}
+      <ComplianceSummary
+        frameworks={
+          Array.isArray(compliance.data) ? compliance.data : undefined
+        }
+        loading={compliance.isLoading}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRightIcon, FolderIcon, LayersIcon, UsersIcon } from "lucide-react";
@@ -13,6 +13,13 @@ import { cn, resourceTypeLabel } from "@/lib/format";
 
 /** How many assets a group shows inline before it defers to the list. */
 const INLINE_LIMIT = 25;
+
+/** Recharts, loaded only once there is an estate to draw. */
+const EstateTreemap = lazy(() =>
+  import("@/components/charts/EstateTreemap").then((m) => ({
+    default: m.EstateTreemap,
+  })),
+);
 
 /**
  * The estate as it is actually organised, rather than as one long list.
@@ -59,15 +66,28 @@ export function AssetTree() {
   }
 
   return (
-    <Card className="overflow-hidden py-0">
-      <CardContent className="px-0">
-        <ul>
-          {data.map((scope) => (
-            <ScopeRow key={scope.id} scope={scope} />
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-4">
+      {/* Where the problem is concentrated, before the reader starts opening
+          things. Area is the right encoding exactly once in this product: a
+          tree names the parts and a table ranks them, and neither answers
+          "one team or six". */}
+      <Suspense fallback={<Skeleton className="h-48 w-full rounded-xl" />}>
+        <EstateTreemap
+          scopes={data}
+          className="h-48 w-full overflow-hidden rounded-xl ring-1 ring-foreground/10"
+        />
+      </Suspense>
+
+      <Card className="overflow-hidden py-0">
+        <CardContent className="px-0">
+          <ul>
+            {data.map((scope) => (
+              <ScopeRow key={scope.id} scope={scope} />
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

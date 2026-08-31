@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react";
 
 import type { PostureReading } from "@/lib/types";
 import { ScoreDelta } from "@/components/ScoreDelta";
+import { useCountUp } from "@/lib/motion";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatDateTime } from "@/lib/format";
 
@@ -52,6 +53,10 @@ export function ScorePanel({
 }) {
   const clamped = Math.max(0, Math.min(100, Math.round(score)));
   const { label, tone, bar } = band(clamped);
+  // Counts to the score on mount and whenever it actually changes — never on a
+  // refetch that returned the same number, which would make a page nobody
+  // touched twitch every twenty seconds.
+  const shown = Math.round(useCountUp(clamped));
 
   return (
     <section
@@ -74,7 +79,7 @@ export function ScorePanel({
                 tone,
               )}
             >
-              {clamped}
+              {shown}
             </span>
             <span className="text-xl text-muted-foreground">/ 100</span>
           </div>
