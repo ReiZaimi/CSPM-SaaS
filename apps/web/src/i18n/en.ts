@@ -389,6 +389,24 @@ export const en = {
     deleteWithFindingsDetail:
       "Also deletes the unresolved findings this scan last detected. Verified fixes are never deleted \u2014 each one is the evidence a remediation worked.",
     cancelling: "Cancelling\u2026",
+    // Replay. Every scan stores the provider's own JSON before interpreting
+    // it, so a rule written after that scan ran can still be applied to it --
+    // and doing so costs nothing in the customer's cloud.
+    replay: "Re-evaluate",
+    replayQueueing: "Queueing\u2026",
+    replayHelp:
+      "Runs today's rules against what this scan already collected. No Azure call, no consent, no cost to your throttle budget \u2014 CloudGuard kept the provider's own JSON, so a check written since can still be applied to it.",
+    replayBadge: "Re-evaluated a stored capture",
+    replayOfLabel: "Re-evaluation of an earlier scan",
+    // The distinction that keeps a replay honest. Only a replay of the newest
+    // capture may touch findings; an older one reports and stops.
+    replayAdvisoryTitle: "What the rules would have found",
+    replayAdvisoryDetail:
+      "This capture is no longer CloudGuard's current picture of the environment \u2014 it has been read again since. The counts below say what today's rules would have made of it. No finding was created, resolved or reopened: a capture from before nobody looked at cannot verify a fix.",
+    replayCurrentTitle: "Applied to your current picture",
+    replayCurrentDetail:
+      "This was still the newest capture for its subscriptions, so the results count: findings were raised, resolved and reopened exactly as a fresh scan would have done, without reading your cloud again.",
+    wouldHaveFound: "Findings (would have)",
     stuckTitle: "Nothing has picked this scan up",
     stuckDetail:
       "A scan is collected by CloudGuard's worker within seconds of being queued. Minutes of silence means no worker is running \u2014 check that the Celery worker service is deployed and can reach Redis.",

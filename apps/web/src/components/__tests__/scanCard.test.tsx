@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ScanCard } from "@/components/scans/ScanCard";
@@ -89,5 +89,72 @@ describe("a scan card", () => {
       "aria-expanded",
       "false",
     );
+  });
+
+  it("offers to re-evaluate a run that stored a capture", async () => {
+    // The verbatim JSON is kept precisely so a rule written since can be
+    // applied to it, and until now there was no way to ask for that.
+    mount(scan());
+
+    expect(screen.getByRole("button", { name: "Re-evaluate" })).toBeInTheDocument();
+    expect(screen.getByText(/No Azure call, no consent/)).toBeInTheDocument();
+  });
+
+  it("does not offer to re-evaluate a run that may have collected nothing", async () => {
+    // A FAILED scan may have fallen over before the snapshot was written, and
+    // a button that usually answers "no stored snapshot" reads as data loss.
+    mount(scan({ status: "FAILED", error_message: "Collection failed" }));
+
+    expect(screen.queryByRole("button", { name: "Re-evaluate" })).not.toBeInTheDocument();
+  });
+
+  it("queues the re-evaluation against the scan it was asked for", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: scan(), meta: {} });
+    mount(scan());
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-evaluate" }));
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/api/v1/scans/s1/replay"));
+  });
+
+  it("says why a re-evaluation was refused rather than doing nothing", async () => {
+    vi.spyOn(api, "post").mockRejectedValue(
+      new Error("A scan is already running for this connection"),
+    );
+    mount(scan());
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-evaluate" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("A scan is already running for this connection"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("marks a replay as a replay rather than letting it pass for a scan", async () => {
+    mount(scan({ id: "s2", replay_of_scan_id: "s1" }));
+
+    expect(screen.getByText("Re-evaluation of an earlier scan")).toBeInTheDocument();
+  });
+
+  it("says an advisory replay changed no finding", async () => {
+    // The dangerous case. A month-old capture producing PASS where a finding
+    // was FAIL must never stamp that finding "verified fixed".
+    mount(scan({ id: "s2", replay_of_scan_id: "s1", evaluation_only: true }));
+
+    expect(screen.getByText("What the rules would have found")).toBeInTheDocument();
+    expect(
+      screen.getByText(/No finding was created, resolved or reopened/),
+    ).toBeInTheDocument();
+    // And the counter must not read as findings that exist.
+    expect(screen.getByText("Findings (would have)")).toBeInTheDocument();
+  });
+
+  it("says a replay of the current capture did count", async () => {
+    mount(scan({ id: "s2", replay_of_scan_id: "s1", evaluation_only: false }));
+
+    expect(screen.getByText("Applied to your current picture")).toBeInTheDocument();
+    expect(screen.getByText("Findings")).toBeInTheDocument();
   });
 });

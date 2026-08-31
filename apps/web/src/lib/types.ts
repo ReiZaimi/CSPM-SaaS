@@ -194,6 +194,18 @@ export interface Scan {
   progress_total?: number;
   /** Live while running, fixed once finished. */
   duration_seconds?: number | null;
+  /**
+   * Set when this run re-evaluated an earlier scan's stored snapshot rather
+   * than reading the cloud. Nothing here cost the customer an Azure call.
+   */
+  replay_of_scan_id?: string | null;
+  /**
+   * True when the replayed capture is no longer the newest one for its
+   * account. Its counts then say what today's rules *would* have found, and
+   * no finding was created, resolved or reopened — a month-old capture is
+   * evidence about last month, and "verified fixed" may not rest on it.
+   */
+  evaluation_only?: boolean;
 }
 
 /** What the posture was, one scan at a time. */
