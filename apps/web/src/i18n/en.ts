@@ -325,6 +325,21 @@ export const en = {
     amplifier: "Added for the route itself",
     cappedNote: "Capped at 100.",
     memberCount: "findings on this route",
+    // The detail page. What the list can rank but cannot show: which findings
+    // a risk was actually built from.
+    backToRisks: "Risks",
+    builtFrom: "What this risk is built from",
+    builtFromScenario:
+      "The findings on this route. Fixing any one of them breaks the route \u2014 the cheapest is usually the identity or the role, never the containment.",
+    builtFromFinding:
+      "The observation this risk scores. A finding is what CloudGuard saw; the risk is what it means for this asset, with this data, at this level of exposure.",
+    noMembers: "No findings are linked to this risk.",
+    noMembersDetail:
+      "The findings it was built from have been deleted, most likely with the scan that raised them. The score is kept as history rather than recomputed from nothing.",
+    theArithmetic: "How this score was reached",
+    notFound: "That risk no longer exists",
+    notFoundDetail:
+      "It may have been deleted with the scan that raised it. The risks list shows everything CloudGuard currently ranks.",
   },
   attackPaths: {
     title: "Attack paths",

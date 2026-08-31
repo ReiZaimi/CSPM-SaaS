@@ -90,6 +90,23 @@ export interface Risk {
   };
 }
 
+/**
+ * One risk, with the findings it was built from.
+ *
+ * The list can rank a scenario above the findings inside it; only here can a
+ * reader see *which* findings those are. A route scored 96 beside a page of
+ * findings scored 84 is an assertion until the members are named.
+ */
+export interface RiskDetail extends Risk {
+  findings: {
+    id: string;
+    rule_id: string;
+    title: string;
+    severity: Level;
+    status: string;
+  }[];
+}
+
 export interface Finding {
   id: string;
   rule_id: string;

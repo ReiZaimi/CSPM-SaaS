@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { RadarIcon, SearchIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -310,9 +311,12 @@ function ScenarioCard({ risk }: { risk: Risk }) {
                 {escalation ? t.risks.escalationBadge : t.risks.scenarioBadge}
               </Badge>
             </div>
-            <p className="mt-2 text-sm font-medium text-foreground">
+            <Link
+              to={`/risks/${risk.id}`}
+              className="mt-2 block text-sm font-medium text-foreground underline-offset-4 hover:underline"
+            >
               {risk.title}
-            </p>
+            </Link>
             <p className="mt-1 text-xs text-muted-foreground">
               {escalation ? t.risks.escalationIntro : t.risks.scenarioIntro}
             </p>
@@ -387,9 +391,12 @@ function FindingRiskCard({ risk }: { risk: Risk }) {
               <SeverityBadge level={risk.risk_level} />
               <StatusPill status={risk.status} />
             </div>
-            <p className="mt-2 text-sm font-medium text-foreground">
+            <Link
+              to={`/risks/${risk.id}`}
+              className="mt-2 block text-sm font-medium text-foreground underline-offset-4 hover:underline"
+            >
               {risk.title}
-            </p>
+            </Link>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               {risk.description}
             </p>

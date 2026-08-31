@@ -86,7 +86,9 @@ function mount(risks: Risk[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <RisksPage />
+      <MemoryRouter>
+        <RisksPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -320,5 +322,19 @@ describe("the risk ranking", () => {
     // A route outranking the findings inside it is only visible where they are
     // ranked together.
     expect(requested[0]).not.toContain("kind=");
+  });
+
+  it("opens each ranked risk, whichever kind it is", async () => {
+    // The ranking is an assertion until the findings behind a row can be read.
+    mount([scenarioRisk(), findingRisk()]);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("link", { name: "jump-01 can reach customerdata" }),
+      ).toHaveAttribute("href", "/risks/r-scenario"),
+    );
+    expect(
+      screen.getByRole("link", { name: "Public blob access on customerdata" }),
+    ).toHaveAttribute("href", "/risks/r-finding");
   });
 });
