@@ -266,16 +266,24 @@ export interface Rule {
   name: string;
   description: string;
   category: string;
+  provider: string;
   severity: Severity;
   version: string;
   exploitability: number;
   scope: string;
   applies_to: string[];
+  /**
+   * False once the rule has been withdrawn from the registry — it no longer
+   * runs, and compliance coverage stops counting it. The row survives because
+   * findings it raised in the past still name it.
+   */
   enabled: boolean;
   remediation: string;
   rationale: string;
   estimated_effort_minutes: number;
   compliance_mappings: Record<string, string[]>;
+  /** What "fixed" means for this rule: the settings, commands and policy. */
+  remediation_spec?: RemediationSpec | null;
 }
 
 export interface RemediationTask {

@@ -430,7 +430,24 @@ export const en = {
       "An incomplete listing cannot support a pass, so the checks that needed it report unknown rather than clean.",
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
-  rules: { title: "Rule library", empty: "No rules loaded." },
+  rules: {
+    title: "Rule library",
+    empty: "No rules loaded.",
+    // A withdrawn rule is not a check CloudGuard runs, and listing it beside
+    // the ones it does run made the catalogue overstate what is being checked.
+    // The row exists because findings it raised still name it.
+    withdrawn: "Withdrawn",
+    withdrawnHelp:
+      "This check has been taken out of the rule registry, so it no longer runs and compliance coverage no longer counts it. Findings it raised in the past are kept \u2014 they still describe what was true when it ran.",
+    showWithdrawn: "Show withdrawn rules",
+    hideWithdrawn: "Hide withdrawn rules",
+    withdrawnCount: "withdrawn",
+    // The rest of what the catalogue holds and never showed.
+    why: "Why this matters",
+    howToFix: "How to fix it",
+    showDetail: "Why and how to fix",
+    hideDetail: "Hide",
+  },
   compliance: {
     title: "Compliance",
     intro:

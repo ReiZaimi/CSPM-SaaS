@@ -72,7 +72,9 @@ describe("the rule catalogue", () => {
   it("says how much of the catalogue is showing", async () => {
     mount([rule(), rule({ rule_id: "AZ-NET-002", name: "Inbound SSH" })]);
 
-    expect(await screen.findByText("2 of 2 rules")).toBeInTheDocument();
+    // Counted against what CloudGuard runs, not against every row the API
+    // returned -- a withdrawn rule is in that response and is not a check.
+    expect(await screen.findByText("2 of 2 rules CloudGuard runs")).toBeInTheDocument();
   });
 
   it("marks a tenant-wide rule, which belongs to no asset", async () => {
@@ -90,5 +92,50 @@ describe("the rule catalogue", () => {
 
     expect(screen.getByText("No rules match")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear filters" })).toBeInTheDocument();
+  });
+
+  it("keeps a withdrawn rule out of the list of checks it runs", async () => {
+    // The catalogue's heading claims these are the checks CloudGuard runs. A
+    // rule taken out of the registry is not one, and it arrives in the same
+    // response as the live ones.
+    mount([rule(), rule({ rule_id: "AZ-OLD-001", name: "Retired check", enabled: false })]);
+
+    expect(await screen.findByText("1 of 1 rule CloudGuard runs, and 1 withdrawn")).toBeInTheDocument();
+    expect(screen.queryByText("Retired check")).not.toBeInTheDocument();
+  });
+
+  it("shows the withdrawn rules, and says they no longer run", async () => {
+    mount([rule(), rule({ rule_id: "AZ-OLD-001", name: "Retired check", enabled: false })]);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Show withdrawn rules/ }));
+
+    expect(screen.getByText("Retired check")).toBeInTheDocument();
+    expect(screen.getByText("Withdrawn")).toBeInTheDocument();
+    expect(screen.getByText(/no longer runs and compliance coverage no longer counts it/))
+      .toBeInTheDocument();
+  });
+
+  it("offers no withdrawn toggle when nothing is withdrawn", async () => {
+    // A permanent toggle on a complete catalogue implies rules are missing.
+    mount([rule()]);
+
+    await screen.findByText("Storage account allows public blob access");
+    expect(screen.queryByRole("button", { name: /withdrawn/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the reasoning and the fix the catalogue was holding back", async () => {
+    mount([
+      rule({
+        rationale: "Anonymous blob access is the most common cause of cloud data loss.",
+        remediation: "Set allowBlobPublicAccess to false.",
+      }),
+    ]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Why and how to fix" }));
+
+    expect(
+      screen.getByText("Anonymous blob access is the most common cause of cloud data loss."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Set allowBlobPublicAccess to false.")).toBeInTheDocument();
   });
 });

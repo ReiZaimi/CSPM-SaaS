@@ -34,6 +34,8 @@ Dashboard  Assets  Findings  Risks  Remediation  Compliance  Reports  Scans  Set
 
 **Finding detail** — title, severity, asset, why it matters, evidence, risk score, recommended fix, estimated effort, owner, and actions: **Assign / Mark In Progress / Accept Risk / Rescan**.
 
+**Rules** — the catalogue, filterable by severity and free text. It lists what CloudGuard *runs*: a rule withdrawn from the registry (`enabled: false`) is held back behind a toggle and named as withdrawn, because it no longer runs and compliance coverage no longer counts it. Each rule expands to its rationale and the fix in every form the backend holds — prose, CLI, Terraform, Azure Policy.
+
 **Changes** — what moved in the environment, newest first, grouped by the day it was observed; filterable by window (24 hours / 7 / 30 / 90 days) and by kind. Rows say whether an attribute change went up or down; a move into UNKNOWN is neither. A `DISAPPEARED` row says whether the asset is missing *now*, which is what makes it a job rather than history.
 
 **Scan** — live progress (discovery → rules → risk analysis) then a summary: resources, rules run, findings by severity. A finished run also offers **Re-evaluate**, which runs today's rules against the capture it already stored — no Azure call. A replay labels itself as one, and says which of the two things its counts mean: applied to the current picture (findings moved), or advisory (the capture has been superseded, so nothing was created, resolved or reopened).

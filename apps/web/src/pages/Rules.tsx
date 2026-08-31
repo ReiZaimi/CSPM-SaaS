@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ListChecksIcon, SearchIcon } from "lucide-react";
+import { ArchiveIcon, ListChecksIcon, SearchIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { Rule } from "@/lib/types";
@@ -29,7 +29,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatEffort, resourceTypeLabel } from "@/lib/format";
+import { RemediationPanel } from "@/components/security/RemediationPanel";
+import { cn, formatEffort, resourceTypeLabel } from "@/lib/format";
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
 
@@ -45,23 +46,37 @@ export function RulesPage() {
   const t = useT();
   const [search, setSearch] = useState("");
   const [severity, setSeverity] = useState("all");
+  const [showWithdrawn, setShowWithdrawn] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["rules"],
     queryFn: () => api.get<Rule[]>("/api/v1/rules").then((r) => r.data),
   });
 
+  // Counted over everything the API returned, not over the filtered list: the
+  // toggle has to say how many rules it would reveal, which is a fact about
+  // the catalogue rather than about the current search.
+  const withdrawnCount = useMemo(
+    () => (data ?? []).filter((rule) => !rule.enabled).length,
+    [data],
+  );
+
   const rules = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return (data ?? []).filter((rule) => {
+      // A withdrawn rule no longer runs. Listing it beside the live ones under
+      // a heading that says "every check CloudGuard runs" overstated what is
+      // being checked, so it is out unless asked for.
+      if (!rule.enabled && !showWithdrawn) return false;
       if (severity !== "all" && rule.severity !== severity) return false;
       if (!needle) return true;
       return `${rule.name} ${rule.rule_id} ${rule.description} ${rule.category}`
         .toLowerCase()
         .includes(needle);
     });
-  }, [data, search, severity]);
+  }, [data, search, severity, showWithdrawn]);
 
+  const live = (data ?? []).length - withdrawnCount;
   const filtering = search.trim().length > 0 || severity !== "all";
 
   return (
@@ -102,6 +117,20 @@ export function RulesPage() {
             ))}
           </SelectContent>
         </Select>
+        {/* Offered only when there is something to reveal. A permanent toggle
+            on a catalogue with nothing withdrawn implies rules are missing. */}
+        {withdrawnCount > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            aria-pressed={showWithdrawn}
+            onClick={() => setShowWithdrawn((v) => !v)}
+          >
+            <ArchiveIcon className="size-4" aria-hidden />
+            {showWithdrawn ? t.rules.hideWithdrawn : t.rules.showWithdrawn}
+            {!showWithdrawn && ` (${withdrawnCount})`}
+          </Button>
+        )}
       </div>
 
       {isLoading && <CardsSkeleton />}
@@ -148,8 +177,8 @@ export function RulesPage() {
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            {rules.length} of {data?.length ?? 0} rule
-            {data?.length === 1 ? "" : "s"}
+            {rules.length} of {live} rule{live === 1 ? "" : "s"} CloudGuard runs
+            {withdrawnCount > 0 && `, and ${withdrawnCount} ${t.rules.withdrawnCount}`}
           </p>
         </>
       )}
@@ -158,8 +187,11 @@ export function RulesPage() {
 }
 
 function RuleCard({ rule }: { rule: Rule }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+
   return (
-    <Card>
+    <Card className={cn(!rule.enabled && "border-dashed")}>
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2">
           <SeverityBadge level={rule.severity} />
@@ -170,20 +202,70 @@ function RuleCard({ rule }: { rule: Rule }) {
           {rule.scope === "aggregate" && (
             <Badge variant="secondary">Tenant-wide</Badge>
           )}
+          {/* Dashed and named rather than greyed. A rule that has stopped
+              running is not a quieter rule -- it is one whose severity below
+              describes what it used to check. */}
+          {!rule.enabled && (
+            <span className="inline-flex items-center rounded-full border border-dashed border-unknown-border bg-unknown-bg px-2 py-0.5 text-xs font-medium text-unknown">
+              {t.rules.withdrawn}
+            </span>
+          )}
         </div>
         <CardTitle className="text-sm">{rule.name}</CardTitle>
       </CardHeader>
 
-      <CardContent className="flex flex-wrap items-start justify-between gap-4">
-        <p className="max-w-3xl flex-1 text-sm text-muted-foreground">
-          {rule.description}
-        </p>
-        <div className="shrink-0 text-right text-xs text-muted-foreground">
-          <p>Exploitability {rule.exploitability}/5</p>
-          <p className="mt-0.5">
-            {formatEffort(rule.estimated_effort_minutes)} to fix
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <p className="max-w-3xl flex-1 text-sm text-muted-foreground">
+            {rule.description}
           </p>
+          <div className="shrink-0 text-right text-xs text-muted-foreground">
+            <p>Exploitability {rule.exploitability}/5</p>
+            <p className="mt-0.5">
+              {formatEffort(rule.estimated_effort_minutes)} to fix
+            </p>
+          </div>
         </div>
+
+        {!rule.enabled && (
+          <p className="rounded-lg border border-dashed border-unknown-border bg-unknown-bg px-3 py-2 text-xs leading-relaxed text-foreground">
+            {t.rules.withdrawnHelp}
+          </p>
+        )}
+
+        {/* Everything the catalogue held and never showed. Behind a toggle
+            rather than always open: a page of forty rules each carrying its
+            rationale and four fix formats is a document, not a list. */}
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? t.rules.hideDetail : t.rules.showDetail}
+          </Button>
+        </div>
+
+        {open && (
+          <div className="flex flex-col gap-4">
+            {rule.rationale && (
+              <div className="rounded-lg border bg-muted/40 p-3">
+                <p className="text-xs font-medium text-muted-foreground">
+                  {t.rules.why}
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-foreground">
+                  {rule.rationale}
+                </p>
+              </div>
+            )}
+            <RemediationPanel
+              remediation={rule.remediation}
+              spec={rule.remediation_spec}
+              effortMinutes={rule.estimated_effort_minutes}
+            />
+          </div>
+        )}
       </CardContent>
 
       <CardFooter className="flex flex-wrap gap-x-6 gap-y-2 border-t pt-4 text-xs">
