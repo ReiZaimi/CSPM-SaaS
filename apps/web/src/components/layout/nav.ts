@@ -4,6 +4,7 @@ import {
   ClipboardCheckIcon,
   CloudIcon,
   GaugeIcon,
+  FileTextIcon,
   GitCompareArrowsIcon,
   ListChecksIcon,
   RadarIcon,
@@ -32,6 +33,10 @@ export const NAV_GROUPS = [
       // Beside the overview rather than under Evidence: both answer "where do
       // I stand", one as a state and one as the movement that produced it.
       { to: "/changes", label: "Changes", icon: GitCompareArrowsIcon },
+      // The same posture, fixed to a moment and made portable. Beside the two
+      // live readings rather than under Evidence: a report is what this group
+      // produces, not something CloudGuard reads from.
+      { to: "/reports", label: "Reports", icon: FileTextIcon },
     ],
   },
   {

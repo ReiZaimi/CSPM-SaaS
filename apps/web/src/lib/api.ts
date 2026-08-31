@@ -122,8 +122,43 @@ async function request<T>(
   return { data: body.data as T, meta: body.meta };
 }
 
+/**
+ * A response that is a document rather than an envelope.
+ *
+ * The report endpoints return a PDF or an HTML page, which is why they cannot
+ * go through `request`: that parses JSON and would fail on the first byte. And
+ * a plain `<a href>` cannot be used either — the bearer token lives in memory,
+ * not in a cookie, so a browser-initiated navigation would arrive
+ * unauthenticated and the user would be handed a 401 page instead of a file.
+ *
+ * Errors still arrive as the standard envelope, so a failure says what went
+ * wrong rather than saving a file full of JSON.
+ */
+async function fetchDocument(path: string): Promise<Blob> {
+  const headers = new Headers();
+  if (auth.token) headers.set("Authorization", `Bearer ${auth.token}`);
+  if (auth.organizationId) headers.set("X-Organization-Id", auth.organizationId);
+
+  const response = await fetch(`${API_URL}${path}`, { headers });
+
+  if (!response.ok) {
+    try {
+      const body = (await response.json()) as Envelope<unknown>;
+      const error = body.error ?? { code: "UNKNOWN", message: "Request failed" };
+      throw new ApiError(error.code, error.message, response.status);
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError("NETWORK_ERROR", `Server returned ${response.status}`, response.status);
+    }
+  }
+
+  return response.blob();
+}
+
 export const api = {
   get: <T,>(path: string) => request<T>(path).then((r) => r),
+  /** A PDF or HTML report, fetched with the caller's token. */
+  document: (path: string) => fetchDocument(path),
   post: <T,>(path: string, body?: unknown, opts: { skipAuth?: boolean } = {}) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}), ...opts }),
   patch: <T,>(path: string, body: unknown) =>

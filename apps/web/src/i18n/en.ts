@@ -14,6 +14,7 @@ export const en = {
   nav: {
     dashboard: "Dashboard",
     changes: "Changes",
+    reports: "Reports",
     assets: "Assets",
     findings: "Findings",
     risks: "Risks",
@@ -533,6 +534,29 @@ export const en = {
     allKinds: "All changes",
     count: "change",
     countPlural: "changes",
+  },
+  reports: {
+    title: "Reports",
+    intro:
+      "The screens answer questions as you ask them. A report is the same evidence fixed to a moment, so it can be filed, sent to a board, or handed to an auditor \u2014 which is why every one of them prints when its evidence was collected and what could not be read.",
+    executive: "Executive report",
+    executiveDetail:
+      "For a reader who does not touch Azure: the posture score and where it is going, the worst risks by what they would actually cost, and compliance coverage. Deliberately lists no findings \u2014 a summary that ends in a four-hundred-row table is a technical report with a cover page.",
+    technical: "Technical report",
+    technicalDetail:
+      "Everything the executive report says, from the same numbers, and then every open finding worst first \u2014 the asset it was found on, when it was first seen, and what to change.",
+    download: "Download PDF",
+    preparing: "Preparing\u2026",
+    preview: "Preview",
+    // Regenerated on request rather than kept. Said plainly, because a
+    // customer who expects a library of past reports should not have to
+    // discover its absence.
+    freshNote:
+      "Reports are generated when you ask for one, from the evidence that exists at that moment. CloudGuard keeps no copies \u2014 a stored PDF outlives the evidence behind it, and there would be no honest way to say which of five was current.",
+    // The one failure worth its own copy: the server is missing native
+    // libraries, which is an operator problem and not something a retry fixes.
+    noPdfTitle: "This server cannot produce PDFs",
+    failed: "Could not generate the report",
   },
   remediation: { title: "Remediation", empty: "No remediation tasks yet." },
   common: {

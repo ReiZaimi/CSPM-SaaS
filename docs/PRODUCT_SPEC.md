@@ -106,7 +106,7 @@ Revised from the original build spec: MockAzureConnector dropped, real Azure int
 | 6 | Risk engine — scoring, grouping, priority |
 | 7 | React UI — dashboard, assets, findings, finding detail, scans |
 | 8 | Remediation — assignment, status, due date, rescan, verification |
-| 9 | Reports — executive + technical PDFs |
+| 9 | Reports — executive + technical PDFs *(built: Jinja2 + WeasyPrint, generated on request, not stored — see `DECISIONS.md`)* |
 
 > **Open item:** whether a dev Azure subscription/tenant is already available for Phase 2 (to register CloudGuard's app and create intentionally-misconfigured test resources) — not yet confirmed.
 

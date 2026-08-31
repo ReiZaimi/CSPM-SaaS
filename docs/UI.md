@@ -38,6 +38,8 @@ Dashboard  Assets  Findings  Risks  Remediation  Compliance  Reports  Scans  Set
 
 **Risk detail** — the findings a risk was built from, each one openable, plus the arithmetic in the terms that score was actually built from: the six weighted components for a finding risk, or worst-member/amplifier/hops for a route. The two are never mixed — a scenario was not scored from criticality and exploitability, so it is not shown them.
 
+**Reports** — two generated documents: **Executive** (posture, trend, top risks, compliance coverage — no findings list) and **Technical** (the same numbers, then every open finding worst first). Both offer a PDF download and an HTML preview of the same document. Nothing is stored: reports are generated on request, and the page says so. Fetched with the caller's token rather than linked, because the bearer token lives in memory and a plain anchor would arrive unauthenticated.
+
 **Changes** — what moved in the environment, newest first, grouped by the day it was observed; filterable by window (24 hours / 7 / 30 / 90 days) and by kind. Rows say whether an attribute change went up or down; a move into UNKNOWN is neither. A `DISAPPEARED` row says whether the asset is missing *now*, which is what makes it a job rather than history.
 
 **Scan** — live progress (discovery → rules → risk analysis) then a summary: resources, rules run, findings by severity. A finished run also offers **Re-evaluate**, which runs today's rules against the capture it already stored — no Azure call. A replay labels itself as one, and says which of the two things its counts mean: applied to the current picture (findings moved), or advisory (the capture has been superseded, so nothing was created, resolved or reopened).
