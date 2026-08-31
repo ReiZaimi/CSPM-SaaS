@@ -106,16 +106,19 @@ export function CoveragePanel({
               in the middle is the same number the sentence uses. */}
           {pct !== null && (
             <div className="flex items-center gap-4">
-              <Suspense fallback={<Skeleton className="size-20 rounded-full" />}>
+              <Suspense fallback={<Skeleton className="size-24 rounded-full" />}>
                 <Donut
                   slices={verdictSlices(conclusive, unknown)}
                   centerValue={`${pct}%`}
                   centerLabel="verdicts"
                   ariaLabel={`${conclusive} checks reached a verdict, ${unknown} did not`}
-                  className="size-20 shrink-0"
+                  className="size-24 shrink-0"
                 />
               </Suspense>
-              <DonutLegend slices={verdictSlices(conclusive, unknown)} />
+              <DonutLegend
+                slices={verdictSlices(conclusive, unknown)}
+                className="shrink-0"
+              />
             </div>
           )}
         </div>

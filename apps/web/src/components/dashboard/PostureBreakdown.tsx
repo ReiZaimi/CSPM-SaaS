@@ -80,10 +80,22 @@ export function PostureBreakdown({
 
   const statusTotal = statusSlices.reduce((sum, slice) => sum + slice.value, 0);
 
+  // Measured against the whole set rather than against the largest band, so a
+  // band holding one finding of two reads as half the problem instead of
+  // filling the track. Against the largest, a quiet estate draws the same wall
+  // of red as a burning one.
+  const bandTotal = Object.values(riskBands).reduce(
+    (sum, count) => sum + (count ?? 0),
+    0,
+  );
   const bandBars = ["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((level) => ({
     key: level,
     label: label(level),
     value: riskBands[level] ?? 0,
+    of: bandTotal || undefined,
+    // The denominator is the same on every row here, so printing it four times
+    // would spend a column repeating one fact.
+    hideDenominator: true,
     tone: SEVERITY_TONES[level],
     to: `/risks?level=${level}`,
   }));
@@ -111,13 +123,13 @@ export function PostureBreakdown({
           </p>
         ) : (
           <div className="flex items-center gap-4">
-            <Suspense fallback={<Skeleton className="size-24 rounded-full" />}>
+            <Suspense fallback={<Skeleton className="size-28 rounded-full" />}>
               <Donut
                 slices={statusSlices}
                 centerValue={String(statusTotal)}
                 centerLabel="findings"
                 ariaLabel="Findings by status"
-                className="size-24 shrink-0"
+                className="size-28 shrink-0"
               />
             </Suspense>
             <DonutLegend slices={statusSlices} className="min-w-0 flex-1" />

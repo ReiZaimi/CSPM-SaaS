@@ -6,8 +6,14 @@ export type Bar = {
   key: string;
   label: string;
   value: number;
-  /** Optional second number, shown as the denominator rather than a second bar. */
+  /**
+   * What the bar is measured against, when that is something other than the
+   * largest bar in the set — a share of a total, or a percentage of 100.
+   * Shown as a denominator rather than drawn as a second bar.
+   */
   of?: number;
+  /** Suppress the denominator where it would repeat on every row. */
+  hideDenominator?: boolean;
   tone: string;
   to?: string;
 };
@@ -57,7 +63,7 @@ export function Bars({
               )}
             >
               {bar.value}
-              {bar.of !== undefined && (
+              {bar.of !== undefined && !bar.hideDenominator && (
                 <span className="text-muted-foreground">/{bar.of}</span>
               )}
             </span>

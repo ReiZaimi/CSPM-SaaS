@@ -47,7 +47,11 @@ export function Donut({
             endAngle={-270}
             // A 2px gap of the surface between segments, so two adjacent
             // colours never read as one wedge.
-            paddingAngle={total > 0 ? 2 : 0}
+            paddingAngle={slices.length > 1 ? 1.5 : 0}
+            // A slice worth one finding out of four hundred still has to be
+            // visible: a ring that silently drops the small share is the same
+            // omission as a table that truncates without saying so.
+            minAngle={slices.length > 1 ? 4 : 0}
             stroke="var(--card)"
             strokeWidth={2}
             isAnimationActive={!reduced}
@@ -77,10 +81,12 @@ export function Donut({
       {/* The headline sits in the hole, in text ink rather than a series
           colour: the ring carries identity, the number carries the value. */}
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-2xl font-semibold leading-none tabular-nums">
+        <span className="text-xl font-semibold leading-none tabular-nums">
           {centerValue}
         </span>
-        <span className="mt-1 text-[11px] text-muted-foreground">{centerLabel}</span>
+        <span className="mt-0.5 text-[10px] leading-tight text-muted-foreground">
+          {centerLabel}
+        </span>
       </div>
     </div>
   );

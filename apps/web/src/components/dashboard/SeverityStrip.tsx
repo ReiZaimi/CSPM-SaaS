@@ -76,6 +76,11 @@ export function SeverityStrip({
   );
 }
 
+/** Three readings, and at least two different values. */
+function hasShape(series: number[]): boolean {
+  return series.length > 2 && new Set(series).size > 1;
+}
+
 function Tile({
   to,
   badge,
@@ -101,7 +106,7 @@ function Tile({
         "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
       )}
     >
-      {badge}
+      <span className="self-start">{badge}</span>
       <div className="flex items-end justify-between gap-3">
         {/* A zero is not an alarm: muted, so the eye lands on the counts that
             have something in them. */}
@@ -113,7 +118,11 @@ function Tile({
         >
           {shown}
         </span>
-        {series.length > 1 && (
+        {/* Only when there is a shape to show. Two readings of the same number
+            is a straight line that says nothing, and a line that says nothing
+            in a security dashboard is worse than no line: a reader learns to
+            skip the place trends live. */}
+        {hasShape(series) && (
           <Sparkline
             values={series}
             label={seriesLabel}

@@ -10,6 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { Sparkline } from "@/components/charts/Sparkline";
+import { SeverityStrip } from "@/components/dashboard/SeverityStrip";
 import { StackedBar } from "@/components/charts/StackedBar";
 import { Bars } from "@/components/charts/Bars";
 
@@ -92,5 +93,48 @@ describe("Bars", () => {
     // The largest fills the track and the rest are proportional to it, so two
     // bars can be compared by length rather than by reading their numbers.
     expect(widths).toEqual(["100%", "20%"]);
+  });
+});
+
+describe("SeverityStrip", () => {
+  const reading = (critical: number) => ({
+    observed_at: "2026-08-30T09:00:00Z",
+    security_score: 70,
+    open_finding_count: critical,
+    findings_by_severity: { CRITICAL: critical },
+    risk_bands: {},
+    attack_path_count: 0,
+  });
+
+  it("draws no trend line from a series with no movement in it", () => {
+    // Two identical readings is a straight line that says nothing, and a line
+    // saying nothing teaches a reader to skip the place trends live.
+    render(
+      <MemoryRouter>
+        <SeverityStrip
+          counts={{ CRITICAL: 2 }}
+          unknown={0}
+          history={[reading(2), reading(2)]}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("img", { name: /Critical findings/ })).not.toBeInTheDocument();
+  });
+
+  it("draws one once the series actually moves", () => {
+    render(
+      <MemoryRouter>
+        <SeverityStrip
+          counts={{ CRITICAL: 3 }}
+          unknown={0}
+          history={[reading(1), reading(2), reading(3)]}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("img", { name: /Critical findings: risen from 1 to 3/ }),
+    ).toBeInTheDocument();
   });
 });

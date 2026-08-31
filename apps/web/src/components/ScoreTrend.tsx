@@ -45,7 +45,15 @@ const AXIS = "var(--muted-foreground)";
 const SURFACE = "var(--popover)";
 const SURFACE_INK = "var(--popover-foreground)";
 
-/** The bands the score itself is read in, painted behind the line at 8%. */
+/**
+ * The bands the score itself is read in.
+ *
+ * Painted at 5%, which is as loud as they may be: on a light surface an 8%
+ * critical band reads as a pink wash across the whole plot, and a chart whose
+ * background is the most saturated thing in it has stopped being a chart of the
+ * line. They exist so a reader can see *where* 72 falls without the line
+ * changing colour — nothing more.
+ */
 const BANDS = [
   { from: 0, to: 40, tone: "var(--sev-critical)" },
   { from: 40, to: 60, tone: "var(--sev-high)" },
@@ -88,10 +96,10 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
         {formatDateTime(first.at)} to {last.score} on {formatDateTime(last.at)}.
       </p>
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+        <AreaChart data={points} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id="cg-score-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={INK} stopOpacity={0.18} />
+              <stop offset="0%" stopColor={INK} stopOpacity={0.1} />
               <stop offset="100%" stopColor={INK} stopOpacity={0} />
             </linearGradient>
           </defs>
@@ -104,7 +112,7 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
               y1={band.from}
               y2={band.to}
               fill={band.tone}
-              fillOpacity={0.08}
+              fillOpacity={0.05}
               stroke="none"
               ifOverflow="extendDomain"
             />
@@ -122,7 +130,7 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
             tick={{ fill: AXIS, fontSize: 11 }}
             tickLine={false}
             axisLine={{ stroke: GRID }}
-            minTickGap={24}
+            minTickGap={40}
           />
           <YAxis
             domain={[0, 100]}
@@ -130,7 +138,10 @@ export function ScoreTrend({ history }: { history: PostureReading[] }) {
             tick={{ fill: AXIS, fontSize: 11 }}
             tickLine={false}
             axisLine={false}
-            width={44}
+            // Wide enough for three digits: at 44 with a negative left margin
+            // the "100" lost its first character, which is the one that says
+            // what scale this is.
+            width={32}
           />
           <Tooltip
             cursor={{ stroke: GRID, strokeWidth: 1 }}
