@@ -10,7 +10,7 @@ import { ScoreTrend } from "@/components/ScoreTrend";
 import { SecurityScore, RiskScore } from "@/components/security/SecurityScore";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { CoverageIndicator } from "@/components/security/CoverageIndicator";
-import { StatusPill } from "@/components/ui";
+import { StatusPill } from "@/components/security/StatusPill";
 import {
   DashboardSkeleton,
   EmptyState,

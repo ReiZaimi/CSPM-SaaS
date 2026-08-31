@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "@/components/Shell";
 import { useAuthToken } from "@/lib/useAuth";
 import { authReady } from "@/lib/supabase";
-import { Spinner } from "@/components/ui";
+import { Spinner } from "@/components/ui/spinner";
 import { SignInPage } from "@/pages/SignIn";
 import { ResetPasswordPage } from "@/pages/ResetPassword";
 import { OnboardingPage } from "@/pages/Onboarding";

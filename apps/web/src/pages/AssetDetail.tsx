@@ -1,12 +1,27 @@
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { ArrowLeftIcon } from "lucide-react";
+
 import { api } from "@/lib/api";
 import type { Level } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, StatusPill } from "@/components/ui";
+import { StatusPill } from "@/components/security/StatusPill";
+import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { formatDateTime, resourceTypeLabel } from "@/lib/format";
 import { DetailSkeleton, ErrorState } from "@/components/common/states";
-import { ContextRow, type ContextFact } from "@/components/security/ContextProvenance";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  ContextRow,
+  type ContextFact,
+} from "@/components/security/ContextProvenance";
 import { BlastRadius } from "@/components/graph/BlastRadius";
 
 interface AssetDetail {
@@ -49,23 +64,33 @@ export function AssetDetailPage() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["asset", assetId],
-    queryFn: () => api.get<AssetDetail>(`/api/v1/assets/${assetId}`).then((r) => r.data),
+    queryFn: () =>
+      api.get<AssetDetail>(`/api/v1/assets/${assetId}`).then((r) => r.data),
   });
 
   if (isLoading) return <DetailSkeleton />;
-  if (error) return <ErrorState
-          title="Could not load this page"
-          detail="CloudGuard could not reach its own API."
-          impact="Nothing about your environment has changed — this is a problem displaying it."
-          onRetry={() => refetch()}
-        />;
+  if (error)
+    return (
+      <ErrorState
+        title="Could not load this page"
+        detail="CloudGuard could not reach its own API."
+        impact="Nothing about your environment has changed — this is a problem displaying it."
+        onRetry={() => refetch()}
+      />
+    );
   if (!data) return null;
 
   return (
-    <div className="space-y-6">
-      <Link to="/assets" className="text-sm text-muted-foreground hover:text-foreground">
-        ← {t.assets.title}
-      </Link>
+    <div className="flex flex-col gap-6">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 self-start text-muted-foreground"
+        render={<Link to="/assets" />}
+      >
+        <ArrowLeftIcon data-icon="inline-start" />
+        {t.assets.title}
+      </Button>
 
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>
@@ -77,64 +102,106 @@ export function AssetDetailPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card title="Risk context" className="lg:col-span-1">
-          <dl className="flex flex-col gap-3 text-sm">
-            <ContextRow
-              label="Criticality"
-              fact={data.context?.criticality}
-              fallback={<Badge level={data.criticality} />}
-            />
-            <ContextRow
-              label="Data sensitivity"
-              fact={data.context?.data_sensitivity}
-              fallback={<Badge level={data.data_sensitivity} />}
-            />
-            {/* Exposure has no provenance and needs none: it is read off the
-                configuration in the capture -- a public IP is attached or it is
-                not -- so there is nothing to attribute and nothing to declare. */}
-            <Row label="Internet exposure" value={<Badge level={data.public_exposure} />} />
-            <Row label="Environment" value={data.environment ?? "—"} />
-            <Row label="First seen" value={formatDateTime(data.first_seen_at)} />
-            <Row label="Last seen" value={formatDateTime(data.last_seen_at)} />
-          </dl>
-          <p className="mt-4 break-all border-t border-border pt-3 text-xs text-muted-foreground">
-            {data.provider_resource_id}
-          </p>
+        <Card className="lg:col-span-1">
+          <CardHeader>
+            <CardTitle>Risk context</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="flex flex-col gap-3 text-sm">
+              <ContextRow
+                label="Criticality"
+                fact={data.context?.criticality}
+                fallback={<SeverityBadge level={data.criticality} size="sm" />}
+              />
+              <ContextRow
+                label="Data sensitivity"
+                fact={data.context?.data_sensitivity}
+                fallback={
+                  <SeverityBadge level={data.data_sensitivity} size="sm" />
+                }
+              />
+              {/* Exposure has no provenance and needs none: it is read off the
+                  configuration in the capture -- a public IP is attached or it
+                  is not -- so there is nothing to attribute or declare. */}
+              <Row
+                label="Internet exposure"
+                value={<SeverityBadge level={data.public_exposure} size="sm" />}
+              />
+              <Row label="Environment" value={data.environment ?? "—"} />
+              <Row
+                label="First seen"
+                value={formatDateTime(data.first_seen_at)}
+              />
+              <Row
+                label="Last seen"
+                value={formatDateTime(data.last_seen_at)}
+              />
+            </dl>
+          </CardContent>
+          <CardFooter className="border-t pt-4">
+            {/* The provider's own id, in full: it is what the customer can
+                paste into their portal, and truncating it would make it
+                useless for the one thing it is here for. */}
+            <p className="break-all font-mono text-xs text-muted-foreground">
+              {data.provider_resource_id}
+            </p>
+          </CardFooter>
         </Card>
 
-        <Card title="Findings on this asset" className="lg:col-span-2">
-          {data.findings.length === 0 ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              No findings on this asset.
-            </p>
-          ) : (
-            <ul className="divide-y divide-border">
-              {data.findings.map((finding) => (
-                <li key={finding.id} className="flex items-center gap-3 py-3 first:pt-0">
-                  <Badge level={finding.severity} />
-                  <Link
-                    to={`/findings/${finding.id}`}
-                    className="flex-1 text-sm text-foreground hover:underline"
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Findings on this asset</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {data.findings.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                No findings on this asset.
+              </p>
+            ) : (
+              <ul className="flex flex-col divide-y">
+                {data.findings.map((finding) => (
+                  <li
+                    key={finding.id}
+                    className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
                   >
-                    {finding.title}
-                  </Link>
-                  <StatusPill status={finding.status} />
-                  <span className="w-10 text-right text-sm font-medium tabular-nums text-muted-foreground">
-                    {finding.risk_score === null ? "—" : Number(finding.risk_score).toFixed(0)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+                    <SeverityBadge level={finding.severity} size="sm" />
+                    <Link
+                      to={`/findings/${finding.id}`}
+                      className="min-w-0 flex-1 truncate text-sm text-foreground hover:underline"
+                    >
+                      {finding.title}
+                    </Link>
+                    <StatusPill status={finding.status} />
+                    <span className="w-10 text-right text-sm font-medium tabular-nums text-muted-foreground">
+                      {finding.risk_score === null
+                        ? "—"
+                        : Number(finding.risk_score).toFixed(0)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
         </Card>
       </div>
 
-      <BlastRadius providerResourceId={data.provider_resource_id} name={data.name} />
+      <BlastRadius
+        providerResourceId={data.provider_resource_id}
+        name={data.name}
+      />
 
-      <Card title="Configuration" subtitle="As collected in the most recent snapshot">
-        <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
-          {JSON.stringify(data.metadata, null, 2)}
-        </pre>
+      <Card>
+        <CardHeader>
+          <CardTitle>Configuration</CardTitle>
+          <CardDescription>
+            As collected in the most recent snapshot
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
+            {JSON.stringify(data.metadata, null, 2)}
+          </pre>
+        </CardContent>
       </Card>
     </div>
   );

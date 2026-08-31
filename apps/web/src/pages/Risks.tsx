@@ -5,7 +5,15 @@ import { RadarIcon, SearchIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Risk } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, StatusPill } from "@/components/ui";
+import { StatusPill } from "@/components/security/StatusPill";
+import { SeverityBadge } from "@/components/security/SeverityBadge";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+} from "@/components/ui/card";
 import {
   CardsSkeleton,
   EmptyState,
@@ -290,55 +298,59 @@ function ScenarioCard({ risk }: { risk: Risk }) {
 
   return (
     <Card>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge level={risk.risk_level} />
-            <StatusPill status={risk.status} />
-            <span className="inline-flex items-center rounded-full border border-input bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              {escalation ? t.risks.escalationBadge : t.risks.scenarioBadge}
-            </span>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <SeverityBadge level={risk.risk_level} />
+              <StatusPill status={risk.status} />
+              {/* Says which formula scored this, so the arithmetic below is
+                  read against the right one. */}
+              <Badge variant="outline">
+                {escalation ? t.risks.escalationBadge : t.risks.scenarioBadge}
+              </Badge>
+            </div>
+            <p className="mt-2 text-sm font-medium text-foreground">
+              {risk.title}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {escalation ? t.risks.escalationIntro : t.risks.scenarioIntro}
+            </p>
           </div>
-          <p className="mt-2 text-sm font-medium text-foreground">
-            {risk.title}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {escalation ? t.risks.escalationIntro : t.risks.scenarioIntro}
-          </p>
+          <div className="shrink-0 text-right">
+            <p className="text-3xl font-semibold tabular-nums text-foreground">
+              {Number(risk.risk_score).toFixed(0)}
+            </p>
+            <p className="text-xs text-muted-foreground">risk score</p>
+          </div>
         </div>
-        <div className="text-right">
-          <p className="text-3xl font-semibold tabular-nums text-foreground">
-            {Number(risk.risk_score).toFixed(0)}
-          </p>
-          <p className="text-xs text-muted-foreground">risk score</p>
-        </div>
-      </div>
+      </CardHeader>
 
       {risk.path.length > 0 && (
-        <div className="mt-4 border-t border-border pt-3">
+        <CardContent className="border-t pt-3">
           <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             {t.risks.routeLabel}
           </p>
-          <ol className="mt-2 space-y-1.5">
+          <ol className="mt-2 flex flex-col gap-1.5">
             {risk.path.map((step, index) => (
               <li
                 key={`${step.source_id}-${step.relationship}-${step.target_id}`}
                 className="flex items-start gap-2.5 text-sm text-muted-foreground"
               >
-                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-medium text-muted-foreground">
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border bg-background text-[10px] font-medium text-muted-foreground">
                   {index + 1}
                 </span>
                 {step.description}
               </li>
             ))}
           </ol>
-        </div>
+        </CardContent>
       )}
 
       {/* The arithmetic, in the terms the score was actually built from. A
           customer asking why this outranks the finding inside it gets the
           answer rather than a number. */}
-      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-border pt-3 text-xs">
+      <CardFooter className="flex flex-wrap gap-x-6 gap-y-2 border-t pt-4 text-xs">
         <span className="text-muted-foreground">
           {t.risks.worstMember}{" "}
           <strong className="text-foreground">
@@ -360,7 +372,7 @@ function ScenarioCard({ risk }: { risk: Risk }) {
         {capped && (
           <span className="text-muted-foreground">{t.risks.cappedNote}</span>
         )}
-      </div>
+      </CardFooter>
     </Card>
   );
 }
@@ -368,28 +380,30 @@ function ScenarioCard({ risk }: { risk: Risk }) {
 function FindingRiskCard({ risk }: { risk: Risk }) {
   return (
     <Card>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <Badge level={risk.risk_level} />
-            <StatusPill status={risk.status} />
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <SeverityBadge level={risk.risk_level} />
+              <StatusPill status={risk.status} />
+            </div>
+            <p className="mt-2 text-sm font-medium text-foreground">
+              {risk.title}
+            </p>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              {risk.description}
+            </p>
           </div>
-          <p className="mt-2 text-sm font-medium text-foreground">
-            {risk.title}
-          </p>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            {risk.description}
-          </p>
+          <div className="shrink-0 text-right">
+            <p className="text-3xl font-semibold tabular-nums text-foreground">
+              {Number(risk.risk_score).toFixed(0)}
+            </p>
+            <p className="text-xs text-muted-foreground">risk score</p>
+          </div>
         </div>
-        <div className="text-right">
-          <p className="text-3xl font-semibold tabular-nums text-foreground">
-            {Number(risk.risk_score).toFixed(0)}
-          </p>
-          <p className="text-xs text-muted-foreground">risk score</p>
-        </div>
-      </div>
+      </CardHeader>
 
-      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-border pt-3 text-xs">
+      <CardFooter className="flex flex-wrap gap-x-6 gap-y-2 border-t pt-4 text-xs">
         <Factor label="Asset criticality" level={risk.asset_criticality} />
         <Factor label="Data sensitivity" level={risk.data_sensitivity} />
         <Factor label="Internet exposure" level={risk.internet_exposure} />
@@ -401,7 +415,7 @@ function FindingRiskCard({ risk }: { risk: Risk }) {
           Business impact{" "}
           <strong className="text-foreground">{risk.business_impact}</strong>
         </span>
-      </div>
+      </CardFooter>
     </Card>
   );
 }
@@ -410,7 +424,7 @@ function Factor({ label, level }: { label: string; level: string }) {
   return (
     <span className="flex items-center gap-1.5 text-muted-foreground">
       {label}
-      <Badge level={level} className="text-[10px]" />
+      <SeverityBadge level={level} size="sm" />
     </span>
   );
 }

@@ -669,6 +669,15 @@ UNKNOWN keeps its dashed border and gains an icon. Colour alone would hide the
 product's most important distinction — "we could not look" versus "we looked and
 it was fine" — from a reader who cannot separate the hues.
 
+**The compatibility seam is now legacy-only.** `components/ui.tsx` was written
+to let ~20 call sites keep passing `title`/`subtitle`/`action` to a card while
+the primitives underneath changed. Every page except `Connect`, `Scans` and
+`ConnectWizard` has since moved to the composed API, so what remains of the seam
+serves three files rather than the product. `StatusPill` left it entirely: it is
+security vocabulary, not chrome -- RESOLVED means *a scan observed the fix* --
+and it now sits in `components/security/` beside `SeverityBadge`, which is where
+a reader would look for it.
+
 **One thing the CLI got wrong, worth recording.** `init` writes Tailwind v4 CSS
 (`@theme inline`, `@import "shadcn/tailwind.css"`) and leaves a v3
 `tailwind.config.js` untouched, so every `bg-background` referred to a class

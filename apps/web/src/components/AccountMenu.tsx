@@ -6,7 +6,7 @@ import { supabaseSignOut } from "@/lib/supabase";
 import { useAuthEmail } from "@/lib/useAuth";
 import type { Organization } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Button } from "@/components/ui";
+import { Button } from "@/components/ui/button";
 import { cn, label } from "@/lib/format";
 
 /**
@@ -157,7 +157,7 @@ export function AccountMenu({
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
-                    variant="danger"
+                    variant="destructive"
                     onClick={() => removeOrg.mutate(confirming)}
                     disabled={removeOrg.isPending}
                   >

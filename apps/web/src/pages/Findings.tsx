@@ -6,7 +6,7 @@ import { SearchIcon, ShieldCheckIcon, XIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Finding } from "@/lib/types";
 import { useT } from "@/i18n";
-import { StatusPill } from "@/components/ui";
+import { StatusPill } from "@/components/security/StatusPill";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { RiskScore } from "@/components/security/SecurityScore";
 import {
