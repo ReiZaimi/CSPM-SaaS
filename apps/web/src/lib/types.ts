@@ -168,6 +168,19 @@ export interface Dashboard {
   remediation_rate: number;
   top_risks: { id: string; title: string; risk_score: number; risk_level: Level }[];
   coverage: { ratio: number | null; unknown: number; conclusive: number };
+  /**
+   * How recently the provider was actually read, which is a different question
+   * from coverage: a posture can be fully covered and three weeks out of date.
+   * Measured over the newest reading of each scope and evidence key, so the
+   * headline is the *oldest* of them.
+   */
+  evidence_freshness?: {
+    readings: number;
+    oldest_at: string | null;
+    newest_at: string | null;
+    stale_hours: number | null;
+    unusable: number;
+  } | null;
   last_scan: {
     id: string;
     status: string;
