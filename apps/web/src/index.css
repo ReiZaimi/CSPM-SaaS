@@ -1,3 +1,5 @@
+@import "tw-animate-css";
+@import "@fontsource-variable/geist";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -5,9 +7,136 @@
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
+    @apply font-sans;
   }
   body {
-    @apply bg-stone-50 text-stone-900 antialiased;
+    @apply antialiased bg-background text-foreground;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .theme {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+  }
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+
+    /* CloudGuard severity scale.
+       Its own layer, deliberately: the neutral tokens above are the product's
+       chrome and may be re-themed, while these are what a colour means to
+       somebody reading a security finding. Tuned for contrast on the light
+       surface rather than picked from a palette. */
+    --sev-critical: oklch(0.505 0.213 27.4);
+    --sev-critical-bg: oklch(0.971 0.013 17.4);
+    --sev-critical-border: oklch(0.885 0.062 18.3);
+    --sev-high: oklch(0.553 0.169 45.1);
+    --sev-high-bg: oklch(0.98 0.016 73.7);
+    --sev-high-border: oklch(0.901 0.076 70.7);
+    --sev-medium: oklch(0.518 0.128 84.4);
+    --sev-medium-bg: oklch(0.987 0.026 102.2);
+    --sev-medium-border: oklch(0.905 0.112 95.7);
+    --sev-low: oklch(0.488 0.217 264.4);
+    --sev-low-bg: oklch(0.97 0.014 254.6);
+    --sev-low-border: oklch(0.882 0.059 254.1);
+    --sev-unknown: oklch(0.444 0.011 73.6);
+    --sev-unknown-bg: oklch(0.985 0.001 106.4);
+    --sev-unknown-border: oklch(0.923 0.003 48.7);
+    --sev-ok: oklch(0.527 0.154 150.1);
+    --sev-ok-bg: oklch(0.982 0.018 155.8);
+    --sev-ok-border: oklch(0.907 0.089 164.2);
+  }
+  .dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+
+    /* The same meanings, re-lit for a dark surface. Foregrounds move up and
+       backgrounds become tints of the surface rather than of white -- a light
+       severity background on a dark page glows, and a glowing badge reads as
+       more urgent than the one beside it, which is a ranking the rules never
+       made. */
+    --sev-critical: oklch(0.75 0.16 22.2);
+    --sev-critical-bg: oklch(0.28 0.062 25.3);
+    --sev-critical-border: oklch(0.4 0.104 25.8);
+    --sev-high: oklch(0.78 0.14 55.3);
+    --sev-high-bg: oklch(0.29 0.055 55.1);
+    --sev-high-border: oklch(0.42 0.09 57.2);
+    --sev-medium: oklch(0.83 0.14 89.5);
+    --sev-medium-bg: oklch(0.3 0.05 90.1);
+    --sev-medium-border: oklch(0.43 0.08 92.3);
+    --sev-low: oklch(0.75 0.13 260.1);
+    --sev-low-bg: oklch(0.29 0.06 262.5);
+    --sev-low-border: oklch(0.42 0.09 261.4);
+    --sev-unknown: oklch(0.75 0.009 67.6);
+    --sev-unknown-bg: oklch(0.27 0.004 67.6);
+    --sev-unknown-border: oklch(0.38 0.006 67.6);
+    --sev-ok: oklch(0.77 0.15 155.6);
+    --sev-ok-bg: oklch(0.28 0.055 158.2);
+    --sev-ok-border: oklch(0.41 0.09 157.1);
+  }
+  /* Default border colour, so a component that says `border` gets the theme's
+     rather than Tailwind's grey. The v4 recipe pairs this with
+     `outline-ring/50`, which v3 cannot resolve against a `var()` colour -- the
+     focus ring is set per component instead, where it is visible in review. */
+  * {
+    @apply border-border;
   }
 }
