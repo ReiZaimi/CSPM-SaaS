@@ -728,14 +728,16 @@ The palette (`components/layout/CommandPalette.tsx`, Cmd/Ctrl-K) jumps to any
 page, any asset by name, and any rule. Three decisions are worth recording
 because each one is a limit rather than a feature.
 
-**Findings are not searched, and the palette says so.** `GET /findings` has no
-text-search parameter -- it filters by severity, status, rule and resource.
-The available workarounds were to add one, or to filter the loaded page in the
-browser. The second is the dangerous one: it would search a hundred findings
-out of thousands and report "nothing matches" for the rest, which in a security
-product is a false negative dressed as an answer. So findings are reached
-through their rule (`/findings?rule_id=`) or their asset, and the empty state
-names what was searched instead of implying everything was.
+**Findings are not searched from the palette, and it says so.** At the time it
+was built `GET /findings` had no text search; §27 has since added one, and the
+palette could now use it. It still does not, because the rows it would return
+are the same rows the findings page ranks and filters properly -- the palette
+is for jumping to a *thing*, and a finding is reached through its rule
+(`/findings?rule_id=`) or its asset. What the palette must never do is the
+option that was rejected outright: filtering the loaded page in the browser,
+which would search a hundred findings out of thousands and report "nothing
+matches" for the rest. The empty state names what was searched rather than
+implying everything was.
 
 **One authority over what matched.** `shouldFilter={false}`: assets are matched
 by the API (`name ILIKE %search%`) and everything else by the same substring
@@ -749,6 +751,41 @@ cost stay behind a button somebody meant to press.
 
 Pages come from `NAV_GROUPS`, the same source the sidebar renders, so the two
 cannot drift; a test asserts every navigable page appears.
+
+## 27. Searching and ordering belong to the database once a list paginates
+
+**Spec:** none. Two pages had the same silent bug and it was worth naming
+rather than just fixing.
+
+`GET /findings` and `GET /risks` both paginate and both report a `total`. The
+findings and risks pages asked for neither `limit` nor `offset`, took the API's
+default hundred rows, and rendered them as the whole set -- so a tenant with
+four hundred findings saw a hundred with nothing on screen saying so.
+
+That alone is a display bug. What made it a correctness one is what the pages
+then did with those rows: the findings page searched and sorted them **in the
+browser**. Search over one page of an estate answers "no findings match" for
+data that was never in the browser to match against, and a client-side "worst
+first" puts the CRITICAL on page four below the LOW on page one. In a product
+whose entire claim is *we tell you what matters*, both are wrong answers rather
+than missing features.
+
+So `search` and `sort` moved into the endpoints (`docs/API.md`), the pages
+paginate against the real `total`, and a filter change resets to page one
+because page four of the old result describes nothing in the new one. An
+unrecognised `sort` is a 422 rather than a silent fallback: quietly ordering a
+list differently than asked is the same class of lie in a smaller font.
+
+`sort=severity` is a SQL `CASE` over the severity ranking rather than a column
+sort, because alphabetically CRITICAL comes before HIGH but LOW comes before
+MEDIUM -- an ordering that looks plausible enough on screen to be believed.
+
+The risks page also gained the filters it had never had (level, status, kind,
+and a search), all of them server-side. UNKNOWN is offered as a risk level
+because the engine genuinely assigns it, and leaving it out of the filter would
+hide precisely the risks CloudGuard could not score. Findings and routes stay in
+one ranking by default, per §14: a route outranking the findings inside it is
+only visible where they are listed together.
 
 ---
 

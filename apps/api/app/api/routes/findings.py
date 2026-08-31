@@ -1,7 +1,9 @@
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
+from sqlalchemy.sql.elements import UnaryExpression
 
 from app.core.deps import DbSession, Tenant
 from app.core.enums import FindingStatus, ScanStatus, Severity
@@ -31,6 +33,19 @@ SEVERITY_ORDER = {
     Severity.LOW: 3,
 }
 
+# The same ranking expressed for the database, so "worst first" survives
+# pagination. Sorting severity in Python could only ever order the page it was
+# handed, which puts the CRITICAL on page four below the LOW on page one.
+SEVERITY_SORT = case(SEVERITY_ORDER, value=Finding.severity, else_=9)
+
+SORTS: dict[str, tuple[UnaryExpression[Any], ...]] = {
+    # Risk first by default: the product's claim is that it tells you what
+    # matters here, not what the rulebook says in the abstract.
+    "risk": (Finding.risk_score.desc().nullslast(), Finding.last_detected_at.desc()),
+    "severity": (SEVERITY_SORT.asc(), Finding.risk_score.desc().nullslast()),
+    "recent": (Finding.last_detected_at.desc(),),
+}
+
 
 @router.get("")
 async def list_findings(
@@ -41,9 +56,19 @@ async def list_findings(
     rule_id: str | None = None,
     resource_id: UUID | None = None,
     environment: str | None = None,
+    search: str | None = None,
+    sort: str = Query(default="risk", pattern="^(risk|severity|recent)$"),
     limit: int = Query(default=100, le=500),
     offset: int = 0,
 ) -> dict:
+    """Findings, filtered and ordered by the database rather than by the client.
+
+    ``search`` and ``sort`` are here because the alternative is worse than a
+    missing feature. A page that filters and orders the rows it happens to hold
+    searches one page of an estate and reports "nothing matches" for the rest --
+    a false negative wearing an answer's clothes, in the one product where that
+    is least acceptable.
+    """
     stmt = (
         select(Finding, ResourceRecord)
         .outerjoin(ResourceRecord, ResourceRecord.id == Finding.resource_id)
@@ -60,6 +85,17 @@ async def list_findings(
         stmt = stmt.where(Finding.resource_id == resource_id)
     if environment:
         stmt = stmt.where(ResourceRecord.environment == environment)
+    if search:
+        # Three ways a person names the same finding: what it is called, the
+        # rule that raised it, and the resource it was found on.
+        needle = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                Finding.title.ilike(needle),
+                Finding.rule_id.ilike(needle),
+                ResourceRecord.name.ilike(needle),
+            )
+        )
 
     total = (
         await session.execute(select(func.count()).select_from(stmt.subquery()))
@@ -67,11 +103,7 @@ async def list_findings(
 
     rows = (
         await session.execute(
-            # Risk score first: the product's whole claim is that it tells you
-            # what matters, not that it lists everything.
-            stmt.order_by(Finding.risk_score.desc().nullslast(), Finding.last_detected_at.desc())
-            .limit(limit)
-            .offset(offset)
+            stmt.order_by(*SORTS[sort]).limit(limit).offset(offset)
         )
     ).all()
 

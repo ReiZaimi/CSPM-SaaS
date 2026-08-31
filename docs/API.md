@@ -118,6 +118,16 @@ without a request per row. The row `id` is a CloudGuard identifier and names
 nothing in the customer's cloud — the ARM id is what they can search for in
 their own portal.
 
+`/findings` takes `search` and `sort` (`risk` by default, or `severity` or
+`recent`), and `/risks` takes `search`. Both are on the server rather than left
+to the client for the same reason: these endpoints paginate, so a client that
+searched or ordered the page it was handed would be searching a hundred rows of
+an estate and reporting "nothing matches" for the rest. `sort=severity` ranks
+CRITICAL first rather than alphabetically, and an unrecognised `sort` is
+rejected with 422 rather than quietly falling back to a different order than the
+one asked for. `search` matches a finding's title, its rule id, or the name of
+the resource it was found on; for a risk, its title or description.
+
 `/changes` answers "what moved while I was away": asset appearances,
 disappearances, and changes to the three attributes the risk engine multiplies a
 finding by. A feed of transitions rather than a diff of two scans, so a week in

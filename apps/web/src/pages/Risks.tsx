@@ -1,48 +1,269 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { RadarIcon, SearchIcon } from "lucide-react";
+
 import { api } from "@/lib/api";
 import type { Risk } from "@/lib/types";
 import { useT } from "@/i18n";
-import { Badge, Card, EmptyState, StatusPill } from "@/components/ui";
-import { ErrorState, TableSkeleton } from "@/components/common/states";
+import { Badge, Card, StatusPill } from "@/components/ui";
+import {
+  CardsSkeleton,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+} from "@/components/common/states";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
+const PAGE_SIZE = 25;
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * What the findings mean, ranked.
+ *
+ * This page had the same silent truncation the findings list had: it asked for
+ * risks with no `limit`, took the API's default hundred and rendered them as
+ * the whole set. On a page whose entire claim is "these are your worst
+ * problems, in order", showing the first hundred of four hundred is not a
+ * display bug -- it is the wrong answer to the only question being asked.
+ *
+ * It also had no filters at all, on a list that mixes two kinds of thing and
+ * four levels. Everything offered here is filtered by the database, so a filter
+ * narrows the estate rather than the page.
+ */
 export function RisksPage() {
   const t = useT();
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [level, setLevel] = useState("all");
+  const [status, setStatus] = useState("all");
+  const [kind, setKind] = useState("all");
+  const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const params = new URLSearchParams();
+  if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+  if (level !== "all") params.set("risk_level", level);
+  if (status !== "all") params.set("status", status);
+  if (kind !== "all") params.set("kind", kind);
+  params.set("limit", String(PAGE_SIZE));
+  params.set("offset", String(page * PAGE_SIZE));
+
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["risks"],
-    queryFn: () => api.get<Risk[]>("/api/v1/risks").then((r) => r.data),
+    queryKey: ["risks", debouncedSearch, level, status, kind, page],
+    queryFn: () =>
+      api.get<Risk[]>(`/api/v1/risks?${params.toString()}`).then((r) => ({
+        risks: r.data,
+        total:
+          (r.meta as { total?: number } | undefined)?.total ?? r.data.length,
+      })),
+    placeholderData: keepPreviousData,
   });
 
+  const risks = data?.risks ?? [];
+  const total = data?.total ?? 0;
+  const pages = Math.ceil(total / PAGE_SIZE);
+  const filtering =
+    search.trim().length > 0 ||
+    level !== "all" ||
+    status !== "all" ||
+    kind !== "all";
+
+  function refilter(apply: () => void) {
+    apply();
+    setPage(0);
+  }
+
+  function clearFilters() {
+    setSearch("");
+    setLevel("all");
+    setStatus("all");
+    setKind("all");
+    setPage(0);
+  }
+
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{t.risks.title}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          A finding is what we observed. A risk is what it means for this asset, with this data,
-          at this level of exposure.
-        </p>
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        title={t.risks.title}
+        description="A finding is what we observed. A risk is what it means for this asset, with this data, at this level of exposure."
+      />
+
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="relative flex-1 lg:max-w-xs">
+          <SearchIcon
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search risks"
+            aria-label="Search risks"
+            className="pl-8"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={level}
+            onValueChange={(v) => refilter(() => setLevel(v ?? "all"))}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-[150px]"
+              aria-label="Filter by risk level"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All levels</SelectItem>
+              <SelectItem value="CRITICAL">Critical</SelectItem>
+              <SelectItem value="HIGH">High</SelectItem>
+              <SelectItem value="MEDIUM">Medium</SelectItem>
+              <SelectItem value="LOW">Low</SelectItem>
+              {/* UNKNOWN is a level the risk engine really assigns, and
+                  leaving it out of the filter would hide the risks CloudGuard
+                  could not score -- the ones most worth looking at. */}
+              <SelectItem value="UNKNOWN">Unknown</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={status}
+            onValueChange={(v) => refilter(() => setStatus(v ?? "all"))}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-[160px]"
+              aria-label="Filter by status"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="OPEN">Open</SelectItem>
+              <SelectItem value="IN_PROGRESS">In progress</SelectItem>
+              <SelectItem value="ACCEPTED">Accepted</SelectItem>
+              <SelectItem value="RESOLVED">Resolved</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={kind}
+            onValueChange={(v) => refilter(() => setKind(v ?? "all"))}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-[150px]"
+              aria-label="Filter by kind"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Findings and routes</SelectItem>
+              <SelectItem value="FINDING">Findings only</SelectItem>
+              <SelectItem value="ATTACK_PATH">Attack paths</SelectItem>
+              <SelectItem value="ESCALATION">Escalations</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
-      {isLoading && <TableSkeleton />}
-      {error && <ErrorState
-          title="Could not load this page"
+      {isLoading && <CardsSkeleton />}
+
+      {error && (
+        <ErrorState
+          title="Could not load your risks"
           detail="CloudGuard could not reach its own API."
           impact="Nothing about your environment has changed — this is a problem displaying it."
           onRetry={() => refetch()}
-        />}
-      {data && data.length === 0 && <EmptyState title={t.risks.empty} />}
+        />
+      )}
 
-      <div className="space-y-3">
-        {/* Both kinds in one list, deliberately. A route outranking the
-            findings inside it is only visible where they are ranked together —
-            on a page of its own it would be a second opinion nobody compares. */}
-        {data?.map((risk) =>
-          risk.kind === "FINDING" ? (
-            <FindingRiskCard key={risk.id} risk={risk} />
-          ) : (
-            <ScenarioCard key={risk.id} risk={risk} />
-          ),
-        )}
-      </div>
+      {data && risks.length === 0 && (
+        <EmptyState
+          icon={RadarIcon}
+          title={filtering ? "No risks match these filters" : t.risks.empty}
+          detail={
+            filtering
+              ? "Widen the filters, or clear the search, to see the rest of the ranking."
+              : undefined
+          }
+          action={
+            filtering ? (
+              <Button variant="outline" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {data && risks.length > 0 && (
+        <>
+          <div className="flex flex-col gap-3">
+            {/* Both kinds in one list, deliberately. A route outranking the
+                findings inside it is only visible where they are ranked
+                together — on a page of its own it would be a second opinion
+                nobody compares. The kind filter can separate them; the default
+                does not. */}
+            {risks.map((risk) =>
+              risk.kind === "FINDING" ? (
+                <FindingRiskCard key={risk.id} risk={risk} />
+              ) : (
+                <ScenarioCard key={risk.id} risk={risk} />
+              ),
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">
+              {page * PAGE_SIZE + 1}–{page * PAGE_SIZE + risks.length} of{" "}
+              {total} risk
+              {total === 1 ? "" : "s"}
+              {filtering ? " matching these filters" : ""}
+            </p>
+            {pages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {page + 1} / {pages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page + 1 >= pages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -78,7 +299,9 @@ function ScenarioCard({ risk }: { risk: Risk }) {
               {escalation ? t.risks.escalationBadge : t.risks.scenarioBadge}
             </span>
           </div>
-          <p className="mt-2 text-sm font-medium text-foreground">{risk.title}</p>
+          <p className="mt-2 text-sm font-medium text-foreground">
+            {risk.title}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
             {escalation ? t.risks.escalationIntro : t.risks.scenarioIntro}
           </p>
@@ -118,16 +341,25 @@ function ScenarioCard({ risk }: { risk: Risk }) {
       <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-border pt-3 text-xs">
         <span className="text-muted-foreground">
           {t.risks.worstMember}{" "}
-          <strong className="text-foreground">{breakdown.worst_member ?? "—"}</strong>
+          <strong className="text-foreground">
+            {breakdown.worst_member ?? "—"}
+          </strong>
         </span>
         <span className="text-muted-foreground">
           {t.risks.amplifier}{" "}
-          <strong className="text-foreground">+{breakdown.amplifier ?? 0}</strong>
+          <strong className="text-foreground">
+            +{breakdown.amplifier ?? 0}
+          </strong>
         </span>
         <span className="text-muted-foreground">
-          Hops <strong className="text-foreground">{breakdown.hops ?? risk.path.length}</strong>
+          Hops{" "}
+          <strong className="text-foreground">
+            {breakdown.hops ?? risk.path.length}
+          </strong>
         </span>
-        {capped && <span className="text-muted-foreground">{t.risks.cappedNote}</span>}
+        {capped && (
+          <span className="text-muted-foreground">{t.risks.cappedNote}</span>
+        )}
       </div>
     </Card>
   );
@@ -142,8 +374,12 @@ function FindingRiskCard({ risk }: { risk: Risk }) {
             <Badge level={risk.risk_level} />
             <StatusPill status={risk.status} />
           </div>
-          <p className="mt-2 text-sm font-medium text-foreground">{risk.title}</p>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{risk.description}</p>
+          <p className="mt-2 text-sm font-medium text-foreground">
+            {risk.title}
+          </p>
+          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+            {risk.description}
+          </p>
         </div>
         <div className="text-right">
           <p className="text-3xl font-semibold tabular-nums text-foreground">
@@ -158,10 +394,12 @@ function FindingRiskCard({ risk }: { risk: Risk }) {
         <Factor label="Data sensitivity" level={risk.data_sensitivity} />
         <Factor label="Internet exposure" level={risk.internet_exposure} />
         <span className="text-muted-foreground">
-          Exploitability <strong className="text-foreground">{risk.exploitability}/5</strong>
+          Exploitability{" "}
+          <strong className="text-foreground">{risk.exploitability}/5</strong>
         </span>
         <span className="text-muted-foreground">
-          Business impact <strong className="text-foreground">{risk.business_impact}</strong>
+          Business impact{" "}
+          <strong className="text-foreground">{risk.business_impact}</strong>
         </span>
       </div>
     </Card>

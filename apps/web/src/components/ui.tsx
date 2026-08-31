@@ -24,10 +24,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Card as ShadCard, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card as ShadCard,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
-import { EmptyState as SharedEmptyState, ErrorState } from "@/components/common/states";
+import {
+  EmptyState as SharedEmptyState,
+  ErrorState,
+} from "@/components/common/states";
 import { cn, label } from "@/lib/format";
 
 export { SeverityBadge as Badge };
@@ -49,7 +58,10 @@ export function StatusPill({ status }: { status: string }) {
         ? "bg-critical-bg text-critical border-critical-border"
         : status === "PARTIAL"
           ? "bg-medium-bg text-medium border-medium-border"
-          : status === "ACCEPTED_RISK"
+          : // A finding says ACCEPTED_RISK and a risk says ACCEPTED; they are
+            // the same decision by a person, and the second used to fall
+            // through to the neutral tone and read as "no state yet".
+            status === "ACCEPTED_RISK" || status === "ACCEPTED"
             ? "bg-unknown-bg text-unknown border-unknown-border"
             : "bg-muted text-muted-foreground border-border";
   return (
@@ -90,10 +102,16 @@ export function Card({
         <CardHeader>
           {title && <CardTitle>{title}</CardTitle>}
           {subtitle && <CardDescription>{subtitle}</CardDescription>}
-          {action && <div className="col-start-2 row-span-2 row-start-1 self-start justify-self-end">{action}</div>}
+          {action && (
+            <div className="col-start-2 row-span-2 row-start-1 self-start justify-self-end">
+              {action}
+            </div>
+          )}
         </CardHeader>
       )}
-      <CardContent className={title || action ? undefined : "pt-6"}>{children}</CardContent>
+      <CardContent className={title || action ? undefined : "pt-6"}>
+        {children}
+      </CardContent>
     </ShadCard>
   );
 }
@@ -130,9 +148,13 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-foreground">{text}</span>
+      <span className="mb-1.5 block text-sm font-medium text-foreground">
+        {text}
+      </span>
       {children}
-      {hint && <span className="mt-1 block text-xs text-muted-foreground">{hint}</span>}
+      {hint && (
+        <span className="mt-1 block text-xs text-muted-foreground">{hint}</span>
+      )}
     </label>
   );
 }

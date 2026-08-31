@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.core.deps import DbSession, Tenant
 from app.core.enums import Level, RiskKind, RiskStatus
@@ -20,6 +20,7 @@ async def list_risks(
     risk_level: Level | None = None,
     risk_status: RiskStatus | None = Query(default=None, alias="status"),
     kind: RiskKind | None = None,
+    search: str | None = None,
     limit: int = Query(default=100, le=500),
     offset: int = 0,
 ) -> dict:
@@ -34,6 +35,14 @@ async def list_risks(
     # visible where they are listed together.
     if kind:
         stmt = stmt.where(Risk.kind == kind)
+    if search:
+        # A risk is named by its own title and explained by its description; a
+        # scenario's asset names live in the description rather than in a
+        # column, so both are searched.
+        needle = f"%{search}%"
+        stmt = stmt.where(
+            or_(Risk.title.ilike(needle), Risk.description.ilike(needle))
+        )
 
     total = (
         await session.execute(select(func.count()).select_from(stmt.subquery()))

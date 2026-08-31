@@ -874,3 +874,205 @@ class TestAssetList:
 
         assert response.status_code == 200
         assert "total" in response.json()["meta"]
+
+
+class TestFindingSearchAndSort:
+    """The two parameters a paginated list cannot do without.
+
+    Both exist because the alternative is a page that filters and orders the
+    hundred rows it happens to hold: a search that reports "nothing matches"
+    over a hundredth of an estate, and a "worst first" that puts the CRITICAL on
+    page four below the LOW on page one.
+    """
+
+    async def _findings(self, org_id: uuid.UUID) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from app.core.db import service_session
+        from app.core.enums import FindingStatus, Severity
+        from app.models.finding import Finding
+
+        now = datetime.now(UTC)
+        async with service_session() as session:
+            session.add_all(
+                [
+                    Finding(
+                        organization_id=org_id,
+                        rule_id="AZ-STO-001",
+                        severity=Severity.LOW,
+                        status=FindingStatus.OPEN,
+                        title="Storage account allows public blob access",
+                        description="",
+                        # The highest risk in the set despite the lowest
+                        # severity -- which is the distinction the two sorts
+                        # exist to keep apart.
+                        risk_score=90,
+                        first_detected_at=now,
+                        last_detected_at=now,
+                    ),
+                    Finding(
+                        organization_id=org_id,
+                        rule_id="AZ-NET-002",
+                        severity=Severity.CRITICAL,
+                        status=FindingStatus.OPEN,
+                        title="Network security group permits inbound SSH",
+                        description="",
+                        risk_score=10,
+                        first_detected_at=now,
+                        last_detected_at=now - timedelta(days=2),
+                    ),
+                ]
+            )
+            await session.commit()
+
+    async def test_search_matches_a_finding_by_its_rule(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Search Ltd"))
+        cleanup_orgs.append(org_id)
+        await self._findings(org_id)
+
+        response = await client.get(
+            "/api/v1/findings?search=AZ-NET", headers=auth_header(user)
+        )
+
+        assert response.status_code == 200, response.text
+        [finding] = response.json()["data"]
+        assert finding["rule_id"] == "AZ-NET-002"
+
+    async def test_search_matches_a_finding_by_its_title(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Title Ltd"))
+        cleanup_orgs.append(org_id)
+        await self._findings(org_id)
+
+        # Mid-word and mid-case, because a person searching remembers a word
+        # rather than the start of the sentence it is in.
+        response = await client.get(
+            "/api/v1/findings?search=public+blob", headers=auth_header(user)
+        )
+
+        assert response.status_code == 200
+        [finding] = response.json()["data"]
+        assert finding["rule_id"] == "AZ-STO-001"
+
+    async def test_search_narrows_the_total_as_well_as_the_page(
+        self, client, cleanup_orgs
+    ) -> None:
+        """The count has to describe the search, or pagination lies about it."""
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Total Ltd"))
+        cleanup_orgs.append(org_id)
+        await self._findings(org_id)
+
+        response = await client.get(
+            "/api/v1/findings?search=AZ-NET", headers=auth_header(user)
+        )
+
+        assert response.json()["meta"]["total"] == 1
+
+    async def test_risk_and_severity_are_different_orders(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Order Ltd"))
+        cleanup_orgs.append(org_id)
+        await self._findings(org_id)
+
+        by_risk = await client.get("/api/v1/findings?sort=risk", headers=auth_header(user))
+        by_severity = await client.get(
+            "/api/v1/findings?sort=severity", headers=auth_header(user)
+        )
+
+        # A LOW on an exposed asset outranks a CRITICAL on an isolated one, and
+        # the product would have nothing to say if both sorts agreed.
+        assert by_risk.json()["data"][0]["rule_id"] == "AZ-STO-001"
+        assert by_severity.json()["data"][0]["rule_id"] == "AZ-NET-002"
+
+    async def test_severity_ranks_worst_first_not_alphabetically(
+        self, client, cleanup_orgs
+    ) -> None:
+        """CRITICAL before LOW; alphabetically it is the other way round."""
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Rank Ltd"))
+        cleanup_orgs.append(org_id)
+        await self._findings(org_id)
+
+        response = await client.get(
+            "/api/v1/findings?sort=severity", headers=auth_header(user)
+        )
+
+        assert [f["severity"] for f in response.json()["data"]] == ["CRITICAL", "LOW"]
+
+    async def test_recent_orders_by_when_it_was_last_seen(self, client, cleanup_orgs) -> None:
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Recent Ltd"))
+        cleanup_orgs.append(org_id)
+        await self._findings(org_id)
+
+        response = await client.get(
+            "/api/v1/findings?sort=recent", headers=auth_header(user)
+        )
+
+        assert response.json()["data"][0]["rule_id"] == "AZ-STO-001"
+
+    async def test_an_unknown_sort_is_refused_rather_than_ignored(
+        self, client, cleanup_orgs
+    ) -> None:
+        """Silently falling back would order the list differently than asked."""
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Bad Sort Ltd"))
+        cleanup_orgs.append(org_id)
+
+        response = await client.get(
+            "/api/v1/findings?sort=alphabetical", headers=auth_header(user)
+        )
+
+        assert response.status_code == 422
+
+
+class TestRiskSearch:
+    async def test_search_matches_a_risk_by_title(self, client, cleanup_orgs) -> None:
+        from app.core.db import service_session
+        from app.core.enums import Level, RiskKind, RiskStatus
+        from app.models.risk import Risk
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Risk Search Ltd"))
+        cleanup_orgs.append(org_id)
+
+        async with service_session() as session:
+            session.add_all(
+                [
+                    Risk(
+                        organization_id=org_id,
+                        kind=RiskKind.FINDING,
+                        title="Payroll storage is reachable from the internet",
+                        description="",
+                        risk_score=80,
+                        risk_level=Level.HIGH,
+                        status=RiskStatus.OPEN,
+                        severity="HIGH",
+                        asset_criticality=Level.HIGH,
+                        data_sensitivity=Level.HIGH,
+                        internet_exposure=Level.HIGH,
+                    ),
+                    Risk(
+                        organization_id=org_id,
+                        kind=RiskKind.FINDING,
+                        title="Sandbox virtual machine has an open management port",
+                        description="",
+                        risk_score=20,
+                        risk_level=Level.LOW,
+                        status=RiskStatus.OPEN,
+                        severity="LOW",
+                        asset_criticality=Level.LOW,
+                        data_sensitivity=Level.LOW,
+                        internet_exposure=Level.LOW,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = await client.get("/api/v1/risks?search=payroll", headers=auth_header(user))
+
+        assert response.status_code == 200, response.text
+        assert len(response.json()["data"]) == 1
+        assert response.json()["meta"]["total"] == 1

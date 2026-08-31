@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { SearchIcon, ShieldCheckIcon, XIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -9,7 +9,12 @@ import { useT } from "@/i18n";
 import { StatusPill } from "@/components/ui";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { RiskScore } from "@/components/security/SecurityScore";
-import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/states";
+import {
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  TableSkeleton,
+} from "@/components/common/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,28 +34,29 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn, formatDate, resourceTypeLabel } from "@/lib/format";
+import { formatDate, resourceTypeLabel } from "@/lib/format";
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
-
-/** Severity as a rank, so "worst first" is a comparison rather than a lookup. */
-const SEVERITY_RANK: Record<string, number> = {
-  CRITICAL: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-  UNKNOWN: 4,
-};
+const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 250;
 
 type SortKey = "risk" | "severity" | "recent";
 
 /**
  * The list a security engineer actually works from.
  *
- * Two things were missing and both cost real time. There was no search, so
- * finding the one storage account somebody had asked about meant reading every
- * row; and there was no ordering, so the list arrived in whatever order the API
- * returned and the most dangerous finding could be anywhere in it.
+ * **The bug this page had was silent, which is what made it serious.** It asked
+ * for findings with no `limit`, took the API's default hundred, and rendered
+ * them as though they were all of them -- so a tenant with four hundred
+ * findings saw a hundred with nothing on screen saying so. Search and sort then
+ * ran over that hundred in the browser, which turned a display problem into a
+ * false negative: searching an estate and being told "no findings match" when
+ * three hundred rows were never in the browser to match against.
+ *
+ * So both moved to the database (`GET /findings?search=&sort=`), and the page
+ * pages properly. The cost is a round trip per keystroke, which the debounce
+ * below pays for; the alternative was a security product answering questions
+ * about data it did not have.
  *
  * Sorting defaults to risk rather than severity, deliberately. Severity is what
  * the *rule* says in the abstract; risk is what it means on this asset, with
@@ -63,7 +69,20 @@ export function FindingsPage() {
   const [severity, setSeverity] = useState("all");
   const [status, setStatus] = useState("OPEN");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("risk");
+  const [page, setPage] = useState(0);
+
+  // A request per keystroke would be six for "public"; a request per pause is
+  // one. The delay is short enough that a reader who stops typing to look at
+  // the screen has results by the time their eyes arrive.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   // The rule filter lives in the URL rather than in state: it is arrived at
   // from elsewhere — a compliance control's evidence list, a rule page — so it
@@ -75,56 +94,56 @@ export function FindingsPage() {
   if (severity !== "all") params.set("severity", severity);
   if (status !== "all") params.set("status", status);
   if (ruleId) params.set("rule_id", ruleId);
+  if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+  params.set("sort", sort);
+  params.set("limit", String(PAGE_SIZE));
+  params.set("offset", String(page * PAGE_SIZE));
 
   function clearRuleFilter() {
     const next = new URLSearchParams(searchParams);
     next.delete("rule_id");
     setSearchParams(next, { replace: true });
+    setPage(0);
   }
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["findings", severity, status, ruleId],
+    queryKey: [
+      "findings",
+      severity,
+      status,
+      ruleId,
+      debouncedSearch,
+      sort,
+      page,
+    ],
     queryFn: () =>
-      api.get<Finding[]>(`/api/v1/findings?${params.toString()}`).then((r) => r.data),
+      api.get<Finding[]>(`/api/v1/findings?${params.toString()}`).then((r) => ({
+        findings: r.data,
+        total:
+          (r.meta as { total?: number } | undefined)?.total ?? r.data.length,
+      })),
+    // Without this the table blanks on every page turn, which reads as the
+    // findings having gone rather than as a page loading.
+    placeholderData: keepPreviousData,
   });
 
-  /**
-   * Search and sort happen here rather than on the server.
-   *
-   * The findings endpoint filters by severity, status and rule and does not
-   * take a query or an order. Sorting client-side is honest for a list this
-   * size and avoids a backend change for a UI improvement — but it is a
-   * limitation worth naming: it orders *the page it was given*, so it will need
-   * to move server-side the day this endpoint paginates.
-   */
-  const rows = useMemo(() => {
-    if (!data) return [];
-    const needle = search.trim().toLowerCase();
-    const filtered = needle
-      ? data.filter(
-          (f) =>
-            f.title.toLowerCase().includes(needle) ||
-            f.rule_id.toLowerCase().includes(needle) ||
-            (f.resource?.name ?? "").toLowerCase().includes(needle),
-        )
-      : data;
+  // Already filtered and ordered by the database; the page renders what it was
+  // sent rather than re-deciding it.
+  const rows = data?.findings ?? [];
+  const total = data?.total ?? 0;
+  const pages = Math.ceil(total / PAGE_SIZE);
 
-    return [...filtered].sort((a, b) => {
-      if (sort === "severity") {
-        const bySeverity =
-          (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9);
-        if (bySeverity !== 0) return bySeverity;
-      }
-      if (sort === "recent") {
-        return (
-          new Date(b.last_detected_at).getTime() - new Date(a.last_detected_at).getTime()
-        );
-      }
-      return Number(b.risk_score ?? 0) - Number(a.risk_score ?? 0);
-    });
-  }, [data, search, sort]);
+  const filtered =
+    search.trim().length > 0 ||
+    severity !== "all" ||
+    status !== "OPEN" ||
+    !!ruleId;
 
-  const filtered = search.trim().length > 0 || severity !== "all" || status !== "OPEN" || !!ruleId;
+  /** Any filter change re-slices the set, so page 4 of the old one is meaningless. */
+  function refilter(apply: () => void) {
+    apply();
+    setPage(0);
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -149,8 +168,15 @@ export function FindingsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={severity} onValueChange={(v) => setSeverity(v ?? "all")}>
-            <SelectTrigger size="sm" className="w-[150px]" aria-label="Filter by severity">
+          <Select
+            value={severity}
+            onValueChange={(v) => refilter(() => setSeverity(v ?? "all"))}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-[150px]"
+              aria-label="Filter by severity"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -163,8 +189,15 @@ export function FindingsPage() {
             </SelectContent>
           </Select>
 
-          <Select value={status} onValueChange={(v) => setStatus(v ?? "all")}>
-            <SelectTrigger size="sm" className="w-[160px]" aria-label="Filter by status">
+          <Select
+            value={status}
+            onValueChange={(v) => refilter(() => setStatus(v ?? "all"))}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-[160px]"
+              aria-label="Filter by status"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -176,8 +209,17 @@ export function FindingsPage() {
             </SelectContent>
           </Select>
 
-          <Select value={sort} onValueChange={(v) => setSort((v as SortKey) ?? "risk")}>
-            <SelectTrigger size="sm" className="w-[150px]" aria-label="Sort findings">
+          <Select
+            value={sort}
+            onValueChange={(v) =>
+              refilter(() => setSort((v as SortKey) ?? "risk"))
+            }
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-[150px]"
+              aria-label="Sort findings"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -218,7 +260,9 @@ export function FindingsPage() {
       {data && rows.length === 0 && (
         <EmptyState
           icon={ShieldCheckIcon}
-          title={filtered ? "No findings match these filters" : t.findings.empty}
+          title={
+            filtered ? "No findings match these filters" : t.findings.empty
+          }
           detail={
             filtered
               ? "Widen the filters, or clear the search, to see the rest of this environment."
@@ -256,9 +300,13 @@ export function FindingsPage() {
                     <TableHead className="w-[45%]">Finding</TableHead>
                     <TableHead>{t.common.severity}</TableHead>
                     <TableHead>{t.findings.asset}</TableHead>
-                    <TableHead className="text-right">{t.findings.riskScore}</TableHead>
+                    <TableHead className="text-right">
+                      {t.findings.riskScore}
+                    </TableHead>
                     <TableHead>{t.common.status}</TableHead>
-                    <TableHead className="text-right">{t.findings.lastSeen}</TableHead>
+                    <TableHead className="text-right">
+                      {t.findings.lastSeen}
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -285,7 +333,9 @@ export function FindingsPage() {
                               {finding.resource.name}
                             </span>
                             <span className="text-xs">
-                              {resourceTypeLabel(finding.resource.resource_type)}
+                              {resourceTypeLabel(
+                                finding.resource.resource_type,
+                              )}
                             </span>
                           </>
                         ) : (
@@ -308,10 +358,37 @@ export function FindingsPage() {
             </CardContent>
           </Card>
 
-          <p className={cn("text-xs text-muted-foreground")}>
-            {rows.length} of {data.length} finding{data.length === 1 ? "" : "s"}
-            {filtered ? " matching these filters" : ""}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">
+              {page * PAGE_SIZE + 1}–{page * PAGE_SIZE + rows.length} of {total}{" "}
+              finding
+              {total === 1 ? "" : "s"}
+              {filtered ? " matching these filters" : ""}
+            </p>
+            {pages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {page + 1} / {pages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page + 1 >= pages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>
