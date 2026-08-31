@@ -209,6 +209,21 @@ out is *named on the cover as excluded*, so a reader downstream can tell a
 choice from an absence of evidence. The posture block and the evidence caveats
 are not optional either way.
 
+`/dashboard` carries two things the screens could not otherwise show without a
+second request each. `coverage.categories` is the last scan's evidence grouped
+by category with an `incomplete` count — PARTIAL counts with FAILED, because a
+truncated listing cannot support "none of them are public" — so a reader is told
+*which* part of the estate could not be read rather than only how much.
+`top_risks[]` carries `kind` and the three context levels the score was built
+from (`internet_exposure`, `data_sensitivity`, `asset_criticality`), which are
+already columns on the row and cost no extra query; they let a rank be read as a
+reason rather than as an assertion.
+
+Attack paths and changes stay on their own endpoints and are fetched separately
+by the dashboard. A path costs a graph build and changes are a windowed feed, so
+folding either into this payload would make the numbers everybody came for wait
+on the two panels nobody scrolls to first.
+
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's
 latest scan. Each control resolves to FAILING, INCONCLUSIVE, PASSING,

@@ -294,8 +294,30 @@ export interface Dashboard {
   asset_count: number;
   verified_resolved_last_30_days: number;
   remediation_rate: number;
-  top_risks: { id: string; title: string; risk_score: number; risk_level: Level }[];
-  coverage: { ratio: number | null; unknown: number; conclusive: number };
+  top_risks: {
+    id: string;
+    title: string;
+    risk_score: number;
+    risk_level: Level;
+    /** A finding scored for its asset, or several of them seen as a route. */
+    kind?: "FINDING" | "ATTACK_PATH";
+    /** The terms the score was built from, so a rank can be read as a reason. */
+    internet_exposure?: Level;
+    data_sensitivity?: Level;
+    asset_criticality?: Level;
+  }[];
+  coverage: {
+    ratio: number | null;
+    unknown: number;
+    conclusive: number;
+    /**
+     * Which parts of the estate the last scan could read. A ratio says how much
+     * is missing and never which part, and those call for different actions.
+     * `incomplete` counts PARTIAL with FAILED: a truncated listing cannot
+     * support "none of them are public".
+     */
+    categories?: { name: string; readings: number; incomplete: number }[];
+  };
   /**
    * How recently the provider was actually read, which is a different question
    * from coverage: a posture can be fully covered and three weeks out of date.

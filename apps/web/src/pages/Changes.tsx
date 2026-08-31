@@ -14,6 +14,7 @@ import { api } from "@/lib/api";
 import type { AssetChange, ChangeEvent } from "@/lib/types";
 import { useT } from "@/i18n";
 import { cn, formatDate, formatDateTime, resourceTypeLabel } from "@/lib/format";
+import { changeDirection, type Direction } from "@/lib/changes";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,32 +35,6 @@ import {
 
 const PAGE_SIZE = 50;
 const WINDOWS = [1, 7, 30, 90] as const;
-
-/**
- * Whether a level moved up or down, for the three attribute changes.
- *
- * UNKNOWN is deliberately outside the ordering rather than at the bottom of it.
- * A level that became UNKNOWN is a loss of knowledge, not an improvement, and
- * ranking it below LOW would render exactly that as a green arrow -- the one
- * thing this product must never do.
- */
-const RANK: Record<string, number> = {
-  LOW: 1,
-  MEDIUM: 2,
-  HIGH: 3,
-  CRITICAL: 4,
-};
-
-type Direction = "worse" | "better" | "neutral";
-
-function direction(previous: string | null, current: string | null): Direction {
-  const from = RANK[previous ?? ""];
-  const to = RANK[current ?? ""];
-  if (from === undefined || to === undefined) return "neutral";
-  if (to > from) return "worse";
-  if (to < from) return "better";
-  return "neutral";
-}
 
 /**
  * What moved in the environment, rather than what is true in it now.
@@ -254,7 +229,7 @@ function ChangeRow({ event }: { event: ChangeEvent }) {
   const t = useT();
   const attribute = event.change.endsWith("_CHANGED");
   const moved = attribute
-    ? direction(event.previous_value, event.current_value)
+    ? changeDirection(event.previous_value, event.current_value)
     : "neutral";
 
   return (

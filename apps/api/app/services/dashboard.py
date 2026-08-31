@@ -162,6 +162,15 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
                 "title": r.title,
                 "risk_score": float(r.risk_score),
                 "risk_level": r.risk_level,
+                # The terms the score was built from, carried with it. A ranked
+                # risk with no context is a number a reader has to open a page
+                # to understand; "internet-facing, holds sensitive data" is why
+                # it outranks the row beneath it, and it costs no extra query --
+                # these columns are already on the row.
+                "kind": r.kind,
+                "internet_exposure": r.internet_exposure,
+                "data_sensitivity": r.data_sensitivity,
+                "asset_criticality": r.asset_criticality,
             }
             for r in top_risks
         ],
@@ -334,7 +343,7 @@ async def _coverage(
 ) -> dict:
     """Kept out of the security score, on purpose."""
     if last_scan is None:
-        return {"ratio": None, "unknown": 0, "conclusive": 0}
+        return {"ratio": None, "unknown": 0, "conclusive": 0, "categories": []}
 
     totals = (
         await session.execute(
@@ -352,4 +361,46 @@ async def _coverage(
         "ratio": round(conclusive / denominator, 4) if denominator else 1.0,
         "unknown": unknown,
         "conclusive": conclusive,
+        "categories": await _coverage_categories(session, last_scan),
     }
+
+
+async def _coverage_categories(session: AsyncSession, last_scan: Scan) -> list[dict]:
+    """Which parts of the estate the last scan could actually read.
+
+    A single ratio says how much of the picture is missing; it never says
+    *which* part, and those call for different actions -- an unreadable identity
+    directory is a consent problem for an administrator, an unreadable storage
+    listing is usually a role assignment. The evidence table already records an
+    outcome per category, so this is one grouped read rather than new bookkeeping.
+
+    PARTIAL counts with FAILED rather than with COMPLETE, deliberately: a
+    truncated listing cannot support "none of them are public", which is the
+    same rule the engine applies one layer up.
+    """
+    rows = (
+        await session.execute(
+            select(
+                Evidence.category,
+                Evidence.outcome,
+                func.count(),
+            )
+            .where(Evidence.scan_id == last_scan.id)
+            .group_by(Evidence.category, Evidence.outcome)
+        )
+    ).all()
+
+    categories: dict[str, dict] = {}
+    for category, outcome, count in rows:
+        entry = categories.setdefault(
+            category, {"name": category, "readings": 0, "incomplete": 0}
+        )
+        entry["readings"] += int(count)
+        if outcome != TaskOutcome.COMPLETE:
+            entry["incomplete"] += int(count)
+
+    # Worst first: a category that could not be read is the one worth reading.
+    return sorted(
+        categories.values(),
+        key=lambda entry: (-entry["incomplete"], entry["name"]),
+    )

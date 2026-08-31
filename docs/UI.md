@@ -4,25 +4,66 @@ See `PRODUCT_SPEC.md` §4 for the underlying UX principle: don't overwhelm, prio
 
 ---
 
-## 1. Executive Dashboard
+## 1. Overview (Executive Dashboard)
+
+One argument read top to bottom, not a wall of cards. Each step is the
+precondition for the next:
 
 ```
-+------------------------------------------------+
-|  Security Posture                               |
-|        84 / 100     (+7 since last scan)       |
-+------------------------------------------------+
- Critical  1     High  4     Medium  13
- Top Risk: Production database publicly accessible
- Remediation: 78% of high-risk items resolved
+Overview                            ✓ Assessed 31 Aug 01:51  [Scan now] [Reports]
+
+┌───────────────────────┬────────────────────────────────────┐
+│ SECURITY SCORE        │ POSTURE TREND                      │
+│   72 / 100            │        ╭────                       │
+│   Needs attention     │   ─────╯                           │
+│   ↑ +7 · assessed …   │                                    │
+└───────────────────────┴────────────────────────────────────┘
+
+ Critical 0 │ High 1 │ Medium 1 │ Low 0 │ No verdict 3
+
+ ASSESSMENT COVERAGE                       75%  · oldest reading 22h
+ ✓ Network  ✓ Storage  ⚠ Identity
+
+┌────────────────────────┬────────────────────────────────────┐
+│ PRIORITY RISKS         │ SHORTEST ATTACK PATH               │
+│ ① Public database  94  │ vm-jump-01 → prodstorage           │
+│   Internet-facing      │ ① runs as mi-jump                  │
+│   Sensitive data       │ ✂ can act over prodstorage         │
+└────────────────────────┴────────────────────────────────────┘
+
+┌────────────────────────┬────────────────────────────────────┐
+│ REMEDIATION            │ RECENT CHANGES                     │
+│ 34% verified fixed     │ ↑ exposure · storage-prod    2h    │
+└────────────────────────┴────────────────────────────────────┘
 ```
 
-Read top to bottom the overview is one argument: the score and which way it is
-moving, what it is made of, how much of the environment CloudGuard could
-actually see while forming the opinion, then the specific things to go and do
-about it — ranked risks (each linking to that risk, not back to the list),
-the shortest attack paths with the hop worth cutting, and what moved in the
-last seven days. The last two are asked for small and fail quietly: a dashboard
-that cannot draw its final panel is still a dashboard.
+**The order is the argument.** Where the posture stands and which way it moves;
+what that number is made of; how much of the estate the opinion was formed from;
+what to deal with and what those faults form *together*; whether any of it is
+getting fixed; what moved while you were away.
+
+Coverage sits third on purpose — a score computed over half an environment is a
+different claim from the same number over all of it, and a reader who has
+already acted on the risks below has been told too late. It is never phrased as
+a security percentage: 75% coverage is the share of checks that reached a
+verdict, not 75% secure.
+
+**UNKNOWN sits in the severity strip**, at the end and labelled "no verdict". It
+is not a fifth severity and it is never a pass, but a reader tallying what is
+wrong has to see what could not be answered in the same glance.
+
+**A ranked risk carries the terms it was ranked by** — internet-facing,
+sensitive data, business-critical — so a rank reads as a reason rather than as
+an assertion. A scenario is marked as a route, because it groups findings that
+are already counted individually.
+
+**Inventory counts are not headline figures here.** Assets, subscriptions and
+resources are true and answer a different question; every pixel one takes is a
+pixel not spent on what is wrong.
+
+**Nothing is scored before a scan exists.** The empty state offers the first
+scan and shows no number at all — a score over no evidence is a number about
+nothing, and a reassuring one is worse.
 
 ---
 

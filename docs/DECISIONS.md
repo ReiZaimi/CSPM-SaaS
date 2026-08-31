@@ -1067,6 +1067,60 @@ half on its own semicolon is worse than a long one.
 
 ---
 
+## 37. The overview is an argument, not a grid of cards
+
+**Spec:** `UI.md` §1 named the parts of the executive dashboard. It did not say
+what order they go in, and order is most of what a dashboard is.
+
+The page now reads top to bottom as one argument, each step the precondition for
+the next: where the posture stands and which way it moves; what that number is
+made of; how much of the estate the opinion was formed from; what to deal with
+and what those faults form *together*; whether any of it is being fixed; what
+moved while you were away.
+
+Four choices in that shape are load-bearing:
+
+* **Coverage is third, not last.** A score computed over half an environment is
+  a different claim from the same number over all of it. Placed after the risk
+  list, the caveat arrives once the reader has already acted.
+* **UNKNOWN is in the severity strip**, at the end and labelled "no verdict".
+  It is not a fifth severity and never a pass, but a reader tallying what is
+  wrong has to see what could not be answered in the same glance rather than
+  further down the page.
+* **A ranked risk carries the terms it was ranked by.** The list is the
+  product's whole argument and used to ask the reader to take it on trust; the
+  three context levels are already columns on the risk row, so a rank now reads
+  as a reason.
+* **Inventory counts are not headline figures.** Assets and resource counts are
+  true and answer a different question; every pixel one takes is a pixel not
+  spent on what is wrong. They remain on the pages that are about them.
+
+**Three requests, deliberately.** `/dashboard` is a set of database aggregates
+and answers quickly. Attack paths cost a graph build and changes are a windowed
+feed, so folding them in would make the numbers everybody came for wait on the
+two panels nobody scrolls to first. Both fail quietly — a dashboard that cannot
+draw its last panel is still a dashboard.
+
+**Two small backend additions, both aggregation only.** `coverage.categories`
+(one grouped read of the evidence table) says *which* part of the estate could
+not be read, because "identity is unreadable" and "storage is unreadable" call
+for different people to fix them. `top_risks[]` gained `kind` and the three
+context levels, which were already loaded on the row.
+
+**What was left out for lack of data, rather than invented.** "12 fixed this
+week, 3 reopened", per-risk effort and impact estimates, and a recommended-next-
+actions list ranked by effort all need numbers the API does not expose today.
+The remediation panel therefore reports only what is measured: the verified-fix
+rate, verified fixes in the last thirty days, and what is still open — and every
+one of those counts an observation rather than somebody's claim to have fixed
+something.
+
+`SecurityScore` and `CoverageIndicator` were deleted rather than left beside
+their replacements. Two components that render the same fact are how two screens
+start disagreeing about it.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

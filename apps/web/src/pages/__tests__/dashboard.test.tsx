@@ -48,6 +48,16 @@ function mount(data: Dashboard, accounts: CloudAccount[] = []) {
     if (path.includes("cloud-accounts")) {
       return Promise.resolve({ data: accounts, meta: {} }) as never;
     }
+    // The panels the page asks for after its own payload. Answered as the
+    // lists they really are, so a test about the dashboard is not quietly
+    // testing what happens when an endpoint returns the wrong shape.
+    if (
+      path.includes("attack-paths") ||
+      path.includes("changes") ||
+      path.includes("scans")
+    ) {
+      return Promise.resolve({ data: [], meta: {} }) as never;
+    }
     return Promise.resolve({ data, meta: {} }) as never;
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -80,7 +90,7 @@ describe("DashboardPage", () => {
     mount(dashboard());
 
     await waitFor(() =>
-      expect(screen.getByRole("link", { name: /Run scan/ })).toHaveAttribute(
+      expect(screen.getByRole("link", { name: /Scan now/ })).toHaveAttribute(
         "href",
         "/scans",
       ),
@@ -119,5 +129,75 @@ describe("DashboardPage", () => {
         screen.getByRole("link", { name: /Production database reachable/ }),
       ).toHaveAttribute("href", "/risks/risk-1"),
     );
+  });
+
+  it("reads the estate's coverage per category, not just as one number", async () => {
+    // A ratio says how much of the picture is missing and never which part, and
+    // those call for different actions: an unreadable directory is a consent
+    // problem, an unreadable storage listing is usually a role assignment.
+    mount(
+      dashboard({
+        coverage: {
+          ratio: 0.75,
+          unknown: 1,
+          conclusive: 3,
+          categories: [
+            { name: "identity", readings: 4, incomplete: 3 },
+            { name: "network", readings: 6, incomplete: 0 },
+          ],
+        },
+      }),
+    );
+
+    expect(await screen.findByText("Identity")).toBeInTheDocument();
+    expect(screen.getByText("Network")).toBeInTheDocument();
+    // Never phrased as a security percentage: 75% coverage is not 75% secure.
+    expect(screen.getByText(/not a security percentage/)).toBeInTheDocument();
+  });
+
+  it("counts checks that reached no verdict beside the severities", async () => {
+    // UNKNOWN is not a fifth severity and is not a pass. It belongs in the same
+    // glance as the problem counts, because a reader tallying what is wrong has
+    // to see what could not be answered.
+    mount(dashboard({ coverage: { ratio: 0.5, unknown: 7, conclusive: 7 } }));
+
+    const unknown = await screen.findByRole("link", { name: /No verdict/ });
+    expect(unknown).toHaveAttribute("href", "/scans");
+    expect(unknown).toHaveTextContent("7");
+  });
+
+  it("says why a risk outranks the one beneath it", async () => {
+    mount(
+      dashboard({
+        top_risks: [
+          {
+            id: "risk-1",
+            title: "Production database reachable from the internet",
+            risk_score: 94,
+            risk_level: "CRITICAL",
+            kind: "FINDING",
+            internet_exposure: "CRITICAL",
+            data_sensitivity: "HIGH",
+            asset_criticality: "LOW",
+          },
+        ],
+      }),
+    );
+
+    expect(await screen.findByText("Internet-facing")).toBeInTheDocument();
+    expect(screen.getByText("Sensitive data")).toBeInTheDocument();
+    // LOW criticality is not a reason this ranked where it did, so it is not
+    // given a line saying nothing.
+    expect(screen.queryByText("Business-critical")).not.toBeInTheDocument();
+  });
+
+  it("never scores an environment it has not read", async () => {
+    mount(dashboard({ last_scan: null }));
+
+    expect(
+      await screen.findByText("Connect your cloud environment"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("meter", { name: "Security score" })).not.toBeInTheDocument();
+    expect(screen.queryByText("84")).not.toBeInTheDocument();
   });
 });

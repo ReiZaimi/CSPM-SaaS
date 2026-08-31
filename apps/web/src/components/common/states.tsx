@@ -234,30 +234,66 @@ export function CardsSkeleton({ count = 3 }: { count?: number }) {
   );
 }
 
+/**
+ * The dashboard's own shape, held while it loads.
+ *
+ * Shaped like the page rather than generically, because that is the whole
+ * point: the layout does not jump when the data lands, and a slow request reads
+ * as progress rather than as a stall. It follows the same order the page argues
+ * in — score and trend, severity, coverage, risks beside the route, then
+ * remediation beside changes.
+ */
 export function DashboardSkeleton() {
   return (
-    <div className="flex flex-col gap-5">
-      <Skeleton className="h-8 w-64" />
-      <div className="grid gap-4 lg:grid-cols-12">
-        <Card className="lg:col-span-5">
-          <CardContent className="flex flex-col gap-3 pt-6">
-            <Skeleton className="h-12 w-40" />
-            <Skeleton className="h-2 w-full" />
-            <Skeleton className="h-3 w-56" />
-          </CardContent>
-        </Card>
-        <div className="grid grid-cols-2 gap-4 lg:col-span-7">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Card key={i}>
-              <CardContent className="flex flex-col gap-2 pt-6">
-                <Skeleton className="h-3 w-20" />
-                <Skeleton className="h-8 w-14" />
-              </CardContent>
-            </Card>
-          ))}
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-6 w-32" />
+          <Skeleton className="h-4 w-80 max-w-full" />
+        </div>
+        <Skeleton className="h-7 w-40" />
+      </div>
+
+      <div className="grid gap-px overflow-hidden rounded-xl bg-border ring-1 ring-foreground/10 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+        <div className="flex flex-col gap-4 bg-card p-5">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-14 w-32" />
+          <Skeleton className="h-1.5 w-full" />
+          <Skeleton className="h-3 w-48" />
+        </div>
+        <div className="flex flex-col gap-3 bg-card p-5">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-40 w-full" />
         </div>
       </div>
-      <CardsSkeleton count={2} />
+
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-border ring-1 ring-foreground/10 sm:grid-cols-3 lg:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="flex flex-col gap-2 bg-card px-4 py-3.5">
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-8 w-10" />
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-col gap-3 rounded-xl bg-card p-5 ring-1 ring-foreground/10">
+        <Skeleton className="h-4 w-44" />
+        <Skeleton className="h-3 w-full max-w-xl" />
+        <Skeleton className="h-1 w-full" />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div
+            key={i}
+            className="flex flex-col gap-3 rounded-xl bg-card p-5 ring-1 ring-foreground/10"
+          >
+            <Skeleton className="h-4 w-36" />
+            <Skeleton className="h-3 w-full max-w-sm" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

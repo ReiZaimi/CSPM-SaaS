@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { SeverityBadge as Badge } from "../security/SeverityBadge";
 import { StatusPill } from "../security/StatusPill";
-import { SecurityScore } from "../security/SecurityScore";
 import { ContextRow } from "../security/ContextProvenance";
 
 describe("Badge", () => {
@@ -48,29 +47,6 @@ describe("SeverityBadge", () => {
   it("does not mark a severity that was actually determined", () => {
     const { container } = render(<Badge level="CRITICAL" />);
     expect(container.querySelector("svg")).not.toBeInTheDocument();
-  });
-});
-
-describe("SecurityScore", () => {
-  it("gives the number a scale and a meaning", () => {
-    // "82" alone invites two questions -- out of what, and is that good.
-    render(<SecurityScore score={82} delta={null} />);
-    expect(screen.getByText("82")).toBeInTheDocument();
-    expect(screen.getByText("/ 100")).toBeInTheDocument();
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
-  });
-
-  it("does not claim a trend it cannot measure", () => {
-    render(<SecurityScore score={70} delta={null} />);
-    expect(screen.getByText(/no previous scan/i)).toBeInTheDocument();
-  });
-
-  it("exposes the proportion to assistive technology", () => {
-    render(<SecurityScore score={41} delta={null} />);
-    expect(screen.getByRole("meter", { name: /security score/i })).toHaveAttribute(
-      "aria-valuenow",
-      "41",
-    );
   });
 });
 

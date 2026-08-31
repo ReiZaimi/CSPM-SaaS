@@ -10,7 +10,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
-import { CoverageIndicator } from "@/components/security/CoverageIndicator";
+import { CoveragePanel } from "@/components/dashboard/CoveragePanel";
 import { groupCauses } from "@/lib/collectionErrors";
 
 const CONSENT_FAILURE =
@@ -44,7 +44,7 @@ describe("collection failures", () => {
   it("clips a long message rather than filling the page with it", () => {
     render(
       <MemoryRouter>
-        <CoverageIndicator
+        <CoveragePanel
           ratio={0.75}
           unknown={1}
           conclusive={3}
