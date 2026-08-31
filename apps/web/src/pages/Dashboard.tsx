@@ -91,9 +91,19 @@ export function DashboardPage() {
         title={t.dashboard.title}
         description={`Last assessed ${formatDateTime(data.last_scan.completed_at)}`}
         actions={
-          <Button variant="outline" render={<Link to="/scans" />}>
-            {t.scans.runScan}
-          </Button>
+          <>
+            <Button variant="outline" render={<Link to="/scans" />}>
+              {t.scans.runScan}
+            </Button>
+            {/* The two things anyone does with a posture: read it again, or
+                write it down. This page is where the second decision gets
+                made -- somebody looking at a score is the person who wants it
+                on paper -- and until now nothing here said reports existed. */}
+            <Button variant="ghost" render={<Link to="/reports" />}>
+              {t.reports.title}
+              <ArrowRightIcon data-icon="inline-end" />
+            </Button>
+          </>
         }
       />
 
