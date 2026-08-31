@@ -148,7 +148,7 @@ signs its own tokens rather than the product shipping a code path that hands out
 credentials. See #13 for why the earlier development-only variant was deleted
 rather than gated.
 
-## 12. shadcn/ui components are hand-written
+## 12. shadcn/ui components are hand-written — **superseded by §24**
 
 **Spec:** shadcn/ui (`ARCHITECTURE.md` §1).
 
@@ -637,6 +637,45 @@ message beside it.
 **The test looks at imports, not text.** A docstring naming Azure is fine and
 unavoidable; an import is what makes neutral code depend on one cloud, and what
 a second connector would have to break.
+
+## 24. shadcn/ui is now the primitive foundation (supersedes §12)
+
+**Spec:** none. A frontend brief asked for shadcn/ui as the component
+foundation, and §12 required a written decision before that swap — this is it.
+
+§12's reasoning was that a handful of badges, cards and buttons did not justify
+a runtime primitive dependency, and for those it was right. What it did not
+survive is the second half of the product: a findings table with filters, a
+remediation panel with tabs, an organization switcher, a mobile navigation
+drawer, a command palette. Every one of those is a focus trap, an escape
+handler and a set of ARIA relationships, and hand-writing them is how a security
+product ends up with a dialog that keyboard users cannot leave.
+
+So the primitives are now `@base-ui/react` through shadcn's registry, vendored
+as source under `src/components/ui/`. Base UI rather than Radix because it is
+what the current CLI installs by default; the distinction §12 drew — source, not
+a runtime black box — still holds, and these files are editable and reviewed
+like any other.
+
+**The severity scale stays separate, and that is the load-bearing part.**
+shadcn's tokens are chrome — `primary`, `destructive`, `muted`. CloudGuard's are
+meaning: `destructive` says "this button deletes something" and `critical` says
+"an attacker can reach your data", and a design system that collapsed the two
+would eventually paint a cancel button and a public storage account the same
+colour. `tailwind.config.js` therefore carries both layers, and
+`SeverityBadge` is deliberately *not* shadcn's `Badge`.
+
+UNKNOWN keeps its dashed border and gains an icon. Colour alone would hide the
+product's most important distinction — "we could not look" versus "we looked and
+it was fine" — from a reader who cannot separate the hues.
+
+**One thing the CLI got wrong, worth recording.** `init` writes Tailwind v4 CSS
+(`@theme inline`, `@import "shadcn/tailwind.css"`) and leaves a v3
+`tailwind.config.js` untouched, so every `bg-background` referred to a class
+that did not exist and the build failed outright. The v3 bridge in
+`tailwind.config.js` is hand-written, and maps `var(--x)` directly rather than
+through `hsl()` — the variables hold complete oklch colours, and the usual v3
+`hsl(var(--x))` recipe would silently render every one of them black.
 
 ---
 
