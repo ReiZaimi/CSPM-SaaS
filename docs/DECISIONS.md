@@ -844,9 +844,26 @@ bad end: an organization with five Critical findings and one with fifty both
 read 0. The spec anticipates tuning these values against real environments;
 `app/risk/config.py` is where that happens, and no rule logic needs to change.
 
-**Phase 9 (reports) is not built.** The immediate goal in the build instruction
-ends at verified resolution, and PDF generation sits outside that loop.
-`jinja2` is installed; WeasyPrint and the report routes are not.
+**Phase 9 (reports) is built, generated on request rather than stored.**
+Jinja2 renders the report to HTML and WeasyPrint prints that HTML — the stack
+`ARCHITECTURE.md` §1 already named. Three choices there are worth keeping:
+
+* **No jobs table, no artifact store.** A report is a read of data that is
+  already computed, and the technical report is bounded at
+  `MAX_TECHNICAL_FINDINGS` so it cannot grow into something that needs a queue.
+  Storing PDFs would additionally owe the customer an answer about which of
+  five stored copies is current; regenerating is cheap and always truthful.
+* **HTML is the artifact, PDF is the wrapper.** `render_html` is what the
+  templates produce and what the tests assert against; `render_pdf` prints it.
+  This is not only for testing: WeasyPrint needs native pango/cairo/harfbuzz
+  that a developer machine may lack, so the import is lazy and a server without
+  them answers 503 with one clear sentence instead of failing every import that
+  transitively reaches the module.
+* **The caveats are printed, not hovered.** A PDF outlives the screen it was
+  taken from and gets forwarded to auditors and boards, so the cover carries
+  when the evidence was collected, how many checks reached no verdict, what
+  could not be read at all, and that compliance coverage is evidence rather than
+  a verdict. UNKNOWN never renders as a pass, on paper as on screen.
 
 **Compliance mappings drive a coverage view, still without framework logic.**
 Every rule carries CIS Azure 2.0, ISO 27001, GDPR and NIST CSF control

@@ -21,6 +21,10 @@ dependencies = [
   "structlog==24.4.0",
   "sentry-sdk[fastapi]==2.19.2",
   "jinja2==3.1.5",
+  # PDF reports. Needs native pango/cairo/harfbuzz, installed in the API image
+  # and in CI; app.reports.render imports it lazily so a machine without them
+  # can still render, and test, the HTML the PDF is printed from.
+  "weasyprint==63.1",
   "python-multipart==0.0.20",
 ]
 

@@ -39,7 +39,7 @@ GET    /api/v1/rules                       GET  /api/v1/rules/{rule_id}
 GET    /api/v1/compliance                  GET  /api/v1/compliance/{framework_id}
 
 GET    /api/v1/dashboard
-GET    /api/v1/reports                     POST /api/v1/reports
+GET    /api/v1/reports/{kind}?format=pdf|html
 ```
 
 `/cloud-accounts` is **read-only** except for `/context`: an account is a
@@ -146,6 +146,17 @@ failing", "CloudGuard could not read enough to tell" and "too soon, checking
 again" are the same open finding and three different pieces of news. Cancelling
 the task, or accepting the risk, withdraws the question rather than leaving it
 pending.
+
+`/reports/{kind}` renders `executive` or `technical` from the evidence that
+exists right now — nothing is queued and nothing is stored. It is the one
+endpoint that does **not** return the response envelope: the body is a PDF or an
+HTML document, because wrapping a document in `{ "data": ... }` would make every
+consumer unwrap and re-encode it. Errors on this path still use the envelope.
+
+`format=html` returns the same document the PDF is printed from, so a report can
+be read without downloading one — and a deployment whose native PDF libraries
+are missing still produces something useful while that is fixed. A server that
+cannot render PDFs answers 503 `NOT_CONFIGURED` rather than 500.
 
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's

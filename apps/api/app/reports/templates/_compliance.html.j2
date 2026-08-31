@@ -1,0 +1,40 @@
+<h2>Compliance coverage</h2>
+
+<p class="small muted">{{ report.compliance.disclaimer }}</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Framework</th>
+      <th class="num">Controls</th>
+      <th class="num">Assessable coverage</th>
+      <th class="num">Open findings</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for framework in report.compliance.frameworks %}
+    <tr>
+      <td>
+        {{ framework.short_name }}
+        <span class="muted small">{{ framework.version }}</span>
+      </td>
+      <td class="num">{{ framework.control_count }}</td>
+      {# Null is not zero. A framework nothing has been assessed against yet
+         has no ratio, and printing 0% would read as total failure. #}
+      <td class="num">
+        {% if framework.coverage_ratio is none %}
+          —
+        {% else %}
+          {{ (framework.coverage_ratio * 100) | round(0) | int }}%
+        {% endif %}
+      </td>
+      <td class="num">{{ framework.open_finding_count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="small muted">
+  Coverage counts the controls CloudGuard reached a conclusion on — pass or
+  fail. Controls nothing checks, and controls it could not read, are excluded
+  rather than counted as met.
+</p>

@@ -1076,3 +1076,66 @@ class TestRiskSearch:
         assert response.status_code == 200, response.text
         assert len(response.json()["data"]) == 1
         assert response.json()["meta"]["total"] == 1
+
+
+class TestReports:
+    """The report endpoints, over the real dependency chain.
+
+    Unit tests pin what a report *says*; these pin the three things only a real
+    request can prove: that a report is scoped to the caller's organization,
+    that the PDF path actually produces a PDF on a machine with the native
+    libraries, and that an unknown report name is refused rather than rendered
+    as an empty document.
+    """
+
+    async def test_a_report_is_scoped_to_the_callers_organization(
+        self, client, cleanup_orgs
+    ) -> None:
+        user_a, user_b = uuid.uuid4(), uuid.uuid4()
+        org_a = await make_org(client, user_a, "Contoso")
+        org_b = await make_org(client, user_b, "Fabrikam")
+        cleanup_orgs.extend([uuid.UUID(org_a), uuid.UUID(org_b)])
+
+        response = await client.get(
+            "/api/v1/reports/executive?format=html", headers=auth_header(user_a)
+        )
+
+        assert response.status_code == 200, response.text
+        assert "Contoso" in response.text
+        # The name of another tenant appearing in a document that gets
+        # forwarded outside the company is the worst version of a leak.
+        assert "Fabrikam" not in response.text
+
+    async def test_a_report_requires_a_token(self, client) -> None:
+        response = await client.get("/api/v1/reports/executive?format=html")
+
+        assert response.status_code == 401
+
+    async def test_an_unknown_report_is_refused_rather_than_rendered_empty(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/reports/quarterly?format=html", headers=auth_header(user)
+        )
+
+        assert response.status_code == 404
+
+    async def test_the_pdf_path_produces_a_pdf(self, client, cleanup_orgs) -> None:
+        # The one thing the unit tests cannot reach: WeasyPrint's native
+        # libraries are installed in CI and in the API image, and this is what
+        # would catch them going missing from either.
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Contoso")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get("/api/v1/reports/technical", headers=auth_header(user))
+
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "application/pdf"
+        assert response.content.startswith(b"%PDF-")
+        assert "attachment" in response.headers["content-disposition"]
+        assert "cloudguard-contoso-technical.pdf" in response.headers["content-disposition"]
