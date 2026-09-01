@@ -31,6 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { AttackPathRoute } from "@/components/graph/AttackPathRoute";
 import { RemediationPanel } from "@/components/security/RemediationPanel";
+import { TrackFix } from "@/components/security/TrackFix";
 import { VerificationPanel } from "@/components/security/VerificationPanel";
 import { FindingTimeline } from "@/components/security/FindingTimeline";
 import { cn, formatDateTime, resourceTypeLabel } from "@/lib/format";
@@ -219,6 +220,13 @@ export function FindingDetailPage() {
             remediation={data.remediation}
             spec={data.remediation_spec}
             effortMinutes={data.estimated_effort_minutes}
+            footer={
+              <TrackFix
+                findingId={data.id}
+                status={data.status}
+                effortMinutes={data.estimated_effort_minutes}
+              />
+            }
           />
 
           {/* DID IT WORK — only once somebody has claimed it did. */}

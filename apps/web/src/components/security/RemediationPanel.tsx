@@ -33,10 +33,17 @@ export function RemediationPanel({
   remediation,
   spec,
   effortMinutes,
+  footer,
 }: {
   remediation: string;
   spec?: RemediationSpec | null;
   effortMinutes?: number;
+  /**
+   * What to do about this fix, as opposed to how to make it. Optional because
+   * the rules catalogue shows the same panel for a rule nobody has a finding
+   * for, and there is no work to schedule against a rule.
+   */
+  footer?: React.ReactNode;
 }) {
   const hasCli = (spec?.cli?.length ?? 0) > 0;
   const hasTerraform = (spec?.terraform?.length ?? 0) > 0;
@@ -127,6 +134,8 @@ export function RemediationPanel({
             {spec.notes}
           </p>
         )}
+
+        {footer && <div className="border-t pt-4">{footer}</div>}
       </CardContent>
     </Card>
   );

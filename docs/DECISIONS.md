@@ -1273,6 +1273,40 @@ it there once should be told it moved, not left to conclude it was dropped.
 
 ---
 
+## 41. The remediation queue is reachable from the finding
+
+`POST /remediation` shipped with the API and no screen ever called it. The
+queue's own empty state told the reader to "assign a finding from its detail
+page", and the detail page had no control that did so — the queue could
+therefore only ever be empty, and the one screen that ranks work by impact
+against effort was unreachable from every screen that produces work.
+
+The control sits under the recommended fix rather than in the row that holds
+"Rescan to verify". Tracking work is a statement about who is going to do the
+thing written above it; the verify row is where a person asks for proof, and the
+two must not blur into one strip where a button recording intent looks like a
+button producing evidence. The caption under it says the finding stays open
+until a scan observes the fix, because assigning does move the finding to
+`IN_PROGRESS` server-side and that status is the closest thing in the product to
+a person marking a security problem solved.
+
+Whether a finding is already tracked is read from `GET /remediation` under the
+key the queue page itself uses, rather than by widening the finding detail
+response. The detail endpoint is on the hot path of the page the product is
+really about, and a join added there to decide the label on one button is a cost
+paid by every reader who never presses it. Sharing the cache key also means
+opening the queue afterwards costs no request. The API refuses a second open
+task per finding, so a button offered unconditionally would be one that
+sometimes only produced an error: once a task exists the control is replaced by
+what is true — that the work is queued, and where.
+
+A cancelled task does not count as tracking. The work was called off, and the
+finding can be picked up again. A verified or accepted finding is offered
+nothing at all: one has no work left in it and the other is a recorded decision
+not to do the work.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
