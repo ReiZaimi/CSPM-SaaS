@@ -1,25 +1,91 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "@/components/Shell";
 import { useAuthToken } from "@/lib/useAuth";
 import { authReady } from "@/lib/supabase";
-import { Spinner } from "@/components/ui";
-import { SignInPage } from "@/pages/SignIn";
-import { ResetPasswordPage } from "@/pages/ResetPassword";
-import { OnboardingPage } from "@/pages/Onboarding";
-import { ConnectPage } from "@/pages/Connect";
-import { DashboardPage } from "@/pages/Dashboard";
-import { AssetsPage } from "@/pages/Assets";
-import { AssetDetailPage } from "@/pages/AssetDetail";
-import { FindingsPage } from "@/pages/Findings";
-import { FindingDetailPage } from "@/pages/FindingDetail";
-import { RisksPage } from "@/pages/Risks";
-import { AttackPathsPage } from "@/pages/AttackPaths";
-import { ScansPage } from "@/pages/Scans";
-import { RulesPage } from "@/pages/Rules";
-import { CompliancePage } from "@/pages/Compliance";
-import { ComplianceFrameworkPage } from "@/pages/ComplianceFramework";
-import { RemediationPage } from "@/pages/Remediation";
+import { Spinner } from "@/components/ui/spinner";
+
+/**
+ * Every page behind a dynamic import.
+ *
+ * The whole product used to arrive in one file, so somebody landing on the
+ * sign-in screen downloaded the compliance tables, the attack-path renderer and
+ * the charting library before they could type a password. Splitting per route
+ * means a page's code is fetched when it is first opened and cached after.
+ *
+ * `lazy` rather than a router-level loader because this app has no data router:
+ * the boundary is the component, and one `Suspense` around the route tree is
+ * the whole mechanism.
+ *
+ * Named exports, so each of these unwraps the one it wants -- `lazy` resolves a
+ * module's `default` and nothing here has one.
+ */
+const SignInPage = lazy(() =>
+  import("@/pages/SignIn").then((m) => ({ default: m.SignInPage })),
+);
+const ResetPasswordPage = lazy(() =>
+  import("@/pages/ResetPassword").then((m) => ({
+    default: m.ResetPasswordPage,
+  })),
+);
+const OnboardingPage = lazy(() =>
+  import("@/pages/Onboarding").then((m) => ({ default: m.OnboardingPage })),
+);
+const ConnectPage = lazy(() =>
+  import("@/pages/Connect").then((m) => ({ default: m.ConnectPage })),
+);
+const DashboardPage = lazy(() =>
+  import("@/pages/Dashboard").then((m) => ({ default: m.DashboardPage })),
+);
+const ChangesPage = lazy(() =>
+  import("@/pages/Changes").then((m) => ({ default: m.ChangesPage })),
+);
+const ReportsPage = lazy(() =>
+  import("@/pages/Reports").then((m) => ({ default: m.ReportsPage })),
+);
+const SettingsPage = lazy(() =>
+  import("@/pages/Settings").then((m) => ({ default: m.SettingsPage })),
+);
+const AssetsPage = lazy(() =>
+  import("@/pages/Assets").then((m) => ({ default: m.AssetsPage })),
+);
+const AssetDetailPage = lazy(() =>
+  import("@/pages/AssetDetail").then((m) => ({ default: m.AssetDetailPage })),
+);
+const FindingsPage = lazy(() =>
+  import("@/pages/Findings").then((m) => ({ default: m.FindingsPage })),
+);
+const FindingDetailPage = lazy(() =>
+  import("@/pages/FindingDetail").then((m) => ({
+    default: m.FindingDetailPage,
+  })),
+);
+const RisksPage = lazy(() =>
+  import("@/pages/Risks").then((m) => ({ default: m.RisksPage })),
+);
+const RiskDetailPage = lazy(() =>
+  import("@/pages/RiskDetail").then((m) => ({ default: m.RiskDetailPage })),
+);
+const AttackPathsPage = lazy(() =>
+  import("@/pages/AttackPaths").then((m) => ({ default: m.AttackPathsPage })),
+);
+const ScansPage = lazy(() =>
+  import("@/pages/Scans").then((m) => ({ default: m.ScansPage })),
+);
+const RulesPage = lazy(() =>
+  import("@/pages/Rules").then((m) => ({ default: m.RulesPage })),
+);
+const CompliancePage = lazy(() =>
+  import("@/pages/Compliance").then((m) => ({ default: m.CompliancePage })),
+);
+const ComplianceFrameworkPage = lazy(() =>
+  import("@/pages/ComplianceFramework").then((m) => ({
+    default: m.ComplianceFrameworkPage,
+  })),
+);
+const RemediationPage = lazy(() =>
+  import("@/pages/Remediation").then((m) => ({ default: m.RemediationPage })),
+);
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   // Subscribed rather than read once, so a session that arrives late — or a
@@ -53,35 +119,63 @@ export function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/sign-in" element={<SignInPage />} />
-      {/* Not behind RequireAuth: a recovery link carries its own session, and
+    // One boundary around the whole tree. A per-route boundary would let each
+    // page choose its own placeholder, which sounds better and is worse: the
+    // Shell stays mounted across a navigation, so what a reader actually sees
+    // is the chrome they already had plus a spinner where the page will be.
+    <Suspense fallback={<PageLoading />}>
+      <Routes>
+        <Route path="/sign-in" element={<SignInPage />} />
+        {/* Not behind RequireAuth: a recovery link carries its own session, and
           an expired one needs to say so rather than bounce to sign-in. */}
-      <Route path="/reset-password" element={<ResetPasswordPage />} />
-      <Route path="/onboarding" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
-      <Route
-        element={
-          <RequireAuth>
-            <Shell />
-          </RequireAuth>
-        }
-      >
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/assets" element={<AssetsPage />} />
-        <Route path="/assets/:assetId" element={<AssetDetailPage />} />
-        <Route path="/findings" element={<FindingsPage />} />
-        <Route path="/findings/:findingId" element={<FindingDetailPage />} />
-        <Route path="/risks" element={<RisksPage />} />
-        <Route path="/attack-paths" element={<AttackPathsPage />} />
-        <Route path="/remediation" element={<RemediationPage />} />
-        <Route path="/scans" element={<ScansPage />} />
-        <Route path="/rules" element={<RulesPage />} />
-        <Route path="/compliance" element={<CompliancePage />} />
-        <Route path="/compliance/:frameworkId" element={<ComplianceFrameworkPage />} />
-        <Route path="/connections" element={<ConnectPage />} />
-      </Route>
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route
+          path="/onboarding"
+          element={
+            <RequireAuth>
+              <OnboardingPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          element={
+            <RequireAuth>
+              <Shell />
+            </RequireAuth>
+          }
+        >
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/changes" element={<ChangesPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/assets" element={<AssetsPage />} />
+          <Route path="/assets/:assetId" element={<AssetDetailPage />} />
+          <Route path="/findings" element={<FindingsPage />} />
+          <Route path="/findings/:findingId" element={<FindingDetailPage />} />
+          <Route path="/risks" element={<RisksPage />} />
+          <Route path="/risks/:riskId" element={<RiskDetailPage />} />
+          <Route path="/attack-paths" element={<AttackPathsPage />} />
+          <Route path="/remediation" element={<RemediationPage />} />
+          <Route path="/scans" element={<ScansPage />} />
+          <Route path="/rules" element={<RulesPage />} />
+          <Route path="/compliance" element={<CompliancePage />} />
+          <Route
+            path="/compliance/:frameworkId"
+            element={<ComplianceFrameworkPage />}
+          />
+          <Route path="/connections" element={<ConnectPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
+function PageLoading() {
+  return (
+    <div className="flex min-h-64 items-center justify-center">
+      <Spinner />
+    </div>
   );
 }

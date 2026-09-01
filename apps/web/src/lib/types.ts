@@ -17,6 +17,27 @@ export interface Organization {
   role?: string;
 }
 
+/**
+ * What a customer has said about a subscription that CloudGuard could not
+ * discover.
+ *
+ * The risk engine multiplies a finding's severity by asset criticality, data
+ * sensitivity and exposure — so a declaration is the highest-leverage input a
+ * customer can give, and it beats anything inferred from a name or a tag.
+ *
+ * A statement rather than a profile: the PUT replaces the whole thing, and a
+ * field left out is one the customer is no longer claiming.
+ */
+export interface ContextDeclaration {
+  cloud_account_id: string;
+  environment: string | null;
+  criticality: Level | null;
+  data_sensitivity: Level | null;
+  note: string | null;
+  declared_by_user_id: string | null;
+  declared_at: string;
+}
+
 export interface CloudAccount {
   id: string;
   provider: string;
@@ -43,9 +64,36 @@ export interface ResourceSummary {
 }
 
 export interface Asset extends ResourceSummary {
+  /**
+   * The provider's own identifier. Carries the hierarchy: an ARM id states its
+   * own subscription and resource group, which is the only way to say where an
+   * asset sits without a request per row.
+   */
+  provider_resource_id: string;
   open_findings: number;
   first_seen_at: string;
   last_seen_at: string;
+}
+
+/**
+ * The estate as it is organised, counted over the whole of it.
+ *
+ * Subscriptions (and the directory, which belongs to no subscription) each
+ * holding their resource groups. A group's `name` is null where the asset sits
+ * directly in the subscription rather than in a group — left null rather than
+ * called "Ungrouped", which would read as somebody's oversight.
+ */
+export interface AssetScopeNode {
+  id: string;
+  name: string;
+  kind: "SUBSCRIPTION" | "DIRECTORY";
+  asset_count: number;
+  open_findings: number;
+  groups: {
+    name: string | null;
+    asset_count: number;
+    open_findings: number;
+  }[];
 }
 
 export interface Risk {
@@ -55,7 +103,7 @@ export interface Risk {
    * seen as a route. Both rank in the same list — a combination outranking its
    * parts is only visible where they are listed together.
    */
-  kind: "FINDING" | "ATTACK_PATH";
+  kind: "FINDING" | "ATTACK_PATH" | "ESCALATION";
   /** The route, hop by hop. Empty for a finding risk, which has none. */
   path: AttackPathStep[];
   title: string;
@@ -84,6 +132,23 @@ export interface Risk {
   };
 }
 
+/**
+ * One risk, with the findings it was built from.
+ *
+ * The list can rank a scenario above the findings inside it; only here can a
+ * reader see *which* findings those are. A route scored 96 beside a page of
+ * findings scored 84 is an assertion until the members are named.
+ */
+export interface RiskDetail extends Risk {
+  findings: {
+    id: string;
+    rule_id: string;
+    title: string;
+    severity: Level;
+    status: string;
+  }[];
+}
+
 export interface Finding {
   id: string;
   rule_id: string;
@@ -102,6 +167,54 @@ export interface Finding {
   resource: ResourceSummary | null;
 }
 
+/** One transition in a finding's life, and who or what caused it. */
+export interface FindingEvent {
+  event: "DETECTED" | "REOPENED" | "RESOLVED" | "RISK_ACCEPTED" | "STATUS_CHANGED";
+  previous_status: string | null;
+  current_status: string;
+  scan_id: string | null;
+  user_id: string | null;
+  detail: string | null;
+  observed_at: string;
+}
+
+/**
+ * Where a claimed fix has got to.
+ *
+ * Three ways of not being verified, and they are different news for different
+ * people: the fix did not work, CloudGuard could not see, or it is simply too
+ * soon. `detail` is the sentence written for the reader; the status is what the
+ * UI colours on.
+ */
+export interface Verification {
+  status: "PENDING" | "VERIFIED" | "STILL_FAILING" | "INSUFFICIENT_EVIDENCE" | "ABANDONED";
+  claimed_at: string;
+  expected_state: { field: string; comparison: string; describes: string }[];
+  attempts: number;
+  last_state: string | null;
+  next_attempt_at: string | null;
+  settled_at: string | null;
+  detail: string | null;
+}
+
+/** What must become true for a finding to close, and how to make it so. */
+export interface RemediationSpec {
+  expected_state: {
+    field: string;
+    comparison: string;
+    describes: string;
+    equals?: unknown;
+    also_accepts?: unknown[];
+    example?: unknown;
+  }[];
+  cli: string[];
+  terraform: { attribute: string; value: string; describes: string }[];
+  azure_policy: Record<string, unknown> | null;
+  enforceable: boolean;
+  applies_when?: Record<string, unknown>;
+  notes: string;
+}
+
 export interface FindingDetail extends Finding {
   rule_name?: string;
   rationale?: string;
@@ -110,6 +223,9 @@ export interface FindingDetail extends Finding {
   estimated_effort_minutes?: number;
   risk?: Risk | null;
   priority?: string;
+  remediation_spec?: RemediationSpec | null;
+  verification?: Verification | null;
+  timeline?: FindingEvent[];
 }
 
 export interface Scan {
@@ -137,6 +253,18 @@ export interface Scan {
   progress_total?: number;
   /** Live while running, fixed once finished. */
   duration_seconds?: number | null;
+  /**
+   * Set when this run re-evaluated an earlier scan's stored snapshot rather
+   * than reading the cloud. Nothing here cost the customer an Azure call.
+   */
+  replay_of_scan_id?: string | null;
+  /**
+   * True when the replayed capture is no longer the newest one for its
+   * account. Its counts then say what today's rules *would* have found, and
+   * no finding was created, resolved or reopened — a month-old capture is
+   * evidence about last month, and "verified fixed" may not rest on it.
+   */
+  evaluation_only?: boolean;
 }
 
 /** What the posture was, one scan at a time. */
@@ -166,8 +294,55 @@ export interface Dashboard {
   asset_count: number;
   verified_resolved_last_30_days: number;
   remediation_rate: number;
-  top_risks: { id: string; title: string; risk_score: number; risk_level: Level }[];
-  coverage: { ratio: number | null; unknown: number; conclusive: number };
+  /**
+   * What actually happened, week by week: findings raised, verified fixed, and
+   * come back. Read from the transition log rather than from the findings
+   * themselves — `first_detected_at` and `resolved_at` are two points on a
+   * line, and a finding fixed twice looks like one fixed once.
+   */
+  remediation_activity?: {
+    week: string;
+    detected: number;
+    resolved: number;
+    reopened: number;
+  }[];
+  top_risks: {
+    id: string;
+    title: string;
+    risk_score: number;
+    risk_level: Level;
+    /** A finding scored for its asset, or several of them seen as a route. */
+    kind?: "FINDING" | "ATTACK_PATH";
+    /** The terms the score was built from, so a rank can be read as a reason. */
+    internet_exposure?: Level;
+    data_sensitivity?: Level;
+    asset_criticality?: Level;
+  }[];
+  coverage: {
+    ratio: number | null;
+    unknown: number;
+    conclusive: number;
+    /**
+     * Which parts of the estate the last scan could read. A ratio says how much
+     * is missing and never which part, and those call for different actions.
+     * `incomplete` counts PARTIAL with FAILED: a truncated listing cannot
+     * support "none of them are public".
+     */
+    categories?: { name: string; readings: number; incomplete: number }[];
+  };
+  /**
+   * How recently the provider was actually read, which is a different question
+   * from coverage: a posture can be fully covered and three weeks out of date.
+   * Measured over the newest reading of each scope and evidence key, so the
+   * headline is the *oldest* of them.
+   */
+  evidence_freshness?: {
+    readings: number;
+    oldest_at: string | null;
+    newest_at: string | null;
+    stale_hours: number | null;
+    unusable: number;
+  } | null;
   last_scan: {
     id: string;
     status: string;
@@ -184,16 +359,24 @@ export interface Rule {
   name: string;
   description: string;
   category: string;
+  provider: string;
   severity: Severity;
   version: string;
   exploitability: number;
   scope: string;
   applies_to: string[];
+  /**
+   * False once the rule has been withdrawn from the registry — it no longer
+   * runs, and compliance coverage stops counting it. The row survives because
+   * findings it raised in the past still name it.
+   */
   enabled: boolean;
   remediation: string;
   rationale: string;
   estimated_effort_minutes: number;
   compliance_mappings: Record<string, string[]>;
+  /** What "fixed" means for this rule: the settings, commands and policy. */
+  remediation_spec?: RemediationSpec | null;
 }
 
 export interface RemediationTask {
@@ -341,6 +524,15 @@ export interface AttackPath {
   } | null;
 }
 
+/**
+ * A route seen from one asset on it. Same shape as an attack path, plus where
+ * on the route the asset in question sits — which is what decides what a
+ * reader should do about it.
+ */
+export interface FindingAttackPath extends AttackPath {
+  asset_role: "ENTRY" | "STEP" | "TARGET";
+}
+
 export interface AttackPathStep {
   source: string;
   source_id: string;
@@ -394,8 +586,28 @@ export interface ScanScope {
   role_version: string | null;
 }
 
+/**
+ * One durable stage of a scan.
+ *
+ * A scan is not one task: it is PLAN, then a COLLECT per subscription plus one
+ * for the tenant directory, then ANALYZE. Each is claimed under a lease and
+ * retried on its own, which is why `attempt` matters — a step on its second
+ * attempt is a step that was interrupted, and that is the first thing to know
+ * about a scan taking twice as long as usual.
+ */
+export interface ScanStage {
+  stage: "PLAN" | "COLLECT" | "ANALYZE";
+  /** The subscription this stage read, or the tenant directory. */
+  scope: string | null;
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "SKIPPED";
+  attempt: number;
+  duration_seconds: number | null;
+  error: string | null;
+}
+
 export interface ScanDetail extends Scan {
   scope: ScanScope;
+  stages?: ScanStage[];
   findings_by_severity: Record<string, number>;
   /** How many unresolved findings a purge would take with it. */
   purgeable_finding_count: number;
@@ -437,4 +649,61 @@ export interface CollectionStatus {
   failed: number;
   skipped: number;
   degraded_categories: string[];
+}
+
+/**
+ * What happened to an asset between two readings of the same environment.
+ *
+ * Deliberately only five kinds. Configuration drift is not here — every field
+ * of every payload would produce a feed nobody can read, and the drift that
+ * matters already surfaces as a finding.
+ */
+export type AssetChange =
+  | "APPEARED"
+  | "DISAPPEARED"
+  | "EXPOSURE_CHANGED"
+  | "SENSITIVITY_CHANGED"
+  | "CRITICALITY_CHANGED";
+
+export interface ChangeEvent {
+  id: string;
+  change: AssetChange;
+  /** Null on APPEARED and DISAPPEARED, which are about the asset itself. */
+  previous_value: string | null;
+  current_value: string | null;
+  observed_at: string;
+  scan_id: string | null;
+  asset: {
+    id: string;
+    name: string;
+    resource_type: string;
+    environment: string | null;
+    /**
+     * Whether the asset is missing *now*, which is what turns a DISAPPEARED
+     * row from history into something to act on.
+     */
+    absent_since: string | null;
+  };
+}
+
+/**
+ * Whether a connection reacts to change, and what the customer must run to
+ * make it.
+ *
+ * The commands are the deliverable. CloudGuard cannot create the Event Grid
+ * subscription itself — that is a write in the customer's tenant, and holding
+ * no write permission anywhere is the strongest claim this product makes — so
+ * it generates what the customer runs, one per subscription, because that is
+ * how Event Grid is scoped.
+ */
+export interface ChangeEventSetup {
+  enabled: boolean;
+  /** Null when the API has no public base URL configured to deliver to. */
+  webhook_url: string | null;
+  /** Set while a burst of changes is settling and a scan is owed. */
+  pending_since: string | null;
+  last_event_at: string | null;
+  quiet_period_minutes: number;
+  minimum_interval_minutes: number;
+  commands: { subscription_id: string; command: string }[];
 }

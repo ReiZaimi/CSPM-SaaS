@@ -811,13 +811,49 @@ on the reaper.
     everything it did not look at. The planner is the seam that makes that
     buildable; the rule about what a narrowed scan may conclude is not a
     planning decision.
-11. A context engine as its own module, out of the normalizer, with every fact
-    carrying source and confidence. Add customer-declared context: a screen
-    where a customer marks a subscription "production" beats any tag heuristic
-    and is a week of work.
-12. A verification engine: expected-state records, targeted plans, backoff for
-    eventual consistency, and `INSUFFICIENT_EVIDENCE` as an outcome distinct
-    from `STILL_FAILING`.
+11. **Done for the backend.** `app/context/` holds inference and resolution:
+    `infer()` is pure and runs in the normalizer's path, `resolve()` applies
+    what the customer declared, in the pipeline, at evaluation time rather than
+    frozen into the capture. Every value carries a `ContextSource`, persisted
+    beside it on `cloud_resources`, with confidence derived from the source so
+    the two cannot disagree. `context_declarations` holds what a customer said
+    about a subscription, written over `PUT /cloud-accounts/{id}/context` and
+    read by the pipeline; `GET /assets/{id}` returns each value's provenance.
+
+    Two decisions worth keeping. A declaration is a **floor**, never an
+    override — it can raise an asset above what the capture supported but not
+    lower it, so the worst a mistaken declaration can do is over-rank
+    something, which is the direction a security product may be wrong in.
+    Environment is exempt, because a name has no maximum and the case the
+    feature exists for is the customer whose production runs in a subscription
+    called `sandbox-eu`.
+
+    Still to do: the screen. The API and the storage are here and the pipeline
+    reads them, so the remaining work is `apps/web`. Per-resource declarations
+    are a later migration rather than a nullable column nothing writes, and a
+    declaration deliberately does not rescore stored findings on the spot — a
+    score is what a scan concluded. See `DECISIONS.md` §17.
+12. **Done, except the targeted plans.** `remediation_verifications` (migration
+    0017) records the expectation the moment a customer marks work done — this
+    rule, on this asset, should now PASS — and `app/services/verification.py`
+    settles it from whatever any scan observes. A beat task looks again on a
+    widening backoff (5m, 15m, 1h, 4h) because a cloud applies a change before
+    every read path agrees about it, so an early FAIL is the environment not
+    having caught up rather than a failed fix.
+
+    `INSUFFICIENT_EVIDENCE` and `STILL_FAILING` are separate outcomes, which is
+    the FAIL/UNKNOWN line carried up to the one screen where somebody is told
+    whether their work counted; a verification that once saw a definite FAIL
+    settles as STILL_FAILING even if later attempts went blind. The finding
+    detail returns the verification, so "checking, it has not appeared yet" is
+    something the customer can read rather than infer from a finding that has
+    not moved.
+
+    Targeted plans are deliberately still open. A verification scan could
+    collect only its rule's evidence, but a scan narrowed that way must also
+    evaluate only what it collected fresh or it re-asserts stale verdicts about
+    everything it did not look at — a rule about what a narrowed scan may
+    conclude rather than a planning decision. See `DECISIONS.md` §18.
 
 ### Phase 3 — analysis depth
 
@@ -871,8 +907,45 @@ on the reaper.
     mean inventing a severity no rule assigned. And a route that closes is
     **resolved, not deleted**, exactly as a fixed finding is.
 
-    The other two templates in this item — privilege escalation chains,
-    unmonitored critical assets — need edges the graph does not yet have.
+    **Privilege escalation chains are now built.** They needed one edge the
+    graph did not have: `CAN_GRANT_ROLES`, drawn beside `GRANTS_ROLE` when a
+    principal's role definition permits
+    `Microsoft.Authorization/roleAssignments/write`. Read from the definition
+    rather than the role name, and that is the whole difficulty — **Owner and
+    Contributor both carry `actions: ["*"]`**, and only Contributor excludes
+    `Microsoft.Authorization/*/Write` in its `notActions`. Matching on names
+    would report every Contributor assignment in existence as an escalation
+    path, which is the kind of false alarm that gets a feature switched off
+    rather than fixed. Reading the definition also finds the case a name list
+    never could: a tenant's own custom role granting exactly that one action.
+
+    `AssetGraph.escalation_chains()` answers the resulting question, and it is
+    a different one from `attack_paths()` rather than a variation on it — not
+    what an attacker reaches, but what they could be *given* once they arrive.
+    A route ends at the **scope**, because the scope is the size of the answer:
+    "this VM runs as an identity that can grant itself Owner" is alarming, and
+    naming the subscription it can do that over is what makes it actionable.
+    An entry point is required, deliberately — a directory administrator who
+    can hand out roles is over-privileged and is not a chain, and reporting one
+    would invent the half of the story that makes it urgent.
+
+    Both templates share `_correlate_template`, so the same discipline applies
+    to each: a route with no failing check on it creates no risk, a route that
+    closes is resolved rather than deleted, and a route seen again keeps the
+    risk it had. Scoring differs in one input — an escalation's
+    `target_sensitivity` is the most sensitive thing *under* the scope, taken
+    over known levels only, because that is what the escalation would be an
+    escalation to.
+
+    **Unmonitored critical assets are deliberately not a template.** The
+    conjunction is one finding (AZ-LOG-001, missing diagnostic settings) on one
+    asset whose criticality the finding formula already multiplies by — so a
+    scenario for it would be a second opinion on a single finding rather than
+    several findings seen as one thing, and would charge the customer twice for
+    one problem. That is the same argument item 16 makes for keeping scenario
+    risks out of the security score. It becomes worth building if a template
+    ever spans several assets; as one asset and one rule, it is what the risk
+    score already says.
 
 16. **Done for scenario risk; history still open.** `scenario_score` floors at
     the worst member and adds a bounded amplifier that is mostly about
@@ -925,10 +998,64 @@ on the reaper.
     a scan was one task with one start and one end, so a slow subscription and
     a slow evaluation looked identical.
 
-    Still to do: traces spanning scan → step → task, and
-    evidence-freshness and coverage gauges.
-18. The temporal model: `asset_change_events`, `finding_events`,
-    `risk_history`. (§2.10)
+    **Now done, in the form this stack can honour.** A scan runs as several
+    Celery tasks across several workers, so its lines arrive interleaved with
+    every other tenant's and were joined only by whichever ids each call site
+    remembered to pass. `log_context` binds `scan_id`, `step_id`, `step_kind`,
+    `cloud_account_id` and the task name for the length of a block, and
+    `merge_contextvars` was already the first processor — so every line inside,
+    including ones nobody thought to annotate, carries them.
+
+    Deliberately **not** OpenTelemetry. Spans need a collector to send them to
+    and this deployment has none; an exporter writing into a socket nobody reads
+    is the appearance of observability rather than the thing. The ids are the
+    part that makes the lines joinable, and they cost nothing. The trigger for
+    real tracing is a collector existing, not the code being ready for one.
+
+    The coverage gauge already existed on the dashboard — conclusive over
+    conclusive-plus-unknown, from the last scan's rule results. What was missing
+    beside it is **evidence freshness**, and the two answer different questions:
+    coverage is what fraction of the checks reached a verdict, freshness is how
+    recently the provider was asked, and a posture can be fully covered and
+    three weeks out of date.
+
+    Measured over the newest reading of each (scope, evidence key) rather than
+    from `scans.completed_at`, because those differ now that a scan may carry a
+    reading forward instead of re-taking it — and a carried reading keeps the
+    time it was *collected* (`DECISIONS.md` §16). The headline is the **oldest**
+    of them: an average would let a hundred fresh listings hide the one
+    subscription nobody has managed to read since Tuesday. `unusable` counts
+    readings that came back failed, truncated or skipped, because "recent" and
+    "usable" are two halves of whether to trust the picture.
+18. **Done.** All three tables exist. `risk_history` came first with item 16;
+    migration 0018 adds the other two, plus `cloud_resources.absent_since`.
+
+    `asset_change_events` records five things: an asset appearing or
+    disappearing, and a change in any of the three attributes the risk engine
+    multiplies a finding by. Configuration drift is deliberately excluded --
+    diffing whole payloads would produce a feed nobody reads, and the drift that
+    matters already arrives as a finding. One row per change rather than one per
+    scan, so a quiet week reads as a quiet week instead of a wall of rows saying
+    everything is still where it was.
+
+    Disappearance needed the new column to be a *transition* rather than a
+    standing condition. Derived from `last_seen_at`, an absence would need a
+    scan cadence nobody records and would re-report itself on every scan
+    afterwards; `absent_since` is set when a covering scan misses an asset and
+    cleared when it returns, so an asset that vanishes for a week and comes back
+    is one asset with two events rather than two assets.
+
+    `finding_events` records DETECTED, REOPENED, RESOLVED, RISK_ACCEPTED and
+    STATUS_CHANGED, each carrying the scan or the person that caused it -- and
+    the distinction matters, because a scan observing a check pass is
+    verification while a person moving a status is a decision. It sits beside
+    the audit log rather than replacing it: that answers "what has anybody in
+    this organization done", and this answers "what happened to this finding",
+    which is the only one of the two that includes what a scan did.
+
+    `GET /changes` is the feed; `GET /findings/{id}` now carries `timeline`. A
+    superseded replay writes neither, for the same reason it writes no risk
+    history: it made no observation.
 19. **Done for the interval half** — §2.12. Migration 0013 adds
     `cloud_connections.scan_interval_hours` and `scans.trigger`; a beat task
     starts scans for connections whose environment is overdue a reading, using
@@ -947,12 +1074,112 @@ on the reaper.
     button rather than beside it: the first scan is the thing to do now, and
     the schedule is what stops there being a next time somebody forgets.
 
-    Still to do: change-triggered scans via Azure Event Grid.
-20. Remediation as data: `expected_state` and `verification_spec` beside the
-    human text, with IaC and Policy snippets generated from the same
-    declaration that generates the RBAC artifact — the `rbac.py` pattern
-    applied a second time.
-21. A second provider, behind the existing `CloudConnector` seam. Only then
+    **Change-triggered scans are now built too.** A schedule promises how stale
+    the picture may get; it does not promise the picture is right, and a
+    subscription read nightly is wrong from the moment somebody opens a security
+    group at nine in the morning until three the next.
+
+    The shape is decided by one constraint: **CloudGuard cannot create the Event
+    Grid subscription.** Creating one is a write in the customer's tenant, and
+    holding no write permission anywhere is the strongest security claim this
+    product makes -- not one to spend on a convenience. So the customer creates
+    it, from a command CloudGuard generates per subscription, exactly as they
+    deploy the scanner role.
+
+    `POST /events/azure/{connection_id}` is guarded by the same HMAC-signed
+    token the ARM template endpoint uses, separated from it by `purpose` alone
+    -- which is why the webhook checks that field rather than trusting a valid
+    signature to mean what it hopes. It answers the validation handshake (an
+    unanswered one leaves the customer's `az eventgrid` command apparently
+    successful and delivering nothing), and answers 200 to everything it
+    deliberately drops, because Event Grid retries a non-2xx for hours and
+    redelivering a decision is load with no outcome.
+
+    Two filters and a floor stand between an event and a scan. Events outside
+    the resource providers a rule actually reads are dropped; a burst marks the
+    connection and the scan waits for `QUIET_PERIOD` of quiet, so a template
+    deployment emitting forty events becomes one reading; and a connection is
+    not scanned for a change more often than `MIN_INTERVAL`, so an afternoon of
+    deployments is not an afternoon of scans. The webhook itself only records --
+    Event Grid times the response, and putting a queue and a provider call
+    behind the acknowledgement would be work in the wrong place.
+20. **Done for the pattern; declared on three rules so far.**
+    `app/remediation/` holds `ExpectedState` and `RemediationSpec`: what has to
+    be true for a finding to close, carrying three names for one setting --
+    the normalized field the rule reads, the ARM alias a policy matches on, and
+    the Terraform argument that sets it -- because the setting genuinely has
+    three. The Azure Policy definition and the Terraform hints are *generated*
+    from that, which is the `rbac.py` pattern: one declaration, several
+    artifacts, tests holding them to each other.
+
+    The test that earns it runs in both directions, as the RBAC ones do. An
+    asset built from a rule's own declaration must make that rule PASS, and one
+    violating it must make the rule FAIL. Without the second half a declaration
+    is documentation, and documentation drifts: a rule whose check moved on
+    while its remediation stayed put tells a customer to change something that
+    no longer closes the finding, and they do the work and are told it did not
+    count.
+
+    Two decisions worth keeping. A policy is generated **only where every**
+    expected state carries an alias -- one covering half a rule would pass an
+    asset that still fails it, and a customer who deployed it would believe the
+    class was closed. And `also_accepts` exists because a rule that accepts TLS
+    1.2 *or higher* would otherwise generate a policy pinned to equality, which
+    refuses an account configured better than asked; that is a change-control
+    incident rather than a bug report.
+
+    Aliases carry `rbac.py`'s own rule about unverified strings: declared where
+    verified, omitted where not. `AZ-DB-001` therefore generates a policy for
+    SQL and says plainly that the PostgreSQL half and the firewall half are not
+    covered, rather than generating something that silently applies to neither.
+    Migration 0019 copies the declared expectation onto a verification when the
+    claim is made, so `remediation_verifications` is now literally the
+    expected-state record this item asked for.
+
+    **All ten rules now carry a declaration**, which needed the vocabulary to
+    grow by exactly two comparisons. Most of what a rule expects is not "this
+    setting equals that value" but a statement about a collection --
+    `NONE_MATCHING` (no inbound rule admits 3389 from anywhere) and `NOT_EMPTY`
+    (this resource sends its logs somewhere; this administrator has a second
+    factor). Three comparisons and no more: anything they cannot express stays
+    undeclared rather than half-declared, because a remediation describing most
+    of a check is worse than one describing none — a customer satisfies what
+    they were shown and the finding stays open.
+
+    A collection expectation carries a **witness**: the concrete element that
+    must not be there, or one that satisfies. It earns its place twice, being
+    both the clearest statement of what is looked for and the thing a test needs
+    to build an asset the rule must fail. Eight rules are therefore checked in
+    both directions against their own declaration.
+
+    Two rules have no per-asset expectation and say why. AZ-ID-002 judges a
+    *ratio across the directory*, and AZ-CMP-001 is about a *relationship*
+    between a machine and the security groups that govern it — neither is a
+    setting on an asset, and the fix for the second lands on the NSG where
+    AZ-NET-001 already declares it. An empty declaration is also what a rule
+    looks like when nobody could be bothered, so a test requires an empty one to
+    carry a reason and something a customer can still run.
+
+    Policy generation stayed narrow on purpose: three rules produce one. The
+    network and logging expectations *could* be expressed as Azure Policy
+    `count` expressions and DeployIfNotExists definitions respectively, and
+    neither the aliases nor the expressions have been verified against a real
+    deployment from here — which `rbac.py` records the cost of. The generator
+    declines rather than guesses.
+21. **Prerequisite done; the connector itself needs an AWS account.** The seam
+    this item depends on was checked rather than assumed, and it leaked in three
+    places — the pipeline reaching into Azure's evidence keys, the permissions
+    endpoint answering for Azure whatever the provider, and the change-event
+    service spelling ARM operation names. All three went through the connector
+    or the registry, the signed-state helper moved to `app/core/signing.py`, and
+    a test now fails the build on the next leak (`MULTI_CLOUD.md` §8 step 0).
+
+    The connector itself is not startable from here. IAM action names, SigV4
+    signing, the STS assume-role round trip, the CloudFormation template and
+    which `Describe*` answers what are all strings that have to be verified
+    against a live account — and `rbac.py` records what an unverified one costs.
+    Written blind it would be a large body of code claiming to scan a cloud
+    nobody had scanned, with a seam that then looks finished. Only then
     generalize the permission-manifest pattern and migrate the scope
     vocabulary, in the order `MULTI_CLOUD.md` §8 already argues for.
 

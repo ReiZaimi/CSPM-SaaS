@@ -5,7 +5,11 @@ from fastapi import APIRouter, status
 from app.core.deps import CurrentUser, DbSession, Tenant
 from app.core.errors import OrganizationNotFound, envelope
 from app.models.organization import Organization
-from app.schemas.organization import OrganizationCreate, OrganizationOut
+from app.schemas.organization import (
+    OrganizationCreate,
+    OrganizationOut,
+    OrganizationUpdate,
+)
 from app.services import organizations as service
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -40,6 +44,21 @@ async def get_organization(organization_id: UUID, session: DbSession, tenant: Te
     org = await session.get(Organization, organization_id)
     if org is None:
         raise OrganizationNotFound()
+    return envelope(OrganizationOut.model_validate(org).model_dump(mode="json"))
+
+
+@router.patch("")
+async def update_organization(
+    payload: OrganizationUpdate, session: DbSession, tenant: Tenant
+) -> dict:
+    """Correct how this organization describes itself.
+
+    No id in the path, unlike DELETE. Deleting a different organization from
+    the one on screen is a real thing to want; editing one is not, and taking
+    the target from the tenant context means the membership check has already
+    happened rather than being repeated here.
+    """
+    org = await service.update_organization(session, tenant, payload)
     return envelope(OrganizationOut.model_validate(org).model_dump(mode="json"))
 
 

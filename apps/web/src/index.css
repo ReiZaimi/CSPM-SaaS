@@ -1,13 +1,260 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/*
+  Tailwind v4, which is the version the primitives under `components/ui/` are
+  actually written in.
+  Running them on v3 was not a style difference, it was a silent loss: `p-(--x)`,
+  `--spacing(4)`, `in-data-[...]` and an opacity modifier on a `var()` colour all
+  compile to nothing there, so cards lost their padding, popovers lost their
+  anchor sizing, and every `ring-1 ring-foreground/10` fell back to Tailwind's
+  default ring — which is blue, and is why every card on the dashboard was
+  outlined in it.
+
+  So the theme lives here now rather than in `tailwind.config.js`, which is
+  deleted. Two layers, and the separation is the load-bearing part: the semantic
+  tokens are the product's chrome and may be re-themed; the severity scale is
+  what a colour *means* to somebody reading a security finding, and must not
+  drift when an accent changes.
+*/
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/geist";
+
+/* The theme is a class on <html>, set before React exists (see index.html), not
+   a media query -- "system" is a real third choice and the store resolves it. */
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+
+  /* --- shadcn semantic surface tokens ------------------------------------ */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--primary-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* --- CloudGuard's own vocabulary --------------------------------------- */
+  /* Kept separate from the tokens above, deliberately. `destructive` means
+     "this button deletes something"; `critical` means "an attacker can reach
+     your data". Collapsing the two would paint a cancel button and a public
+     storage account the same colour. */
+  --color-critical: var(--sev-critical);
+  --color-critical-bg: var(--sev-critical-bg);
+  --color-critical-border: var(--sev-critical-border);
+  --color-high: var(--sev-high);
+  --color-high-bg: var(--sev-high-bg);
+  --color-high-border: var(--sev-high-border);
+  --color-medium: var(--sev-medium);
+  --color-medium-bg: var(--sev-medium-bg);
+  --color-medium-border: var(--sev-medium-border);
+  --color-low: var(--sev-low);
+  --color-low-bg: var(--sev-low-bg);
+  --color-low-border: var(--sev-low-border);
+  /* Its own colour rather than a shade of LOW, because a gap in knowledge is
+     not a mild problem. Everything rendering UNKNOWN also carries a dashed
+     border, so it stays distinguishable without colour. */
+  --color-unknown: var(--sev-unknown);
+  --color-unknown-bg: var(--sev-unknown-bg);
+  --color-unknown-border: var(--sev-unknown-border);
+  --color-ok: var(--sev-ok);
+  --color-ok-bg: var(--sev-ok-bg);
+  --color-ok-border: var(--sev-ok-border);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/*
+  The two motions the charts use. Declared here rather than per component so a
+  reader who asks for reduced motion is answered once, at the source: the media
+  query below removes them everywhere, and nothing needs to remember to check.
+*/
+@keyframes cg-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes cg-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Reduced motion means arriving, not crawling: the end state, immediately. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
+    @apply font-sans;
   }
   body {
-    @apply bg-stone-50 text-stone-900 antialiased;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    @apply antialiased bg-background text-foreground font-sans;
+  }
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+
+    /* CloudGuard severity scale.
+       Its own layer, deliberately: the neutral tokens above are the product's
+       chrome and may be re-themed, while these are what a colour means to
+       somebody reading a security finding. Tuned for contrast on the light
+       surface rather than picked from a palette. */
+    --sev-critical: oklch(0.505 0.213 27.4);
+    --sev-critical-bg: oklch(0.971 0.013 17.4);
+    --sev-critical-border: oklch(0.885 0.062 18.3);
+    --sev-high: oklch(0.553 0.169 45.1);
+    --sev-high-bg: oklch(0.98 0.016 73.7);
+    --sev-high-border: oklch(0.901 0.076 70.7);
+    --sev-medium: oklch(0.518 0.128 84.4);
+    --sev-medium-bg: oklch(0.987 0.026 102.2);
+    --sev-medium-border: oklch(0.905 0.112 95.7);
+    --sev-low: oklch(0.488 0.217 264.4);
+    --sev-low-bg: oklch(0.97 0.014 254.6);
+    --sev-low-border: oklch(0.882 0.059 254.1);
+    --sev-unknown: oklch(0.444 0.011 73.6);
+    --sev-unknown-bg: oklch(0.985 0.001 106.4);
+    --sev-unknown-border: oklch(0.923 0.003 48.7);
+    --sev-ok: oklch(0.527 0.154 150.1);
+    --sev-ok-bg: oklch(0.982 0.018 155.8);
+    --sev-ok-border: oklch(0.907 0.089 164.2);
+  }
+  .dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+
+    /* The same meanings, re-lit for a dark surface. Foregrounds move up and
+       backgrounds become tints of the surface rather than of white -- a light
+       severity background on a dark page glows, and a glowing badge reads as
+       more urgent than the one beside it, which is a ranking the rules never
+       made. */
+    --sev-critical: oklch(0.75 0.16 22.2);
+    --sev-critical-bg: oklch(0.28 0.062 25.3);
+    --sev-critical-border: oklch(0.4 0.104 25.8);
+    --sev-high: oklch(0.78 0.14 55.3);
+    --sev-high-bg: oklch(0.29 0.055 55.1);
+    --sev-high-border: oklch(0.42 0.09 57.2);
+    --sev-medium: oklch(0.83 0.14 89.5);
+    --sev-medium-bg: oklch(0.3 0.05 90.1);
+    --sev-medium-border: oklch(0.43 0.08 92.3);
+    --sev-low: oklch(0.75 0.13 260.1);
+    --sev-low-bg: oklch(0.29 0.06 262.5);
+    --sev-low-border: oklch(0.42 0.09 261.4);
+    --sev-unknown: oklch(0.75 0.009 67.6);
+    --sev-unknown-bg: oklch(0.27 0.004 67.6);
+    --sev-unknown-border: oklch(0.38 0.006 67.6);
+    --sev-ok: oklch(0.77 0.15 155.6);
+    --sev-ok-bg: oklch(0.28 0.055 158.2);
+    --sev-ok-border: oklch(0.41 0.09 157.1);
+  }
+  /* Default border and outline colours, so a component that says `border` or
+     takes focus gets the theme's rather than Tailwind's own. v4 resolves an
+     opacity modifier against an oklch `var()` colour, which is the thing v3
+     could not do -- and the reason every focus ring in this app used to fall
+     back to Tailwind's default blue. */
+  * {
+    @apply border-border outline-ring/50;
   }
 }

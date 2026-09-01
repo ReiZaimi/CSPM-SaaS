@@ -236,7 +236,13 @@
               "actions": [
                 "*"
               ],
-              "notActions": []
+              "notActions": [
+                "Microsoft.Authorization/*/Delete",
+                "Microsoft.Authorization/*/Write",
+                "Microsoft.Authorization/elevateAccess/Action",
+                "Microsoft.Blueprint/blueprintAssignments/write",
+                "Microsoft.Blueprint/blueprintAssignments/delete"
+              ]
             }
           ]
         }

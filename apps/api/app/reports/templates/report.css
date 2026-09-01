@@ -1,0 +1,64 @@
+/* Print styling for CloudGuard reports.
+
+   Deliberately plain and self-contained: no web fonts, no images, no external
+   anything. A report has to render identically on a server with no network,
+   and every byte a customer's resource name could cause to be fetched is a
+   byte that leaves their estate. */
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+  @bottom-left { content: "CloudGuard — confidential"; font-size: 8pt; color: #78716c; }
+  @bottom-right { content: counter(page) " / " counter(pages); font-size: 8pt; color: #78716c; }
+}
+
+body {
+  font-family: "DejaVu Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 9.5pt;
+  line-height: 1.45;
+  color: #1c1917;
+}
+
+h1 { font-size: 20pt; margin: 0 0 2mm; }
+h2 { font-size: 12pt; margin: 8mm 0 2mm; border-bottom: 0.4pt solid #d6d3d1; padding-bottom: 1mm; }
+h3 { font-size: 10pt; margin: 4mm 0 1mm; }
+p  { margin: 0 0 2mm; }
+
+.muted { color: #57534e; }
+.small { font-size: 8pt; }
+
+.cover { margin-bottom: 6mm; }
+.cover .org { font-size: 11pt; font-weight: 600; }
+
+.score { font-size: 34pt; font-weight: 700; line-height: 1; }
+.score-row { display: flex; gap: 8mm; align-items: baseline; margin: 3mm 0; }
+
+table { width: 100%; border-collapse: collapse; margin: 2mm 0 3mm; }
+th, td { text-align: left; padding: 1.4mm 2mm; border-bottom: 0.4pt solid #e7e5e4; vertical-align: top; }
+th { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.04em; color: #57534e; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Severity, in the same order of seriousness the product uses everywhere.
+   UNKNOWN is dashed rather than merely grey: a check that reached no verdict
+   must not be able to pass for one that came back clean, and a reader
+   photocopying this in black and white still has to see the difference. */
+.sev { display: inline-block; padding: 0.2mm 1.6mm; border-radius: 2mm; font-size: 7.5pt; font-weight: 600; border: 0.4pt solid; }
+.sev-CRITICAL { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+.sev-HIGH     { color: #9a3412; background: #fff7ed; border-color: #fed7aa; }
+.sev-MEDIUM   { color: #854d0e; background: #fefce8; border-color: #fde68a; }
+.sev-LOW      { color: #3f6212; background: #f7fee7; border-color: #d9f99d; }
+.sev-UNKNOWN  { color: #44403c; background: #fafaf9; border-color: #a8a29e; border-style: dashed; }
+
+/* The sparkline. Sized in mm so it prints at a known width rather than
+   inheriting whatever the page happens to be. */
+.trend { width: 100%; height: 24mm; display: block; margin: 2mm 0 1mm; }
+
+.note { border: 0.4pt solid #d6d3d1; background: #fafaf9; padding: 2.5mm 3mm; margin: 3mm 0; }
+.note-warn { border-color: #fde68a; background: #fefce8; }
+.note-title { font-weight: 600; margin-bottom: 1mm; }
+
+.finding { break-inside: avoid; padding: 2mm 0; border-bottom: 0.4pt solid #e7e5e4; }
+.finding-head { display: flex; gap: 3mm; align-items: baseline; }
+.finding-title { font-weight: 600; }
+
+.section { break-before: page; }

@@ -3,7 +3,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import FindingStatus, Level, Priority, RemediationStatus, RiskKind, Severity
+from app.core.enums import (
+    FindingEvent,
+    FindingStatus,
+    Level,
+    Priority,
+    RemediationStatus,
+    RiskKind,
+    RuleState,
+    Severity,
+    VerificationStatus,
+)
 
 
 class ResourceSummary(BaseModel):
@@ -110,3 +120,45 @@ class RemediationOut(BaseModel):
     notes: str | None = None
     completed_at: datetime | None = None
     created_at: datetime
+
+
+class VerificationOut(BaseModel):
+    """Where a claimed fix has got to.
+
+    ``detail`` is the field that matters and it is written for a person: the
+    three ways of not being verified -- too soon, still failing, could not tell
+    -- are the same open finding and entirely different news, and a status code
+    alone leaves the reader to guess which one they are looking at.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: VerificationStatus
+    claimed_at: datetime
+    # What has to become true for this to close, as it was declared when the
+    # claim was made.
+    expected_state: list[dict] = []
+    attempts: int
+    last_state: RuleState | None = None
+    next_attempt_at: datetime | None = None
+    settled_at: datetime | None = None
+    detail: str | None = None
+
+
+class FindingEventOut(BaseModel):
+    """One transition in a finding's life.
+
+    Carries who or what caused it, because "resolved" means something different
+    depending on the answer: a scan observing the check pass is verification,
+    and a person moving the status is a decision.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    event: FindingEvent
+    previous_status: FindingStatus | None = None
+    current_status: FindingStatus
+    scan_id: UUID | None = None
+    user_id: UUID | None = None
+    detail: str | None = None
+    observed_at: datetime

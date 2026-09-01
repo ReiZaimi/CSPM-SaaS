@@ -1,0 +1,101 @@
+{#
+  Everything the executive report says, and then the work.
+
+  Same posture block and same compliance block, from the same dictionary, so a
+  reader holding both documents cannot find two different scores for the same
+  day. What this adds is the list: every open finding, worst first, with the
+  asset it was found on and what to change.
+#}
+{% extends "base.html.j2" %}
+{% set title = "Technical security report" %}
+
+{% block body %}
+
+{% include "_posture.html.j2" %}
+
+{% if 'top_risks' in report.sections and report.top_risks %}
+<h2>What is worst right now</h2>
+<table>
+  <thead>
+    <tr><th>Risk</th><th class="num">Score</th></tr>
+  </thead>
+  <tbody>
+    {% for risk in report.top_risks %}
+    <tr>
+      <td>
+        <span class="sev sev-{{ risk.risk_level }}">{{ risk.risk_level | title }}</span>
+        {{ risk.title }}
+      </td>
+      <td class="num">{{ risk.risk_score | round(0) | int }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if 'attack_paths' in report.sections %}
+{% include "_attack_paths.html.j2" %}
+{% endif %}
+
+{% if 'remediation' in report.sections %}
+{% include "_remediation.html.j2" %}
+{% endif %}
+
+{% if 'compliance' in report.sections %}
+{% include "_compliance.html.j2" %}
+{% endif %}
+
+{% if 'findings' in report.sections %}
+<div class="section">
+<h2>Open findings</h2>
+
+{% if report.findings_truncated %}
+{# Printed rather than left implicit. A document that quietly shows the first
+   500 of 4,000 is not a shorter report, it is a wrong one. #}
+<div class="note note-warn">
+  <p class="note-title">
+    Showing the {{ report.findings | length }} highest-risk of
+    {{ report.finding_total }} open findings
+  </p>
+  <p class="small">
+    Ordered by risk score, so this is the top of the list rather than a sample
+    of it. The full set is in CloudGuard.
+  </p>
+</div>
+{% endif %}
+
+{% if not report.findings %}
+<p class="muted">
+  No findings are open. Every check that reached a verdict passed — see the
+  coverage note on the first page for how much of the estate that covers.
+</p>
+{% endif %}
+
+{% for finding in report.findings %}
+<div class="finding">
+  <div class="finding-head">
+    <span class="sev sev-{{ finding.severity }}">{{ finding.severity | title }}</span>
+    <span class="finding-title">{{ finding.title }}</span>
+  </div>
+  <p class="small muted">
+    {{ finding.rule_id }}
+    {% if finding.asset %}
+      · {{ finding.asset.name }}
+      ({{ finding.asset.resource_type | replace('_', ' ') }}{% if finding.asset.environment %}, {{ finding.asset.environment }}{% endif %})
+    {% else %}
+      {# A finding whose asset row has gone. Named, because a blank here reads
+         as a rendering fault rather than as deleted evidence. #}
+      · the asset this was found on is no longer in the inventory
+    {% endif %}
+    {% if finding.risk_score is not none %} · risk {{ finding.risk_score | round(0) | int }}{% endif %}
+    · first seen {{ finding.first_detected_at | datetime }}
+  </p>
+  {% if finding.remediation %}
+  <p class="small">{{ finding.remediation }}</p>
+  {% endif %}
+</div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

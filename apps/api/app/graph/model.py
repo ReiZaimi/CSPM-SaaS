@@ -45,6 +45,7 @@ class PathStep:
         verb = {
             RelationshipType.HAS_IDENTITY: "runs as",
             RelationshipType.GRANTS_ROLE: "can act over",
+            RelationshipType.CAN_GRANT_ROLES: "can grant itself any role over",
             RelationshipType.CONTAINS: "contains",
         }.get(self.relationship, self.relationship.value)
         return f"{self.source.name} {verb} {self.target.name}"
@@ -71,6 +72,14 @@ class Path:
     def describe(self) -> list[str]:
         return [step.describe() for step in self.steps]
 
+    def node_ids(self) -> frozenset[str]:
+        """Every asset on the route, endpoints included."""
+        ids = {self.entry.provider_resource_id, self.target.provider_resource_id}
+        for step in self.steps:
+            ids.add(step.source.provider_resource_id)
+            ids.add(step.target.provider_resource_id)
+        return frozenset(ids)
+
     def cheapest_break(self) -> PathStep | None:
         """The hop to cut first.
 
@@ -84,6 +93,7 @@ class Path:
             if step.relationship in {
                 RelationshipType.HAS_IDENTITY,
                 RelationshipType.GRANTS_ROLE,
+                RelationshipType.CAN_GRANT_ROLES,
             }:
                 return step
         return None
@@ -192,6 +202,103 @@ class AssetGraph:
                     paths.append(path)
 
         return sorted(paths, key=lambda p: (p.hops, p.target.name))
+
+    def paths_through(
+        self, resource_id: str, max_depth: int = MAX_DEPTH
+    ) -> list[Path]:
+        """The attack paths this asset is part of, wherever on them it sits.
+
+        Wherever on them, deliberately. A storage account at the end of a route
+        and the jump box at the start of it are on the same route, and a person
+        looking at one finding on either asset is looking at the same problem --
+        so membership is asked of the whole route rather than of its endpoints.
+        """
+        return [
+            path
+            for path in self.attack_paths(max_depth)
+            if resource_id in path.node_ids()
+        ]
+
+    def escalation_chains(self, max_depth: int = MAX_DEPTH) -> list[Path]:
+        """Routes from somewhere an attacker could start to an identity that can
+        grant itself more.
+
+        A different question from :meth:`attack_paths`, not a variation on it.
+        That one asks what an attacker reaches; this asks what they could be
+        *given* once they arrive -- and the answer changes the shape of the
+        problem, because a principal that may write role assignments over a
+        scope has an effective permission of "whatever exists", regardless of
+        the role it currently holds. Fixing the reachable asset does not shrink
+        that; only the assignment does.
+
+        The route ends at the scope rather than at the identity, because the
+        scope is the size of the answer. "This VM runs as an identity that can
+        grant itself Owner" is alarming; naming the subscription it can do that
+        over is what makes it actionable.
+
+        Requires an entry point, deliberately. A directory administrator who can
+        hand out roles is over-privileged and is not a *chain* -- there is no
+        route from outside to them here, and reporting one would be inventing
+        the half of the story that makes it urgent.
+        """
+        chains: list[Path] = []
+        for entry in self.entry_points():
+            reachable = self.reachable_from(entry.provider_resource_id, max_depth)
+            for node_id, path in reachable.items():
+                for relationship, scope_id in self._out.get(node_id, []):
+                    if relationship is not RelationshipType.CAN_GRANT_ROLES:
+                        continue
+                    if scope_id not in self.nodes:
+                        continue
+                    hop = PathStep(
+                        self.nodes[node_id],
+                        RelationshipType.CAN_GRANT_ROLES,
+                        self.nodes[scope_id],
+                    )
+                    chains.append(
+                        Path(
+                            entry=entry,
+                            target=self.nodes[scope_id],
+                            steps=(*path.steps, hop),
+                        )
+                    )
+
+        # Shortest first, and by scope name for stability. A two-hop chain -- an
+        # exposed host whose own identity can grant roles -- is both likelier and
+        # cheaper to explain than one that arrives through three intermediaries.
+        return sorted(chains, key=lambda p: (p.hops, p.target.name))
+
+    def contained_by(self, scope_id: str, max_depth: int = MAX_DEPTH) -> list[CloudResource]:
+        """Everything that sits under a scope.
+
+        What an escalation at that scope would be an escalation *over*.
+
+        Containment only, unlike :meth:`blast_radius`, and the difference is the
+        point rather than an optimization. Reach spreads through identities --
+        a host under this subscription runs as a principal, and that principal
+        is reachable from here -- but a managed identity is not something the
+        subscription *holds*. Counting it would answer "what could be taken from
+        here" while being asked "what is in here", and the two diverge exactly
+        where the answer matters.
+        """
+        structural = {ResourceType.SUBSCRIPTION, ResourceType.RESOURCE_GROUP}
+        held: list[CloudResource] = []
+        queue: deque[tuple[str, int]] = deque([(scope_id, 0)])
+        seen = {scope_id}
+
+        while queue:
+            current, depth = queue.popleft()
+            if depth >= max_depth:
+                continue
+            for relationship, target in self._out.get(current, []):
+                if relationship is not RelationshipType.CONTAINS or target in seen:
+                    continue
+                seen.add(target)
+                node = self.nodes[target]
+                if node.resource_type not in structural:
+                    held.append(node)
+                queue.append((target, depth + 1))
+        return held
 
     def blast_radius(self, principal_id: str, max_depth: int = MAX_DEPTH) -> list[CloudResource]:
         """What one identity can act on.

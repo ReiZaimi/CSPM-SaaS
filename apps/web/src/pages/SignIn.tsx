@@ -113,14 +113,14 @@ export function SignInPage() {
   if (token) return <Navigate to="/" replace />;
 
   return (
-    <div className="flex min-h-screen bg-white">
+    <div className="flex min-h-screen bg-background">
       <BrandPanel />
 
       <main className="flex flex-1 items-center justify-center px-6 py-12">
         <div className="w-full max-w-sm">
           {/* The mark repeats on mobile, where the left panel is hidden. */}
           <div className="mb-10 flex items-center gap-2.5 lg:hidden">
-            <ShieldMark className="h-7 w-7 text-stone-900" />
+            <ShieldMark className="h-7 w-7 text-foreground" />
             <span className="text-base font-semibold tracking-tight">{t.app.name}</span>
           </div>
 
@@ -134,14 +134,14 @@ export function SignInPage() {
             />
           ) : (
             <>
-              <h1 className="text-2xl font-semibold tracking-tight text-stone-900">
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">
                 {mode === "signup"
                   ? t.auth.signUp
                   : mode === "reset"
                     ? t.auth.resetTitle
                     : t.auth.signIn}
               </h1>
-              <p className="mt-2 text-sm leading-relaxed text-stone-500">
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                 {mode === "signup"
                   ? "Start with your work email. You can connect Azure once you're in."
                   : mode === "reset"
@@ -161,7 +161,7 @@ export function SignInPage() {
               )}
 
               <form onSubmit={submit} className={mode === "reset" ? "mt-8" : "mt-6"}>
-                <label htmlFor="email" className="block text-sm font-medium text-stone-700">
+                <label htmlFor="email" className="block text-sm font-medium text-foreground">
                   {t.auth.email}
                 </label>
                 <input
@@ -192,7 +192,7 @@ export function SignInPage() {
                         <button
                           type="button"
                           onClick={() => switchTo("reset")}
-                          className="text-xs font-medium text-stone-500 underline underline-offset-2 transition hover:text-stone-900"
+                          className="text-xs font-medium text-muted-foreground underline underline-offset-2 transition hover:text-foreground"
                         >
                           {t.auth.forgotPassword}
                         </button>
@@ -213,10 +213,10 @@ export function SignInPage() {
                 <button
                   type="submit"
                   disabled={busy}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-stone-300"
+                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring/50 focus:ring-offset-2 focus:ring-offset-background disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
                 >
                   {busy && (
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current" />
                   )}
                   {submitLabel(mode, busy, t)}
                 </button>
@@ -228,7 +228,7 @@ export function SignInPage() {
                   none: there is no password typed here yet and no Microsoft
                   button on screen to qualify. */}
               {mode !== "reset" && (
-                <p className="mt-8 border-t border-stone-100 pt-6 text-xs leading-relaxed text-stone-500">
+                <p className="mt-8 border-t border-border pt-6 text-xs leading-relaxed text-muted-foreground">
                   {needsPassword ? t.auth.passwordNotice : t.auth.microsoftHint}
                 </p>
               )}
@@ -241,7 +241,7 @@ export function SignInPage() {
 }
 
 const FIELD_CLASS =
-  "mt-2 w-full rounded-lg border border-stone-300 bg-white px-3.5 py-2.5 text-sm text-stone-900 shadow-sm transition placeholder:text-stone-400 hover:border-stone-400 focus:border-stone-900 focus:outline-none focus:ring-2 focus:ring-stone-900/10";
+  "mt-2 w-full rounded-lg border border-input bg-background px-3.5 py-2.5 text-sm text-foreground shadow-sm transition placeholder:text-muted-foreground hover:border-ring focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20";
 
 function submitLabel(mode: Mode, busy: boolean, t: ReturnType<typeof useT>): string {
   if (busy) {
@@ -290,9 +290,9 @@ function authErrorMessage(err: unknown): string {
 function Divider({ label }: { label: string }) {
   return (
     <div className="mt-6 flex items-center gap-3" aria-hidden="true">
-      <span className="h-px flex-1 bg-stone-200" />
-      <span className="text-xs uppercase tracking-wide text-stone-400">{label}</span>
-      <span className="h-px flex-1 bg-stone-200" />
+      <span className="h-px flex-1 bg-border" />
+      <span className="text-xs uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className="h-px flex-1 bg-border" />
     </div>
   );
 }
@@ -311,7 +311,7 @@ function MicrosoftButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-stone-300 bg-white px-4 py-2.5 text-sm font-medium text-stone-800 shadow-sm transition hover:border-stone-400 hover:bg-stone-50 focus:outline-none focus:ring-2 focus:ring-stone-900/10 disabled:cursor-not-allowed disabled:text-stone-400"
+      className="mt-8 flex w-full items-center justify-center gap-2.5 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium text-foreground shadow-sm transition hover:border-ring hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:text-muted-foreground"
     >
       <MicrosoftMark />
       {label}
@@ -354,7 +354,7 @@ function PasswordField({
   return (
     <div className="mt-4">
       <div className="flex items-baseline justify-between gap-3">
-        <label htmlFor={id} className="block text-sm font-medium text-stone-700">
+        <label htmlFor={id} className="block text-sm font-medium text-foreground">
           {label}
         </label>
         {trailing}
@@ -374,12 +374,12 @@ function PasswordField({
           type="button"
           onClick={() => setVisible((v) => !v)}
           aria-label={visible ? t.auth.hidePassword : t.auth.showPassword}
-          className="absolute inset-y-0 right-0 mt-2 flex items-center px-3 text-stone-400 transition hover:text-stone-700"
+          className="absolute inset-y-0 right-0 mt-2 flex items-center px-3 text-muted-foreground transition hover:text-foreground"
         >
           <EyeIcon crossed={visible} />
         </button>
       </div>
-      {hint && <p className="mt-1.5 text-xs text-stone-500">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -415,7 +415,7 @@ function AlternateRoutes({ mode, onSwitch }: { mode: Mode; onSwitch: (mode: Mode
           {mode === "magic" ? t.auth.passwordInstead : t.auth.magicLinkInstead}
         </TextLink>
       </p>
-      <p className="text-stone-500">
+      <p className="text-muted-foreground">
         {mode === "signup" ? t.auth.haveAccount : t.auth.noAccount}{" "}
         <TextLink onClick={() => onSwitch(mode === "signup" ? "signin" : "signup")}>
           {mode === "signup" ? t.auth.signIn : t.auth.createOne}
@@ -430,7 +430,7 @@ function TextLink({ onClick, children }: { onClick: () => void; children: React.
     <button
       type="button"
       onClick={onClick}
-      className="font-medium text-stone-600 underline underline-offset-4 transition hover:text-stone-900"
+      className="font-medium text-muted-foreground underline underline-offset-4 transition hover:text-foreground"
     >
       {children}
     </button>
@@ -473,7 +473,7 @@ function BrandPanel() {
         </ul>
       </div>
 
-      <p className="relative text-xs text-stone-500">
+      <p className="relative text-xs text-muted-foreground">
         Azure-first Cloud Security Posture Management
       </p>
     </aside>
@@ -483,7 +483,7 @@ function BrandPanel() {
 function Assurance({ children }: { children: React.ReactNode }) {
   return (
     <li className="flex items-start gap-3 text-sm text-stone-200">
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10">
+      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-background/10">
         <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
           <path
             fill="none"
@@ -528,15 +528,15 @@ function SentNotice({ sent, onUseAnother }: { sent: Sent; onUseAnother: () => vo
         </svg>
       </div>
 
-      <h1 className="mt-5 text-2xl font-semibold tracking-tight text-stone-900">
+      <h1 className="mt-5 text-2xl font-semibold tracking-tight text-foreground">
         {t.auth.checkEmail}
       </h1>
-      <p className="mt-2 text-sm leading-relaxed text-stone-600">
-        {lead} <strong className="text-stone-900">{sent.email}</strong>.{" "}
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+        {lead} <strong className="text-foreground">{sent.email}</strong>.{" "}
         {t.auth.openOnThisDevice}
       </p>
 
-      <p className="mt-6 rounded-lg bg-stone-50 px-4 py-3 text-xs leading-relaxed text-stone-500">
+      <p className="mt-6 rounded-lg bg-muted/40 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
         The link works once and expires after an hour. If nothing arrives, check
         spam — and note that some disposable inboxes open links automatically,
         which uses the link up before you get to it.
@@ -544,7 +544,7 @@ function SentNotice({ sent, onUseAnother }: { sent: Sent; onUseAnother: () => vo
 
       <button
         onClick={onUseAnother}
-        className="mt-6 text-sm font-medium text-stone-600 underline underline-offset-4 transition hover:text-stone-900"
+        className="mt-6 text-sm font-medium text-muted-foreground underline underline-offset-4 transition hover:text-foreground"
       >
         {t.auth.useAnotherAddress}
       </button>

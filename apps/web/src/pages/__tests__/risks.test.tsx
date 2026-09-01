@@ -10,8 +10,9 @@
  * it is only visible where they are ranked together.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RisksPage } from "../Risks";
 import { api } from "@/lib/api";
@@ -85,7 +86,9 @@ function mount(risks: Risk[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <RisksPage />
+      <MemoryRouter>
+        <RisksPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -175,5 +178,163 @@ describe("RisksPage", () => {
 
     await waitFor(() => expect(screen.getByText("Attack path")).toBeInTheDocument());
     expect(screen.queryByText("Capped at 100.")).not.toBeInTheDocument();
+  });
+
+  it("renders a privilege escalation as a route, with its own name", async () => {
+    // Scored by the scenario formula, so it must not fall through to the
+    // finding card — that would show asset criticality and exploitability,
+    // which this score was never built from. And it is not an attack path: one
+    // says what can be reached, the other what could be granted.
+    mount([
+      scenarioRisk({
+        id: "r-escalation",
+        kind: "ESCALATION",
+        title: "jump-01 leads to control of sub-1",
+      }),
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Privilege escalation")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("jump-01 leads to control of sub-1")).toBeInTheDocument();
+    expect(screen.getByText("The route")).toBeInTheDocument();
+    expect(screen.queryByText("Attack path")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The second half of this page: how much of the ranking it actually shows.
+ *
+ * Separate from the fixtures above because these tests are about the request,
+ * not the card -- they stub `fetch` so the URL the page builds is the thing
+ * under test.
+ */
+const TOTAL = 80;
+
+function pagedRisk(index: number) {
+  return {
+    id: `00000000-0000-0000-0000-${String(index).padStart(12, "0")}`,
+    kind: "FINDING",
+    path: [],
+    title: `Risk number ${index}`,
+    description: "",
+    risk_score: 90 - index,
+    risk_level: "HIGH",
+    status: "OPEN",
+    asset_criticality: "HIGH",
+    data_sensitivity: "HIGH",
+    internet_exposure: "HIGH",
+    exploitability: 4,
+    business_impact: 4,
+    score_breakdown: {},
+  };
+}
+
+let requested: string[] = [];
+
+function renderPagedPage() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <RisksPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("the risk ranking", () => {
+  beforeEach(() => {
+    // The fixtures above spy on `api.get`; left in place it would answer these
+    // requests before they ever reached the URL under test.
+    vi.restoreAllMocks();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    requested = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        requested.push(url);
+        const params = new URL(url, "https://example.test").searchParams;
+        const limit = Number(params.get("limit") ?? 100);
+        const offset = Number(params.get("offset") ?? 0);
+        const page = Array.from({ length: Math.min(limit, TOTAL - offset) }, (_, i) =>
+          pagedRisk(offset + i),
+        );
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: page, error: null, meta: { total: TOTAL } }),
+        } as Response;
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("says how many risks there are, not how many fitted on the page", async () => {
+    renderPagedPage();
+
+    // A page whose claim is "these are your worst problems in order" showing
+    // the first hundred of four hundred is the wrong answer, not a display bug.
+    expect(await screen.findByText(/of 80 risks/)).toBeInTheDocument();
+  });
+
+  it("pages rather than rendering everything the API returned", async () => {
+    renderPagedPage();
+    await screen.findByText(/of 80 risks/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    await waitFor(() => expect(requested.some((u) => u.includes("offset=25"))).toBe(true));
+  });
+
+  it("filters at the database, so a filter narrows the estate", async () => {
+    renderPagedPage();
+    await screen.findByText(/of 80 risks/);
+
+    fireEvent.change(screen.getByLabelText("Search risks"), { target: { value: "payroll" } });
+    await vi.advanceTimersByTimeAsync(300);
+
+    await waitFor(() =>
+      expect(requested.some((u) => u.includes("search=payroll"))).toBe(true),
+    );
+  });
+
+  it("offers UNKNOWN as a level, because the engine really assigns it", async () => {
+    renderPagedPage();
+    await screen.findByText(/of 80 risks/);
+
+    fireEvent.click(screen.getByLabelText("Filter by risk level"));
+
+    // Leaving it out would hide the risks CloudGuard could not score, which
+    // are the ones most worth looking at.
+    expect(await screen.findByRole("option", { name: "Unknown" })).toBeInTheDocument();
+  });
+
+  it("keeps findings and routes in one ranking by default", async () => {
+    renderPagedPage();
+    await screen.findByText(/of 80 risks/);
+
+    // A route outranking the findings inside it is only visible where they are
+    // ranked together.
+    expect(requested[0]).not.toContain("kind=");
+  });
+
+  it("opens each ranked risk, whichever kind it is", async () => {
+    // The ranking is an assertion until the findings behind a row can be read.
+    mount([scenarioRisk(), findingRisk()]);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("link", { name: "jump-01 can reach customerdata" }),
+      ).toHaveAttribute("href", "/risks/r-scenario"),
+    );
+    expect(
+      screen.getByRole("link", { name: "Public blob access on customerdata" }),
+    ).toHaveAttribute("href", "/risks/r-finding");
   });
 });

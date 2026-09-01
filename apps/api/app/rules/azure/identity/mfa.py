@@ -5,6 +5,7 @@ from typing import ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, RuleScope, Severity
 from app.domain.resource import CloudResource
+from app.remediation import Comparison, ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
 # Entra directory roles that carry enough power that a missing second factor is
@@ -70,6 +71,35 @@ class AzureMfaRule(SecurityRule):
         "Properties > Manage security defaults > Enabled.\n\n"
         "Then have the user register a method at https://aka.ms/mfasetup. Prefer an "
         "authenticator app or FIDO2 key over SMS."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="mfa_methods",
+                comparison=Comparison.NOT_EMPTY,
+                equals=None,
+                describes=(
+                    "The account has a second factor registered that is not a "
+                    "password"
+                ),
+                example="microsoftAuthenticator",
+            ),
+        ),
+        # Who the expectation is about. A rule that returns NOT_APPLICABLE for
+        # every ordinary account is not passing them -- it is out of scope --
+        # and saying so is the difference between "your users are fine" and
+        # "this is about your administrators".
+        applies_when={"directory_roles": ["Global Administrator"]},
+        cli=(
+            "az ad user get-member-groups --id <upn>",
+        ),
+        notes=(
+            "No policy is generated and none can be. This is a directory "
+            "setting rather than a resource property, so no policyRule can "
+            "express it: it is enforced with a Conditional Access policy "
+            "requiring multifactor authentication for directory roles, which "
+            "is configured in Entra ID rather than deployed to a subscription."
+        ),
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["1.1.1", "1.1.2"],

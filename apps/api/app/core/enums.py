@@ -43,6 +43,91 @@ class Level(StrEnum):
     CRITICAL = "CRITICAL"
     UNKNOWN = "UNKNOWN"
 
+    @property
+    def is_known(self) -> bool:
+        return self is not Level.UNKNOWN
+
+    @property
+    def rank(self) -> int:
+        """Where this sits on the scale, with UNKNOWN below all of it.
+
+        Not an ordering of severity -- UNKNOWN outranks LOW everywhere a *score*
+        is computed, deliberately, because missing context must not read as
+        safe. This is for the different question of which of two *claims* about
+        an asset is the stronger one, where an absence is not a claim at all.
+        Anything comparing risk should use the scorer's level scores instead.
+        """
+        return _LEVEL_RANK[self]
+
+
+_LEVEL_RANK: dict[Level, int] = {
+    Level.UNKNOWN: 0,
+    Level.LOW: 1,
+    Level.MEDIUM: 2,
+    Level.HIGH: 3,
+    Level.CRITICAL: 4,
+}
+
+
+class ContextSource(StrEnum):
+    """Where a piece of asset context came from.
+
+    Context -- how critical an asset is, how sensitive its data, which
+    environment it belongs to -- is the multiplier the risk engine turns a
+    finding into a risk with. Until now it arrived with no provenance: a
+    CRITICAL that somebody typed into a tag and a CRITICAL inferred from a
+    resource name looked identical by the time they reached a score, so a
+    customer asking "why is this ranked above that" could be told the arithmetic
+    and never the input.
+
+    The members are ordered weakest to strongest, and that order is the whole
+    point: :attr:`confidence` puts a number on it, and the context engine uses
+    that number to say which of two claims about the same asset it kept.
+    """
+
+    # Nothing said anything. Pairs with UNKNOWN, never with a value.
+    NONE = "none"
+    # CloudGuard worked it out: a resource called "prod-db-01" is probably
+    # production, and something in production is probably important. How most
+    # small teams actually mark an environment, and wrong often enough to be
+    # worth labelling as a deduction rather than a reading. A value derived
+    # from another value lands here whatever that other value's source was --
+    # the deduction is the weak link, not where its input came from.
+    INFERRED = "inferred"
+    # True by what the thing is: a database holds data whatever anyone tagged
+    # it. A floor rather than a reading, and never wrong in the unsafe
+    # direction.
+    TYPE_FLOOR = "type_floor"
+    # A tag on the asset itself. Somebody meant it once; whether it is still
+    # true is between the customer and their automation.
+    PROVIDER_TAG = "provider_tag"
+    # Declared by the customer on the subscription this asset lives in.
+    INHERITED = "inherited"
+    # Declared by the customer, about this asset. The only source that is
+    # somebody taking responsibility for the answer.
+    CUSTOMER = "customer"
+
+    @property
+    def confidence(self) -> float:
+        """How much weight the claim deserves, on 0..1.
+
+        Derived from the source rather than stored beside it, because a
+        confidence that could be set independently would eventually disagree
+        with the source it is supposed to describe -- and there is no reading of
+        "a naming guess, confidence 0.95" that is worth being able to express.
+        """
+        return _CONTEXT_CONFIDENCE[self]
+
+
+_CONTEXT_CONFIDENCE: dict[ContextSource, float] = {
+    ContextSource.NONE: 0.0,
+    ContextSource.INFERRED: 0.4,
+    ContextSource.TYPE_FLOOR: 0.7,
+    ContextSource.PROVIDER_TAG: 0.8,
+    ContextSource.INHERITED: 0.9,
+    ContextSource.CUSTOMER: 1.0,
+}
+
 
 class RuleState(StrEnum):
     PASS = "PASS"
@@ -108,6 +193,15 @@ class ScanTrigger(StrEnum):
 
     MANUAL = "MANUAL"
     SCHEDULED = "SCHEDULED"
+    # Something changed in the environment and Azure said so. Distinct from
+    # SCHEDULED because it is not a clock: an interval is a promise about how
+    # stale the picture may get, while this is the picture being wrong *now*.
+    CHANGE = "CHANGE"
+    # CloudGuard checking whether a fix the customer reported actually took.
+    # Distinct from SCHEDULED because it answers a question somebody asked, and
+    # from MANUAL because they asked it by marking work done rather than by
+    # pressing scan -- and because it retries on a backoff nobody sees.
+    VERIFICATION = "VERIFICATION"
 
 
 class ScanStepKind(StrEnum):
@@ -212,6 +306,53 @@ class RiskKind(StrEnum):
 
     FINDING = "FINDING"
     ATTACK_PATH = "ATTACK_PATH"
+    # A route from somewhere an attacker could start to an identity that can
+    # grant itself more. Distinct from ATTACK_PATH because it answers a
+    # different question: not "what can be reached" but "what could be *given*
+    # once something is reached", which is the difference between a blast
+    # radius and one that grows.
+    ESCALATION = "ESCALATION"
+
+
+class AssetChange(StrEnum):
+    """What happened to an asset between two readings of the same environment.
+
+    "What changed since last week" was answerable only by diffing snapshot
+    blobs in application code, which meant it was not answerable. These are the
+    changes worth a row: whether the thing exists, and the three attributes the
+    risk engine multiplies a finding by. Configuration drift is deliberately not
+    here -- every field of every payload would produce a change feed nobody can
+    read, and the drift that matters already surfaces as a finding.
+    """
+
+    APPEARED = "APPEARED"
+    # A scan that covered its scope did not see it. Not a deletion: the row
+    # stays, because a finding about it is still history worth keeping and the
+    # asset may well come back.
+    DISAPPEARED = "DISAPPEARED"
+    EXPOSURE_CHANGED = "EXPOSURE_CHANGED"
+    SENSITIVITY_CHANGED = "SENSITIVITY_CHANGED"
+    CRITICALITY_CHANGED = "CRITICALITY_CHANGED"
+
+
+class FindingEvent(StrEnum):
+    """A transition in a finding's life, and who or what caused it.
+
+    ``first_detected_at`` and ``resolved_at`` are two points on a line nobody
+    could see the rest of. A finding that was raised, fixed, regressed and fixed
+    again looked exactly like one raised and fixed once -- and "how long does
+    this customer take to fix a Critical" was a question the data could not
+    answer, on the product whose north-star metric is verified risk reduction.
+    """
+
+    DETECTED = "DETECTED"
+    # It came back after being resolved. The event a single ``resolved_at``
+    # column silently overwrote.
+    REOPENED = "REOPENED"
+    RESOLVED = "RESOLVED"
+    RISK_ACCEPTED = "RISK_ACCEPTED"
+    # Somebody moved it through the workflow by hand.
+    STATUS_CHANGED = "STATUS_CHANGED"
 
 
 class RiskStatus(StrEnum):
@@ -226,6 +367,41 @@ class RemediationStatus(StrEnum):
     IN_PROGRESS = "IN_PROGRESS"
     DONE = "DONE"
     CANCELLED = "CANCELLED"
+
+
+class VerificationStatus(StrEnum):
+    """What became of a fix the customer said they had made.
+
+    The reason this is not a boolean: "not verified" covers three different
+    situations that need three different sentences. The fix might not have
+    worked; CloudGuard might not have been able to look; or it might simply be
+    too soon, because a cloud takes its time agreeing with itself and a check
+    run thirty seconds after a change reports the environment as it was.
+
+    Collapsing those into one answer is what makes a verification feature
+    untrustworthy: a customer told "still failing" who has in fact fixed it
+    stops believing the next answer too.
+    """
+
+    # Being checked. The fix is claimed, and CloudGuard has not yet seen enough
+    # to agree or disagree.
+    PENDING = "PENDING"
+    # A rule that used to fail returned an explicit PASS over the same asset.
+    VERIFIED = "VERIFIED"
+    # CloudGuard looked, repeatedly, and the check still fails.
+    STILL_FAILING = "STILL_FAILING"
+    # CloudGuard looked and could not tell -- the evidence the rule needs never
+    # arrived. Not the same as failing, and never reported as if it were: this
+    # is a gap in what CloudGuard could see, which is CloudGuard's problem to
+    # explain rather than the customer's to fix.
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    # The question stopped being worth asking: the finding was accepted as a
+    # risk, or the asset it was about is gone.
+    ABANDONED = "ABANDONED"
+
+    @property
+    def is_settled(self) -> bool:
+        return self is not VerificationStatus.PENDING
 
 
 class Priority(StrEnum):
@@ -322,6 +498,11 @@ class RelationshipType(StrEnum):
     # This identity holds a role over that scope. The hop that turns a foothold
     # into a blast radius.
     GRANTS_ROLE = "grants_role"
+    # And this identity's role lets it hand out roles over that scope. Drawn
+    # beside GRANTS_ROLE rather than instead of it, because it is a different
+    # claim about the same pair: the first says what the principal may do now,
+    # the second says the ceiling is whatever it decides to give itself.
+    CAN_GRANT_ROLES = "can_grant_roles"
 
     @property
     def is_capability(self) -> bool:
@@ -331,5 +512,9 @@ class RelationshipType(StrEnum):
         reaches: an NSG protecting a VM is a fact about the VM, not a way to get
         anywhere from the NSG.
         """
-        return self in {RelationshipType.HAS_IDENTITY, RelationshipType.GRANTS_ROLE,
-                        RelationshipType.CONTAINS}
+        return self in {
+            RelationshipType.HAS_IDENTITY,
+            RelationshipType.GRANTS_ROLE,
+            RelationshipType.CAN_GRANT_ROLES,
+            RelationshipType.CONTAINS,
+        }

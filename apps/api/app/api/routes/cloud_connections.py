@@ -4,20 +4,16 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.connectors.azure.auth import (
-    REQUIRED_GRAPH_PERMISSIONS,
-    ConsentStateError,
-    app_registration_manifest,
-    verify_state,
-)
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.deps import DbSession, Tenant
 from app.core.enums import ConsentStatus, Role
 from app.core.errors import CloudAccountNotFound, envelope
+from app.core.signing import SignedStateError, verify_state
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import (
+    ChangeEventsUpdate,
     CloudConnectionCreate,
     CloudConnectionOut,
     DiscoveredSubscription,
@@ -114,7 +110,7 @@ async def arm_template(
     """
     try:
         payload = verify_state(token, max_age_seconds=service.TEMPLATE_TOKEN_TTL_SECONDS)
-    except ConsentStateError as exc:
+    except SignedStateError as exc:
         return JSONResponse(
             {"error": str(exc)}, status_code=400, headers=TEMPLATE_CORS_HEADERS
         )
@@ -165,40 +161,7 @@ async def app_registration(tenant: Tenant) -> dict:
     eye in a portal.
     """
     tenant.require_role(Role.OWNER, Role.ADMIN)
-    manifest = app_registration_manifest()
-    return envelope(
-        {
-            "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
-            "required_resource_access": manifest,
-            # Shell-safe by construction. An angle-bracket placeholder reads
-            # as a placeholder and parses as input redirection, so a copied
-            # command fails with "No such file or directory" and names the
-            # placeholder as the missing file -- an error that says nothing
-            # about what actually went wrong.
-            "lookup_command": (
-                'APP_ID=$(az ad app list --display-name CloudGuard '
-                '--query "[0].appId" -o tsv)'
-            ),
-            "apply_command": (
-                'az ad app update --id "$APP_ID" '
-                f"--required-resource-accesses '{json.dumps(manifest)}'"
-            ),
-            "verify_command": (
-                'az ad app show --id "$APP_ID" '
-                '--query "requiredResourceAccess[].resourceAccess[].id" -o tsv'
-            ),
-            "grant_command": (
-                "# Then, in each customer tenant, a Global Administrator "
-                "re-runs the consent link from this page."
-            ),
-            "note": (
-                "Consent grants what the registration declares at the moment it "
-                "is granted. Adding a permission afterwards does not extend an "
-                "existing grant -- every already-connected tenant must consent "
-                "again."
-            ),
-        }
-    )
+    return envelope(service.azure_app_registration())
 
 
 @router.get("/azure/consent/callback", include_in_schema=False)
@@ -222,7 +185,7 @@ async def consent_callback(
 
     try:
         payload = verify_state(state)
-    except ConsentStateError as exc:
+    except SignedStateError as exc:
         return RedirectResponse(f"{frontend}/connections?consent_error={exc}")
 
     if admin_consent.lower() not in {"true", "1", ""}:
@@ -316,6 +279,40 @@ async def set_schedule(
         session, tenant, connection_id, payload.scan_interval_hours
     )
     return envelope(_serialize(connection))
+
+
+@router.get("/{connection_id}/change-events")
+async def get_change_events(
+    connection_id: UUID, session: DbSession, tenant: Tenant
+) -> dict:
+    """Whether this connection reacts to change, and how to wire it up.
+
+    The commands are the deliverable. CloudGuard cannot create the Event Grid
+    subscription itself -- that is a write in the customer's tenant, and holding
+    no write permission anywhere is the strongest security claim this product
+    makes -- so it generates what the customer runs, one per subscription,
+    because that is how Event Grid is scoped.
+    """
+    connection = await service.get_connection(session, tenant, connection_id)
+    return envelope(await service.change_event_setup(session, connection))
+
+
+@router.patch("/{connection_id}/change-events")
+async def set_change_events(
+    connection_id: UUID, payload: ChangeEventsUpdate, session: DbSession, tenant: Tenant
+) -> dict:
+    """Open or close the webhook for this connection.
+
+    Opening it wires nothing up on its own; closing it takes effect at once,
+    before the customer has deleted anything in Azure. That is the right way
+    round -- a switch that appears to stop something and does not is worse than
+    one that leaves a subscription delivering to an endpoint now refusing it.
+    """
+    tenant.require_write()
+    connection = await service.set_change_events(
+        session, tenant, connection_id, payload.enabled
+    )
+    return envelope(await service.change_event_setup(session, connection))
 
 
 @router.post("/{connection_id}/cancel")

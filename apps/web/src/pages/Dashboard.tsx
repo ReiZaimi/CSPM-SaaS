@@ -1,14 +1,68 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { CloudOffIcon, ScanLineIcon } from "lucide-react";
+
 import { ApiError, api, auth } from "@/lib/api";
 import { supabaseSignOut } from "@/lib/supabase";
-import type { CloudAccount, Dashboard } from "@/lib/types";
+import type {
+  AttackPath,
+  ChangeEvent,
+  CloudAccount,
+  ComplianceFramework,
+  Dashboard,
+  Scan,
+} from "@/lib/types";
 import { useT } from "@/i18n";
-import { ScoreDelta, ScoreTrend } from "@/components/ScoreTrend";
-import { Badge, Button, Card, EmptyState, Spinner, StatusPill } from "@/components/ui";
-import { ScoreRing } from "@/components/ScoreRing";
-import { formatDateTime } from "@/lib/format";
+import { PostureHeader } from "@/components/dashboard/PostureHeader";
+import { ScorePanel } from "@/components/dashboard/ScorePanel";
+import { SeverityStrip } from "@/components/dashboard/SeverityStrip";
+import { PostureBreakdown } from "@/components/dashboard/PostureBreakdown";
+import { ComplianceSummary } from "@/components/dashboard/ComplianceSummary";
+import { CoveragePanel } from "@/components/dashboard/CoveragePanel";
+import { PriorityRisks } from "@/components/dashboard/PriorityRisks";
+import { AttackPathPanel } from "@/components/dashboard/AttackPathPanel";
+import { RemediationProgress } from "@/components/dashboard/RemediationProgress";
+import { RecentChanges } from "@/components/dashboard/RecentChanges";
+import { DashboardSkeleton, EmptyState, ErrorState } from "@/components/common/states";
+import { Button, buttonVariants } from "@/components/ui/button";
 
+/** Scan statuses that mean CloudGuard is reading the cloud right now. */
+const RUNNING = new Set([
+  "QUEUED",
+  "DISCOVERING",
+  "NORMALIZING",
+  "EVALUATING",
+  "CALCULATING_RISK",
+]);
+
+/**
+ * The page that answers "how secure am I right now", read top to bottom as one
+ * argument rather than as a wall of cards.
+ *
+ * The order is the argument, and each step is the precondition for the next:
+ *
+ *   where the posture stands, and which way it is moving      (score, trend)
+ *   what that number is made of                               (severity)
+ *   how much of the estate the opinion was formed from        (coverage)
+ *   what to deal with, and what those faults form together    (risks, path)
+ *   whether any of it is actually getting fixed               (remediation)
+ *   what moved while you were away                            (changes)
+ *
+ * Coverage sits third on purpose. A score computed over half an environment is
+ * a different claim from the same number computed over all of it, and a reader
+ * who has already acted on the risks below has been told too late.
+ *
+ * Inventory counts — assets, subscriptions, resources — are deliberately not on
+ * this page as headline figures. They are true and they answer a different
+ * question, and every pixel one takes is a pixel not spent on what is wrong.
+ *
+ * Three requests, not one. The dashboard aggregate is a set of database
+ * aggregates and answers quickly; attack paths cost a graph build and changes
+ * are a windowed feed, so folding them into the primary payload would make the
+ * numbers everybody came for wait on the two panels nobody scrolls to first.
+ * Both fail quietly: a dashboard that cannot draw its last panel is still a
+ * dashboard.
+ */
 export function DashboardPage() {
   const t = useT();
 
@@ -25,194 +79,159 @@ export function DashboardPage() {
     retry: false,
   });
 
-  if (isLoading) return <Spinner text={t.common.loading} />;
+  const paths = useQuery({
+    queryKey: ["dashboard-attack-paths"],
+    queryFn: () =>
+      api.get<AttackPath[]>("/api/v1/attack-paths?limit=1").then((r) => r.data),
+    retry: false,
+  });
+
+  const changes = useQuery({
+    queryKey: ["dashboard-changes"],
+    queryFn: () =>
+      api.get<ChangeEvent[]>("/api/v1/changes?days=7&limit=5").then((r) => r.data),
+    retry: false,
+  });
+
+  const compliance = useQuery({
+    queryKey: ["compliance"],
+    queryFn: () =>
+      api.get<ComplianceFramework[]>("/api/v1/compliance").then((r) => r.data),
+    retry: false,
+  });
+
+  // Whether a scan is in flight, which changes what the freshness pill means:
+  // numbers about to move are not the same as numbers going stale.
+  const scans = useQuery({
+    queryKey: ["scans", "indicator"],
+    queryFn: () => api.get<Scan[]>("/api/v1/scans?limit=5").then((r) => r.data),
+    retry: false,
+  });
+
+  if (isLoading) return <DashboardSkeleton />;
   if (error) return <DashboardError error={error} onRetry={() => refetch()} />;
   if (!data) return null;
 
   if (!data.last_scan) {
     const hasConnection = (accounts.data?.length ?? 0) > 0;
     return (
-      <EmptyState
-        title={t.dashboard.noScans}
-        detail={t.dashboard.noScansHelp}
-        action={
-          <Link to={hasConnection ? "/scans" : "/connections"}>
-            <Button>
+      <div className="flex flex-col gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {t.dashboard.title}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Your cloud security posture, and what CloudGuard could see while
+            forming it.
+          </p>
+        </div>
+        {/* No score is rendered before a scan exists. A number over no evidence
+            is a number about nothing, and a reassuring one is worse. */}
+        <EmptyState
+          icon={hasConnection ? ScanLineIcon : CloudOffIcon}
+          title={
+            hasConnection
+              ? "Your posture is ready to be assessed"
+              : "Connect your cloud environment"
+          }
+          detail={
+            hasConnection
+              ? "CloudGuard is connected but has not read this environment yet. Nothing here is scored until a scan has."
+              : "CloudGuard needs read access to your Azure environment before it can assess anything. It holds no credential of yours and performs no writes."
+          }
+          action={
+            <Link
+              to={hasConnection ? "/scans" : "/connections"}
+              className={buttonVariants()}
+            >
               {hasConnection ? t.dashboard.runFirstScan : t.connection.connectAzure}
-            </Button>
-          </Link>
-        }
-      />
+            </Link>
+          }
+        />
+      </div>
     );
   }
 
-  const severity = data.findings_by_severity;
-  const coveragePct =
-    data.coverage.ratio === null ? null : Math.round(data.coverage.ratio * 100);
+  const scanning = Array.isArray(scans.data)
+    ? scans.data.some((scan) => RUNNING.has(scan.status))
+    : false;
+  const gaps = Object.entries(data.last_scan.collection_errors ?? {});
 
   return (
-    <div className="space-y-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-stone-900">
-            {t.dashboard.title}
-          </h1>
-          <p className="mt-1 text-sm text-stone-500">
-            Last assessed {formatDateTime(data.last_scan.completed_at)}
-          </p>
-        </div>
-        <Link to="/scans">
-          <Button variant="secondary">{t.scans.runScan}</Button>
-        </Link>
-      </header>
+    <div className="flex flex-col gap-4">
+      <PostureHeader
+        scannedAt={data.last_scan.completed_at}
+        staleHours={data.evidence_freshness?.stale_hours ?? null}
+        scanning={scanning}
+      />
 
-      <div className="grid gap-5 lg:grid-cols-12">
-        {/* Score ---------------------------------------------------------- */}
-        <Card className="lg:col-span-4">
-          <div className="flex flex-col items-center py-2">
-            <ScoreRing score={data.security_score} />
+      {/* 1 — where we stand, and which way it is going */}
+      <ScorePanel
+        score={data.security_score}
+        delta={data.score_delta}
+        history={data.history ?? []}
+        scannedAt={data.last_scan.completed_at}
+      />
 
-            <p className="mt-4 text-sm font-medium text-stone-700">
-              {t.dashboard.score}
-            </p>
+      {/* 2 — what that number is made of */}
+      <SeverityStrip
+        counts={data.findings_by_severity}
+        unknown={data.coverage.unknown}
+        history={data.history ?? []}
+      />
 
-            <ScoreDelta delta={data.score_delta} />
-          </div>
+      {/* 2b — the shape of what is open: mix, standing, and risk bands */}
+      <PostureBreakdown
+        bySeverity={data.findings_by_severity}
+        byStatus={data.findings_by_status}
+        riskBands={data.risk_bands}
+      />
 
-          <div className="mt-5 border-t border-stone-100 pt-4">
-            <ScoreTrend history={data.history ?? []} />
-          </div>
+      {/* 3 — how much of the estate the opinion was formed from */}
+      <CoveragePanel
+        ratio={data.coverage.ratio}
+        unknown={data.coverage.unknown}
+        conclusive={data.coverage.conclusive}
+        categories={data.coverage.categories}
+        gaps={gaps}
+        freshness={data.evidence_freshness ?? null}
+      />
 
-          <dl className="mt-5 grid grid-cols-2 divide-x divide-stone-100 border-t border-stone-100 pt-4 text-center">
-            <Stat label={t.dashboard.assets} value={data.asset_count} />
-            <Stat label={t.dashboard.openFindings} value={data.open_finding_count} />
-          </dl>
-        </Card>
-
-        {/* Severity + secondary metrics ----------------------------------- */}
-        <div className="space-y-5 lg:col-span-8">
-          <Card
-            title="Open findings by severity"
-            subtitle="Counted against each finding's risk band, not the rule's raw severity"
-          >
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <SeverityTile label={t.dashboard.critical} value={severity.CRITICAL ?? 0} level="CRITICAL" />
-              <SeverityTile label={t.dashboard.high} value={severity.HIGH ?? 0} level="HIGH" />
-              <SeverityTile label={t.dashboard.medium} value={severity.MEDIUM ?? 0} level="MEDIUM" />
-              <SeverityTile label={t.dashboard.low} value={severity.LOW ?? 0} level="LOW" />
-            </div>
-          </Card>
-
-          <div className="grid gap-5 sm:grid-cols-2">
-            <Card>
-              <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
-                {t.dashboard.remediation}
-              </p>
-              <p className="mt-2 text-3xl font-semibold tabular-nums text-stone-900">
-                {data.verified_resolved_last_30_days}
-              </p>
-              <p className="mt-1 text-xs leading-relaxed text-stone-500">
-                {t.dashboard.resolvedRecently}
-              </p>
-            </Card>
-
-            <Card>
-              <p className="text-xs font-medium uppercase tracking-wide text-stone-500">
-                {t.dashboard.coverage}
-              </p>
-              <p className="mt-2 text-3xl font-semibold tabular-nums text-stone-900">
-                {coveragePct === null ? "—" : `${coveragePct}%`}
-              </p>
-              {coveragePct !== null && (
-                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-stone-100">
-                  <div
-                    className="h-full rounded-full bg-stone-700 transition-[width] duration-700"
-                    style={{ width: `${coveragePct}%` }}
-                  />
-                </div>
-              )}
-              <p className="mt-2 text-xs leading-relaxed text-stone-500">
-                {data.coverage.unknown > 0
-                  ? `${data.coverage.unknown} ${
-                      data.coverage.unknown === 1 ? "check" : "checks"
-                    } couldn't be assessed`
-                  : "Everything applicable was assessed"}
-              </p>
-            </Card>
-          </div>
-        </div>
+      {/* 4 — what to deal with, and what those faults form together */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PriorityRisks risks={data.top_risks} />
+        <AttackPathPanel
+          paths={paths.data}
+          loading={paths.isLoading}
+          history={data.history ?? []}
+        />
       </div>
 
-      {/* Top risks -------------------------------------------------------- */}
-      <Card
-        title={t.dashboard.topRisks}
-        subtitle="Ranked by risk to your business, not by how many alerts fired"
-        action={
-          <Link
-            to="/findings"
-            className="text-sm font-medium text-stone-500 transition hover:text-stone-900"
-          >
-            View all →
-          </Link>
+      {/* 5 — whether any of it is being fixed, and what moved meanwhile */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <RemediationProgress
+          rate={data.remediation_rate}
+          verifiedLast30Days={data.verified_resolved_last_30_days}
+          openFindings={data.open_finding_count}
+          activity={data.remediation_activity ?? []}
+        />
+        <RecentChanges events={changes.data} loading={changes.isLoading} />
+      </div>
+
+      {/* 6 — what the evidence adds up to for somebody who reports on it */}
+      <ComplianceSummary
+        frameworks={
+          Array.isArray(compliance.data) ? compliance.data : undefined
         }
-      >
-        {data.top_risks.length === 0 ? (
-          <p className="py-8 text-center text-sm text-stone-500">{t.dashboard.allClear}</p>
-        ) : (
-          <ol className="divide-y divide-stone-100">
-            {data.top_risks.map((risk, index) => (
-              <li key={risk.id}>
-                <Link
-                  to="/findings"
-                  className="-mx-2 flex items-center gap-4 rounded-lg px-2 py-3 transition hover:bg-stone-50"
-                >
-                  <span className="w-5 shrink-0 text-sm tabular-nums text-stone-400">
-                    {index + 1}
-                  </span>
-                  <Badge level={risk.risk_level} />
-                  <span className="flex-1 truncate text-sm text-stone-800">
-                    {risk.title}
-                  </span>
-                  <span className="shrink-0 text-sm font-semibold tabular-nums text-stone-700">
-                    {Number(risk.risk_score).toFixed(0)}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ol>
-        )}
-      </Card>
-
-      {/* Last scan -------------------------------------------------------- */}
-      <Card title={t.dashboard.lastScan}>
-        <div className="flex flex-wrap items-center gap-x-10 gap-y-4 text-sm">
-          <StatusPill status={data.last_scan.status} />
-          <Stat inline label="Finished" value={formatDateTime(data.last_scan.completed_at)} />
-          <Stat inline label={t.scans.resources} value={data.last_scan.resource_count} />
-          <Stat inline label={t.scans.rules} value={data.last_scan.rule_count} />
-          <Stat inline label={t.scans.findings} value={data.last_scan.finding_count} />
-        </div>
-
-        {Object.keys(data.last_scan.collection_errors).length > 0 && (
-          <div className="mt-4 rounded-lg border border-medium-border bg-medium-bg px-4 py-3">
-            <p className="text-sm font-medium text-medium">{t.scans.partial}</p>
-            <ul className="mt-2 space-y-1">
-              {Object.entries(data.last_scan.collection_errors).map(([category, reason]) => (
-                <li key={category} className="text-xs text-stone-700">
-                  <strong>{category}</strong>: {reason}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </Card>
+        loading={compliance.isLoading}
+      />
     </div>
   );
 }
 
 /**
  * A failed dashboard load used to render "Something went wrong", which told the
- * reader nothing and sent them to the browser console. The API already returns a
+ * reader nothing and sent them to the browser console. The API returns a
  * machine-readable code and a written message in every error envelope, so show
  * them — and for an expired session, offer the action that actually fixes it.
  */
@@ -222,73 +241,38 @@ function DashboardError({ error, onRetry }: { error: unknown; onRetry: () => voi
   const isAuth = apiError?.status === 401;
 
   return (
-    <div className="mx-auto max-w-lg rounded-xl border border-critical-border bg-white p-6 shadow-sm">
-      <h2 className="text-base font-semibold text-stone-900">
-        {isAuth ? "Your session has expired" : t.dashboard.couldNotLoad}
-      </h2>
-
-      <p className="mt-2 text-sm leading-relaxed text-stone-600">
-        {isAuth
-          ? "Sign in again to continue — your data is untouched."
-          : apiError?.message ?? "The API could not be reached."}
-      </p>
-
-      {apiError && !isAuth && (
-        <p className="mt-3 rounded-lg bg-stone-50 px-3 py-2 font-mono text-xs text-stone-500">
-          {apiError.code} · HTTP {apiError.status}
-        </p>
-      )}
-
-      <div className="mt-5 flex gap-2">
-        {isAuth ? (
-          <Button
-            onClick={() => {
-              auth.signOut();
-              void supabaseSignOut();
-            }}
-          >
-            {t.dashboard.signInAgain}
-          </Button>
-        ) : (
-          <Button onClick={onRetry}>{t.common.retry}</Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  inline = false,
-}: {
-  label: string;
-  value: string | number;
-  inline?: boolean;
-}) {
-  return (
-    <div className={inline ? "" : "px-2"}>
-      <dt className="text-xs font-medium text-stone-500">{label}</dt>
-      <dd className="mt-0.5 text-sm font-semibold tabular-nums text-stone-900">{value}</dd>
-    </div>
-  );
-}
-
-function SeverityTile({
-  label,
-  value,
-  level,
-}: {
-  label: string;
-  value: number;
-  level: string;
-}) {
-  return (
-    <div className="rounded-lg border border-stone-200 bg-white px-3 py-4 text-center transition hover:border-stone-300">
-      <p className="text-3xl font-semibold tabular-nums text-stone-900">{value}</p>
-      <div className="mt-2 flex justify-center">
-        <Badge level={level}>{label}</Badge>
-      </div>
+    <div className="mx-auto max-w-lg">
+      <ErrorState
+        title={isAuth ? "Your session has expired" : t.dashboard.couldNotLoad}
+        detail={
+          isAuth
+            ? "Sign in again to continue — your data is untouched."
+            : apiError?.message ?? "The API could not be reached."
+        }
+        impact={
+          isAuth
+            ? undefined
+            : "This is a problem loading the page, not a change in your posture — nothing has been reassessed."
+        }
+        onRetry={isAuth ? undefined : onRetry}
+        action={
+          isAuth ? (
+            <Button
+              size="sm"
+              onClick={() => {
+                auth.signOut();
+                void supabaseSignOut();
+              }}
+            >
+              {t.dashboard.signInAgain}
+            </Button>
+          ) : apiError ? (
+            <span className="font-mono text-xs text-muted-foreground">
+              {apiError.code} · HTTP {apiError.status}
+            </span>
+          ) : undefined
+        }
+      />
     </div>
   );
 }

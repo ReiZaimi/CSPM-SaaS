@@ -12,57 +12,10 @@ from fastapi import APIRouter, Query
 
 from app.core.deps import DbSession, Tenant
 from app.core.errors import NotFound, envelope
-from app.graph import Path
 from app.services import graph as graph_service
+from app.services.graph import serialize_path
 
 router = APIRouter(prefix="/attack-paths", tags=["attack-paths"])
-
-
-def _serialize(path: Path) -> dict:
-    step = path.cheapest_break()
-    return {
-        "entry": {
-            "id": path.entry.provider_resource_id,
-            "name": path.entry.name,
-            "resource_type": path.entry.resource_type.value,
-            "public_exposure": path.entry.public_exposure.value,
-        },
-        "target": {
-            "id": path.target.provider_resource_id,
-            "name": path.target.name,
-            "resource_type": path.target.resource_type.value,
-            "data_sensitivity": path.target.data_sensitivity.value,
-        },
-        "hops": path.hops,
-        # The route in plain language, hop by hop. A path that only named its
-        # endpoints would be an alarm; naming the route is what makes it a
-        # thing somebody can go and cut.
-        "steps": [
-            {
-                "source": s.source.name,
-                "source_id": s.source.provider_resource_id,
-                "relationship": s.relationship.value,
-                "target": s.target.name,
-                "target_id": s.target.provider_resource_id,
-                "description": s.describe(),
-            }
-            for s in path.steps
-        ],
-        # Where to cut it. Containment cannot be removed -- a storage account
-        # has to live somewhere -- so this is always a capability hop, and the
-        # earliest one closes the way in rather than containing what somebody
-        # reaches once inside.
-        "cheapest_break": (
-            {
-                "description": step.describe(),
-                "relationship": step.relationship.value,
-                "source_id": step.source.provider_resource_id,
-                "target_id": step.target.provider_resource_id,
-            }
-            if step
-            else None
-        ),
-    }
 
 
 @router.get("")
@@ -81,7 +34,7 @@ async def list_attack_paths(
     paths = graph.attack_paths()
 
     return envelope(
-        [_serialize(path) for path in paths[:limit]],
+        [serialize_path(path) for path in paths[:limit]],
         {
             "total": len(paths),
             # Both counts are the honest denominator for an empty answer. No

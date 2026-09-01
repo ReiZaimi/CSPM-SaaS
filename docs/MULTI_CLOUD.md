@@ -193,9 +193,29 @@ class of misleading number the coverage ledger exists to prevent.
 
 ## 8. Order, when the time comes
 
+0. ~~Prove the seam.~~ Done. "Everything above `CloudConnector` is
+   provider-neutral" was an intention, not a fact: three neutral modules
+   imported `connectors/azure` directly, and each gave the right answer only
+   because Azure is the only provider. The pipeline asked Azure's evidence enum
+   which keys a category holds; the permissions endpoint returned Azure's grants
+   whatever the provider; the change-event service spelled ARM operation names.
+   All three now go through the connector or the registry, the signed-state
+   helper moved to `app/core/signing.py` (nothing in it was ever Azure), and
+   `tests/unit/test_provider_seam.py` fails the build on the next one. This step
+   was not in the original list because nobody had checked.
 1. ~~Fix `matches()`.~~ Done, along with the aggregate-path hole beside it.
 2. Second provider's connector, plan and normalizer — behind the existing
    `CloudConnector` seam, changing nothing above it.
+
+   **Not startable from a desk.** Every part of it is a string that has to be
+   verified against a live account: IAM action names, SigV4 signing, the STS
+   assume-role round trip, the CloudFormation template, which `Describe*` calls
+   answer what. `rbac.py` records what happens when one of those is written on
+   the strength of looking plausible — ARM validates a role definition
+   atomically, so a single wrong action fails the whole deployment and the
+   customer sees "Deployment Failed". A connector written without an AWS
+   account to try it against would be a large body of code claiming to scan a
+   cloud nobody had scanned, and the seam would then *look* finished.
 3. The permission-manifest pattern generalized out of `rbac.py`, once there are
    two instances to generalize from.
 4. Scope vocabulary migration, driven by what the second connector actually

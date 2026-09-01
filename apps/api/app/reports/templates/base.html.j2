@@ -1,0 +1,92 @@
+{#
+  The shared skeleton. Both reports open on the same cover, and the cover is
+  where the caveats live rather than in a footnote: how old the evidence is,
+  how much of it reached a verdict, and what could not be read at all. A reader
+  who stops after page one has still been told what the numbers are worth.
+#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }} — {{ report.organization.name }}</title>
+<style>{{ css }}</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>{{ title }}</h1>
+  <p class="org">{{ report.organization.name }}</p>
+  <p class="muted small">
+    Generated {{ report.generated_at | datetime }}
+    {% if report.evidence.newest_reading_at %}
+      · evidence collected {{ report.evidence.oldest_reading_at | datetime }}
+      to {{ report.evidence.newest_reading_at | datetime }}
+    {% endif %}
+  </p>
+</div>
+
+{#
+  Said before any number, not after them. A posture is a reading of a moment,
+  and a report that leads with 84/100 and mentions three-week-old evidence in
+  an appendix has already been believed by then.
+#}
+{% if report.evidence.stale_hours and report.evidence.stale_hours > 48 %}
+<div class="note note-warn">
+  <p class="note-title">This report describes an environment that has not been read recently</p>
+  <p class="small">
+    The oldest reading behind these numbers is
+    {{ report.evidence.stale_hours | round(0) | int }} hours old. Anything changed
+    in your cloud since then is not represented here.
+  </p>
+</div>
+{% endif %}
+
+{% if report.evidence.coverage_ratio is not none and report.evidence.unknown > 0 %}
+<div class="note">
+  <p class="note-title">
+    {{ (report.evidence.coverage_ratio * 100) | round(0) | int }}% of checks reached a verdict
+  </p>
+  <p class="small">
+    {{ report.evidence.unknown }} check{{ '' if report.evidence.unknown == 1 else 's' }}
+    could not be evaluated — CloudGuard could not collect what they read.
+    An unevaluated check is never counted as a pass, so it is neither a problem
+    reported here nor a clean result.
+  </p>
+</div>
+{% endif %}
+
+{#
+  What this document does not contain. A reader handed a report with no
+  compliance section should be told it was left out rather than conclude that
+  CloudGuard assesses no frameworks — an omission somebody chose looks exactly
+  like an absence of evidence once the PDF is forwarded.
+#}
+{% if report.omitted_sections %}
+<div class="note">
+  <p class="note-title">Sections excluded from this report</p>
+  <p class="small">
+    {{ report.omitted_sections | join(', ') | capitalize }}.
+    They were not included when this document was generated; nothing here says
+    anything about them either way.
+  </p>
+</div>
+{% endif %}
+
+{% if report.evidence.collection_errors %}
+<div class="note note-warn">
+  <p class="note-title">Part of the environment could not be read</p>
+  <table>
+    <thead><tr><th>Scope</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for scope, reason in report.evidence.collection_errors.items() %}
+      <tr><td>{{ scope }}</td><td class="small">{{ reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% block body %}{% endblock %}
+
+</body>
+</html>

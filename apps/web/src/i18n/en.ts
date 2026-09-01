@@ -13,6 +13,9 @@ export const en = {
   },
   nav: {
     dashboard: "Dashboard",
+    changes: "Changes",
+    reports: "Reports",
+    settings: "Settings",
     assets: "Assets",
     findings: "Findings",
     risks: "Risks",
@@ -149,6 +152,31 @@ export const en = {
       "This connection cannot scan yet, so there is nothing to schedule. Finish the two grants above first.",
     scheduleFloorNote:
       "An interval rather than a time of day: CloudGuard promises to read this environment at least this often, not to start at a particular minute.",
+
+    // Change-triggered scanning. Two things have to survive the copy: that
+    // turning it on wires nothing up on its own, and *why* -- CloudGuard holds
+    // no write permission in the customer's tenant and will not ask for one.
+    changeTitle: "React to changes",
+    changeHelp:
+      "A schedule reads this environment on a clock. This reads it when something actually moves \u2014 a port opened, a role assigned, a storage account made public \u2014 so the finding arrives while whoever made the change is still at their desk.",
+    changeOn: "Listening for changes",
+    changeOff: "Not listening",
+    changeEnable: "Turn on change detection",
+    changeDisable: "Turn off",
+    changeSaving: "Saving\u2026",
+    changeNotWired:
+      "The webhook is open. Nothing reaches it until you run the command below in each subscription \u2014 CloudGuard cannot create that subscription for you, because it holds no write permission in your tenant and does not ask for one.",
+    changeCommandsLabel: "Run this once per subscription",
+    changeCopyCommand: "Copy command",
+    changeCopied: "Copied",
+    changeNoEndpoint: "CloudGuard has no public address to receive deliveries",
+    changeNoEndpointHelp:
+      "This deployment has no public API base URL configured, so there is no endpoint for Event Grid to deliver to. Change detection cannot be wired up until that is set.",
+    changeLastEvent: "Last change heard",
+    changeNeverHeard: "Nothing yet",
+    changePending: "A change is settling; a scan starts once the environment is quiet",
+    changeTiming:
+      "A burst of changes becomes one scan, not one per event: CloudGuard waits for {quiet} minutes of quiet, and scans a connection at most once every {interval} minutes for change.",
 
     noSubscriptionsTitle: "No subscriptions found yet",
     noSubscriptionsBody:
@@ -287,7 +315,9 @@ export const en = {
     // A scenario is not a louder finding. It is several of them seen as one
     // thing, and the label has to carry that or it reads as duplication.
     scenarioBadge: "Attack path",
+    escalationBadge: "Privilege escalation",
     scenarioIntro: "Several findings, seen as one route",
+    escalationIntro: "A route to an identity that can grant itself more",
     routeLabel: "The route",
     cutLabel: "Severing it",
     // The scoring, said in the terms the breakdown actually stores. A customer
@@ -297,6 +327,21 @@ export const en = {
     amplifier: "Added for the route itself",
     cappedNote: "Capped at 100.",
     memberCount: "findings on this route",
+    // The detail page. What the list can rank but cannot show: which findings
+    // a risk was actually built from.
+    backToRisks: "Risks",
+    builtFrom: "What this risk is built from",
+    builtFromScenario:
+      "The findings on this route. Fixing any one of them breaks the route \u2014 the cheapest is usually the identity or the role, never the containment.",
+    builtFromFinding:
+      "The observation this risk scores. A finding is what CloudGuard saw; the risk is what it means for this asset, with this data, at this level of exposure.",
+    noMembers: "No findings are linked to this risk.",
+    noMembersDetail:
+      "The findings it was built from have been deleted, most likely with the scan that raised them. The score is kept as history rather than recomputed from nothing.",
+    theArithmetic: "How this score was reached",
+    notFound: "That risk no longer exists",
+    notFoundDetail:
+      "It may have been deleted with the scan that raised it. The risks list shows everything CloudGuard currently ranks.",
   },
   attackPaths: {
     title: "Attack paths",
@@ -361,6 +406,24 @@ export const en = {
     deleteWithFindingsDetail:
       "Also deletes the unresolved findings this scan last detected. Verified fixes are never deleted \u2014 each one is the evidence a remediation worked.",
     cancelling: "Cancelling\u2026",
+    // Replay. Every scan stores the provider's own JSON before interpreting
+    // it, so a rule written after that scan ran can still be applied to it --
+    // and doing so costs nothing in the customer's cloud.
+    replay: "Re-evaluate",
+    replayQueueing: "Queueing\u2026",
+    replayHelp:
+      "Runs today's rules against what this scan already collected. No Azure call, no consent, no cost to your throttle budget \u2014 CloudGuard kept the provider's own JSON, so a check written since can still be applied to it.",
+    replayBadge: "Re-evaluated a stored capture",
+    replayOfLabel: "Re-evaluation of an earlier scan",
+    // The distinction that keeps a replay honest. Only a replay of the newest
+    // capture may touch findings; an older one reports and stops.
+    replayAdvisoryTitle: "What the rules would have found",
+    replayAdvisoryDetail:
+      "This capture is no longer CloudGuard's current picture of the environment \u2014 it has been read again since. The counts below say what today's rules would have made of it. No finding was created, resolved or reopened: a capture from before nobody looked at cannot verify a fix.",
+    replayCurrentTitle: "Applied to your current picture",
+    replayCurrentDetail:
+      "This was still the newest capture for its subscriptions, so the results count: findings were raised, resolved and reopened exactly as a fresh scan would have done, without reading your cloud again.",
+    wouldHaveFound: "Findings (would have)",
     stuckTitle: "Nothing has picked this scan up",
     stuckDetail:
       "A scan is collected by CloudGuard's worker within seconds of being queued. Minutes of silence means no worker is running \u2014 check that the Celery worker service is deployed and can reach Redis.",
@@ -384,7 +447,24 @@ export const en = {
       "An incomplete listing cannot support a pass, so the checks that needed it report unknown rather than clean.",
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
-  rules: { title: "Rule library", empty: "No rules loaded." },
+  rules: {
+    title: "Rule library",
+    empty: "No rules loaded.",
+    // A withdrawn rule is not a check CloudGuard runs, and listing it beside
+    // the ones it does run made the catalogue overstate what is being checked.
+    // The row exists because findings it raised still name it.
+    withdrawn: "Withdrawn",
+    withdrawnHelp:
+      "This check has been taken out of the rule registry, so it no longer runs and compliance coverage no longer counts it. Findings it raised in the past are kept \u2014 they still describe what was true when it ran.",
+    showWithdrawn: "Show withdrawn rules",
+    hideWithdrawn: "Hide withdrawn rules",
+    withdrawnCount: "withdrawn",
+    // The rest of what the catalogue holds and never showed.
+    why: "Why this matters",
+    howToFix: "How to fix it",
+    showDetail: "Why and how to fix",
+    hideDetail: "Hide",
+  },
   compliance: {
     title: "Compliance",
     intro:
@@ -415,6 +495,131 @@ export const en = {
       NOT_ASSESSED: "Rules map here, but no scan has produced a result yet.",
       NOT_COVERED: "No rule maps here. CloudGuard has nothing to say about it.",
     },
+  },
+  changes: {
+    title: "Changes",
+    intro:
+      "The rest of the product says what is true in your environment now. This says what moved. A scan that finds nothing different writes nothing here, so a quiet week reads as a quiet week rather than as a wall of rows saying everything is still where it was.",
+    empty: "Nothing moved in this window",
+    emptyDetail:
+      "No asset appeared, disappeared, or changed exposure, sensitivity or criticality in the period you are looking at. Widen the window to look further back.",
+    emptyFiltered: "No changes of this kind in this window",
+    emptyFilteredDetail:
+      "Something may still have moved \u2014 clear the filter, or widen the window, to see the rest of the feed.",
+    // Each kind said as a sentence about the asset, not as an enum name. "The
+    // exposure changed" is a fact about a column; "became reachable from more
+    // of the internet" is a fact the reader can act on.
+    kind: {
+      APPEARED: "Appeared",
+      DISAPPEARED: "Disappeared",
+      EXPOSURE_CHANGED: "Exposure changed",
+      SENSITIVITY_CHANGED: "Data sensitivity changed",
+      CRITICALITY_CHANGED: "Criticality changed",
+    },
+    appeared: "First seen in this environment",
+    disappeared: "A scan that covered its scope did not see it",
+    // The distinction that decides whether a DISAPPEARED row is history or a
+    // job. The asset row is never deleted, so both readings are possible.
+    stillMissing: "Still missing",
+    returned: "Seen again since",
+    worse: "Got worse",
+    better: "Got better",
+    windowLabel: "Look back",
+    kindLabel: "Kind of change",
+    windows: {
+      1: "Last 24 hours",
+      7: "Last 7 days",
+      30: "Last 30 days",
+      90: "Last 90 days",
+    },
+    allKinds: "All changes",
+    count: "change",
+    countPlural: "changes",
+  },
+  reports: {
+    title: "Reports",
+    intro:
+      "The screens answer questions as you ask them. A report is the same evidence fixed to a moment, so it can be filed, sent to a board, or handed to an auditor \u2014 which is why every one of them prints when its evidence was collected and what could not be read.",
+    executive: "Executive report",
+    executiveDetail:
+      "For a reader who does not touch Azure: the posture score and where it is going, the worst risks by what they would actually cost, and compliance coverage. Deliberately lists no findings \u2014 a summary that ends in a four-hundred-row table is a technical report with a cover page.",
+    technical: "Technical report",
+    technicalDetail:
+      "Everything the executive report says, from the same numbers, and then every open finding worst first \u2014 the asset it was found on, when it was first seen, and what to change.",
+    download: "Download PDF",
+    preparing: "Preparing\u2026",
+    preview: "Preview",
+    // Regenerated on request rather than kept. Said plainly, because a
+    // customer who expects a library of past reports should not have to
+    // discover its absence.
+    freshNote:
+      "Reports are generated when you ask for one, from the evidence that exists at that moment. CloudGuard keeps no copies \u2014 a stored PDF outlives the evidence behind it, and there would be no honest way to say which of five was current.",
+    // The one failure worth its own copy: the server is missing native
+    // libraries, which is an operator problem and not something a retry fixes.
+    noPdfTitle: "This server cannot produce PDFs",
+    failed: "Could not generate the report",
+  },
+  settings: {
+    title: "Settings",
+    intro:
+      "What CloudGuard knows about you and your environment that it could not find out by looking.",
+
+    // The organization profile. A correction, not a statement: saving a name
+    // must not clear a country nobody touched.
+    orgTitle: "Organization",
+    orgHelp: "How this organization is named in CloudGuard and on its reports.",
+    orgName: "Name",
+    orgIndustry: "Industry",
+    orgCountry: "Country",
+    orgCountryHelp: "Two-letter country code, e.g. AL.",
+    orgSlug: "Identifier",
+    orgSlugHelp:
+      "Fixed when the organization was created and unchanged by a rename \u2014 it appears in stored references, so changing it would rename the thing rather than relabel it.",
+    save: "Save changes",
+    saving: "Saving\u2026",
+    saved: "Saved",
+    orgFailed: "Could not save the organization",
+    // Only owners and admins may edit, and a reader who cannot should be told
+    // why rather than meeting disabled fields with no explanation.
+    orgReadOnly:
+      "Your role can read this but not change it. An owner or an admin can edit the organization.",
+
+    // The declarations. This is the part that changes what CloudGuard reports.
+    contextTitle: "What your subscriptions are for",
+    contextHelp:
+      "CloudGuard scores a finding by what it would cost you \u2014 how critical the asset is, how sensitive its data, how exposed it is. It infers those from names and tags where it can, and inference is the weakest evidence it has. Anything you declare here beats it.",
+    contextEmpty: "No subscriptions have been discovered yet",
+    contextEmptyDetail:
+      "Connect a cloud environment and CloudGuard will discover the subscriptions beneath it. There is nothing to describe until then.",
+    environment: "Environment",
+    criticality: "Criticality",
+    dataSensitivity: "Data sensitivity",
+    note: "Note",
+    noteHelp: "Why this is what it is. Recorded with the declaration.",
+    environmentPlaceholder: "production, staging, sandbox\u2026",
+    // UNKNOWN is deliberately absent from these menus, and the copy says so:
+    // it is CloudGuard's own word for "nothing said anything", so declaring it
+    // would assert an absence that saying nothing already asserts.
+    notDeclared: "Not declared",
+    notDeclaredHelp:
+      "Leaving a field unset is not the same as declaring it unknown \u2014 CloudGuard goes back to working it out for itself.",
+    declaredBy: "Declared",
+    declare: "Save declaration",
+    clear: "Clear declaration",
+    clearing: "Clearing\u2026",
+    contextFailed: "Could not save the declaration",
+    // The honest bit: a declaration is not retroactive.
+    appliesNext:
+      "Applied by the next evaluation of this subscription \u2014 the next scan, or a replay of its latest capture. Existing scores are left alone: a risk score is what a scan concluded, and rewriting stored numbers from a form would leave findings carrying figures no observation ever produced.",
+
+    dangerTitle: "Delete this organization",
+    dangerHelp:
+      "Removes the organization and everything under it: connections, discovered subscriptions, assets, scans, findings, risks and audit history. There is no soft delete and no undo.",
+    dangerConfirmLabel: "Type the organization name to confirm",
+    delete: "Delete organization",
+    deleting: "Deleting\u2026",
+    deleteFailed: "Could not delete the organization",
+    dangerOwnerOnly: "Only an owner can delete an organization.",
   },
   remediation: { title: "Remediation", empty: "No remediation tasks yet." },
   common: {

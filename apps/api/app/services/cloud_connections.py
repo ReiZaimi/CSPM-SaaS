@@ -12,6 +12,7 @@ Everything else is automatic: CloudGuard polls for the RBAC grant and
 discovers subscriptions once it detects access.
 """
 
+import json
 import time
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -20,7 +21,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.azure.auth import build_consent_url, sign_state
+from app.connectors.azure.auth import (
+    REQUIRED_GRAPH_PERMISSIONS,
+    app_registration_manifest,
+    build_consent_url,
+)
 from app.connectors.azure.client import ArmClient, AzureApiError, GraphClient
 from app.connectors.azure.rbac import (
     ARM_READ_ACTIONS,
@@ -44,9 +49,11 @@ from app.core.enums import (
 )
 from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
 from app.core.logging import get_logger
+from app.core.signing import sign_state
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import CloudConnectionCreate
+from app.services import change_events
 from app.services import findings as findings_service
 
 log = get_logger(__name__)
@@ -793,6 +800,14 @@ async def _auto_discover(
             connection_id=str(connection.id),
             tenant_id=connection.tenant_id,
         )
+    # Flush before returning, not only commit. ``commit_unless_externally_managed``
+    # does nothing inside a request -- ``rls_session`` owns that transaction --
+    # so a freshly discovered subscription went back to the caller with no
+    # primary key, and serializing it raised a 500 on the one endpoint whose
+    # job is to recover a connection that has none. The flush assigns the ids
+    # without ending the transaction, which matters: RLS settings here are
+    # transaction-scoped, and a commit would tear them down.
+    await session.flush()
     await commit_unless_externally_managed(session)
     return accounts
 
@@ -1027,4 +1042,195 @@ async def check_access_revoked(connection: CloudConnection) -> dict:
     return {
         "revoked": True,
         "detail": "Confirmed: CloudGuard can no longer read this environment.",
+    }
+
+
+def event_webhook_token(connection: CloudConnection) -> str:
+    """The signed token that opens this connection's webhook, and no other's.
+
+    Signed with the same secret as the template token and separated from it by
+    ``purpose`` alone -- which is why the webhook checks that field rather than
+    trusting the signature to mean what it hopes.
+    """
+    return sign_state(
+        {
+            "cloud_connection_id": str(connection.id),
+            "purpose": "event_grid",
+            "issued_at": time.time(),
+        }
+    )
+
+
+def event_webhook_url(connection: CloudConnection) -> str | None:
+    """Where the customer's Event Grid subscription should deliver."""
+    base = public_api_base()
+    if not base:
+        return None
+    token = event_webhook_token(connection)
+    return f"{base}/api/v1/events/azure/{connection.id}?token={token}"
+
+
+async def set_change_events(
+    session: AsyncSession,
+    tenant: TenantContext,
+    connection_id: UUID,
+    enabled: bool,
+) -> CloudConnection:
+    """Turn change-triggered scanning on or off for this connection.
+
+    Turning it *on* here does not wire anything up. It cannot: creating an
+    Event Grid subscription is a write in the customer's tenant, and CloudGuard
+    holds no write permission anywhere -- which is the strongest security claim
+    this product makes and not one to spend on a convenience. What this does is
+    open the webhook and hand back the command; the customer runs it.
+
+    Turning it *off* closes the webhook immediately, before the customer has
+    deleted anything in Azure. Their subscription will keep delivering to an
+    endpoint that now refuses it, which is the right way round: the alternative
+    is a switch that appears to stop something and does not.
+    """
+    connection = await get_connection(session, tenant, connection_id)
+
+    if enabled and not connection.is_verified:
+        raise ValidationFailed(
+            "This connection is not ready to scan yet, so a change in it could "
+            "not be read. Grant admin consent and assign the Reader role first."
+        )
+
+    connection.change_events_enabled = enabled
+    if not enabled:
+        # A burst nobody will now act on. Left set, it would start a scan the
+        # moment somebody switched this back on, reporting a change from
+        # whenever it happened to have been.
+        connection.change_pending_since = None
+
+    await findings_service.record_audit(
+        session,
+        tenant,
+        action="connection.change_events",
+        resource_type="cloud_connection",
+        resource_id=connection.id,
+        metadata={"enabled": enabled},
+    )
+    await session.commit()
+    return connection
+
+
+async def change_event_setup(
+    session: AsyncSession, connection: CloudConnection
+) -> dict:
+    """What the customer needs to wire their subscriptions up, per subscription.
+
+    One command per subscription rather than one for the tenant, because that is
+    how Event Grid is scoped: a system topic exists on a subscription, and a
+    connection covering twelve of them needs twelve subscriptions to it.
+    """
+    url = event_webhook_url(connection)
+    return {
+        "enabled": connection.change_events_enabled,
+        "webhook_url": url,
+        "pending_since": (
+            connection.change_pending_since.isoformat()
+            if connection.change_pending_since
+            else None
+        ),
+        "last_event_at": (
+            connection.last_change_event_at.isoformat()
+            if connection.last_change_event_at
+            else None
+        ),
+        "quiet_period_minutes": int(
+            change_events.QUIET_PERIOD.total_seconds() // 60
+        ),
+        "minimum_interval_minutes": int(
+            change_events.MIN_INTERVAL.total_seconds() // 60
+        ),
+        # Nothing to run until the webhook is open. Handing over a command whose
+        # endpoint answers 400 would have the customer debugging CloudGuard's
+        # configuration rather than their own.
+        "commands": [
+            {
+                "subscription_id": account.subscription_id,
+                "command": change_events.event_subscription_command(
+                    account.subscription_id, url
+                ),
+            }
+            for account in await _scannable_accounts(session, connection)
+            if account.subscription_id
+        ]
+        if url and connection.change_events_enabled
+        else [],
+    }
+
+
+async def _scannable_accounts(
+    session: AsyncSession, connection: CloudConnection
+) -> list[CloudAccount]:
+    """The subscriptions under this connection a scan could actually read.
+
+    ``is_scannable`` is a property over four columns rather than a column, so it
+    is applied here rather than in the query -- the same way every other scope
+    resolution in this codebase does it.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(CloudAccount)
+                .where(
+                    CloudAccount.organization_id == connection.organization_id,
+                    CloudAccount.connection_id == connection.id,
+                )
+                .order_by(CloudAccount.subscription_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [account for account in rows if account.is_scannable]
+
+
+def azure_app_registration() -> dict:
+    """What CloudGuard's own Entra app registration must declare.
+
+    Moved out of the route rather than left there, and the reason is the seam:
+    everything above the connector line is meant to be provider-neutral, and a
+    router importing Azure's Graph permissions made that false. This module is
+    already the one place the onboarding flow is Azure-shaped, and
+    ``MULTI_CLOUD.md`` §8 step 5 schedules splitting it for when a second
+    provider exists to split it *for*.
+
+    The content is unchanged. It is the other half of the deployment -- the ARM
+    template grants subscription access in the customer's tenant, while
+    directory access comes from application permissions on CloudGuard's own
+    registration, which no template a customer runs can touch.
+    """
+    manifest = app_registration_manifest()
+    return {
+        "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
+        "required_resource_access": manifest,
+        # Shell-safe by construction. An angle-bracket placeholder reads as a
+        # placeholder and parses as input redirection, so a copied command fails
+        # with "No such file or directory" and names the placeholder as the
+        # missing file -- an error that says nothing about what went wrong.
+        "lookup_command": (
+            'APP_ID=$(az ad app list --display-name CloudGuard '
+            '--query "[0].appId" -o tsv)'
+        ),
+        "apply_command": (
+            'az ad app update --id "$APP_ID" '
+            f"--required-resource-accesses '{json.dumps(manifest)}'"
+        ),
+        "verify_command": (
+            'az ad app show --id "$APP_ID" '
+            '--query "requiredResourceAccess[].resourceAccess[].id" -o tsv'
+        ),
+        "grant_command": (
+            "# Then, in each customer tenant, a Global Administrator "
+            "re-runs the consent link from this page."
+        ),
+        "note": (
+            "Consent grants what the registration declares at the moment it is "
+            "granted. Adding a permission afterwards does not extend an existing "
+            "grant -- every already-connected tenant must consent again."
+        ),
     }

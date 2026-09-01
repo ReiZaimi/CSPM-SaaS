@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
+from app.remediation import Comparison, ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
 # Source ranges that mean "anyone on the internet". Azure spells this several
@@ -101,6 +102,57 @@ class _PublicPortRule(SecurityRule):
     )
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.NETWORK_SECURITY_GROUP]
 
+
+    @classmethod
+    def _spec(cls) -> RemediationSpec:
+        """The declaration, built from the port this subclass checks.
+
+        Written once here rather than twice below, because the two subclasses
+        differ in exactly the two values that appear in it -- and a copy per
+        port is how the RDP declaration ends up describing SSH after somebody
+        edits one of them.
+        """
+        return RemediationSpec(
+            expected=(
+                ExpectedState(
+                    field="security_rules",
+                    comparison=Comparison.NONE_MATCHING,
+                    equals=None,
+                    describes=(
+                        f"No inbound rule allows {cls.service} (TCP/{cls.port}) "
+                        "from the internet"
+                    ),
+                    # The witness: a rule of exactly this shape is what the
+                    # check looks for, which is both the clearest way to say
+                    # what "fixed" means and the thing a test needs to build an
+                    # asset this rule must fail.
+                    example={
+                        "name": "<rule>",
+                        "direction": "Inbound",
+                        "access": "Allow",
+                        "protocol": "Tcp",
+                        "source": "0.0.0.0/0",
+                        "destination_ports": [str(cls.port)],
+                    },
+                ),
+            ),
+            cli=(
+                "az network nsg rule update --resource-group <rg> --nsg-name <nsg> "
+                "--name <rule> --source-address-prefixes <your.ip.range/24>",
+                "az network nsg rule delete --resource-group <rg> --nsg-name <nsg> "
+                "--name <rule>",
+            ),
+            notes=(
+                "No policy is generated. Azure Policy can reach into an NSG's "
+                "rules through a count expression, and neither the alias nor "
+                "the expression has been verified against a real deployment "
+                "from here -- an unverified string fails the whole definition "
+                "atomically, which the customer sees as 'Deployment Failed'. "
+                "Prefer Azure Bastion or just-in-time access over a standing "
+                "public rule."
+            ),
+        )
+
     def evaluate(
         self, resource: CloudResource | None, context: RuleContext
     ) -> RuleResult | list[RuleResult]:
@@ -168,6 +220,7 @@ class AzurePublicRdpRule(_PublicPortRule):
         "Better still, remove the public rule entirely and reach the machine through "
         "Azure Bastion or a just-in-time access policy."
     )
+    remediation_spec: ClassVar[RemediationSpec | None] = None  # set below
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["6.1"],
         "ISO_27001": ["A.8.20", "A.8.23"],
@@ -201,6 +254,7 @@ class AzurePublicSshRule(_PublicPortRule):
         "    --name <rule> --source-address-prefixes <your.ip.range/24>\n\n"
         "Prefer Azure Bastion or just-in-time access over a standing public SSH rule."
     )
+    remediation_spec: ClassVar[RemediationSpec | None] = None  # set below
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["6.2"],
         "ISO_27001": ["A.8.20"],
@@ -245,6 +299,37 @@ class AzureOpenNsgRule(SecurityRule):
         "  az network nsg rule list --resource-group <rg> --nsg-name <nsg> -o table\n"
         "  az network nsg rule update --resource-group <rg> --nsg-name <nsg> \\\n"
         "    --name <rule> --source-address-prefixes <approved.range/24>"
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="security_rules",
+                comparison=Comparison.NONE_MATCHING,
+                equals=None,
+                describes=(
+                    "No inbound rule allows a management or database port, or "
+                    "every port at once, from the internet"
+                ),
+                example={
+                    "name": "<rule>",
+                    "direction": "Inbound",
+                    "access": "Allow",
+                    "protocol": "*",
+                    "source": "0.0.0.0/0",
+                    "destination_ports": ["*"],
+                },
+            ),
+        ),
+        cli=(
+            "az network nsg rule list --resource-group <rg> --nsg-name <nsg> -o table",
+            "az network nsg rule update --resource-group <rg> --nsg-name <nsg> "
+            "--name <rule> --source-address-prefixes <approved.range/24>",
+        ),
+        notes=(
+            "80 and 443 are deliberately not part of this expectation: a public "
+            "web server is a design rather than a defect. No policy is "
+            "generated, for the reason recorded on AZ-NET-001."
+        ),
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["6.5"],
@@ -328,3 +413,10 @@ class AzureOpenNsgRule(SecurityRule):
                 f"to the internet"
             ),
         )
+
+
+# Bound after the classes exist, because the declaration is derived from each
+# subclass's own port and service. Assigning it inside the class body would need
+# the values before the class is finished.
+AzurePublicRdpRule.remediation_spec = AzurePublicRdpRule._spec()
+AzurePublicSshRule.remediation_spec = AzurePublicSshRule._spec()

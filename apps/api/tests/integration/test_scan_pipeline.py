@@ -29,18 +29,23 @@ from app.core.enums import (
     Level,
     Provider,
     RiskStatus,
+    RuleState,
     ScanStatus,
     ScanStepKind,
     ScanStepStatus,
     ScanTrigger,
     TaskOutcome,
+    VerificationStatus,
 )
 from app.models.cloud_account import CloudAccount
+from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
 from app.models.scan import Scan, ScanStep
+from app.models.verification import RemediationVerification
 from app.services import orchestrator
 from app.services import scanner as scanner_module
 from app.services import scans as scans_service
+from app.services import verification as verification_service
 from app.services.scanner import ScanPipeline
 from app.services.scans import DIRECTORY_LABEL
 from tests.integration.conftest import create_org_as
@@ -2565,3 +2570,583 @@ class TestRiskHistory:
 
         entries = await self._history(org_id)
         assert len(entries) == 1, "the reading outlives the run that took it"
+
+
+class TestDeclaredContext:
+    """What the customer says about a subscription, reaching the assets in it.
+
+    Inference from tags is a guess and the customer knows the answer, so a
+    declaration is applied over the top of what the capture supported. It is a
+    floor rather than an override, which is the property that makes it safe to
+    expose as a control: the worst a mistaken declaration can do is over-rank
+    an asset, never make one look safer than it is.
+    """
+
+    async def _declare(self, org_id, account_id, **fields) -> None:
+        async with service_session() as session:
+            session.add(
+                ContextDeclarationRecord(
+                    organization_id=org_id, cloud_account_id=account_id, **fields
+                )
+            )
+            await session.commit()
+
+    async def _context_of(self, account_id) -> dict:
+        rows = await fetch(
+            "SELECT provider_resource_id, criticality, criticality_source "
+            "FROM cloud_resources WHERE cloud_account_id = :a",
+            {"a": account_id},
+        )
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    async def test_a_declaration_reaches_every_asset_in_the_subscription(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await self._declare(org_id, account_id, criticality=Level.CRITICAL)
+
+        await run_scan(org_id, account_id)
+
+        contexts = await self._context_of(account_id)
+        assert contexts, "the scan discovered no assets to apply context to"
+        assert all(value == "CRITICAL" for value, _ in contexts.values())
+        # And it says who said so. A CRITICAL from a tag and a CRITICAL from
+        # the customer multiply a finding identically, and only one of them is
+        # worth arguing with.
+        assert all(source == "inherited" for _, source in contexts.values())
+
+    async def test_a_declaration_never_lowers_what_the_capture_showed(
+        self, replay, connected_account
+    ) -> None:
+        """The safety property, checked against real assets rather than in the
+        abstract: declaring the whole subscription LOW must move nothing down.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        before = await self._context_of(account_id)
+
+        await self._declare(org_id, account_id, criticality=Level.LOW)
+        await run_scan(org_id, account_id)
+        after = await self._context_of(account_id)
+
+        for provider_id, (value, _source) in before.items():
+            if value != "UNKNOWN":
+                assert after[provider_id][0] == value, provider_id
+
+    async def test_a_declared_environment_replaces_the_guess(
+        self, replay, connected_account
+    ) -> None:
+        """The case the feature exists for: a subscription whose resource names
+        say sandbox and whose contents are production."""
+        org_id, account_id = connected_account
+        await self._declare(org_id, account_id, environment="production")
+
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT DISTINCT environment, environment_source FROM cloud_resources "
+            "WHERE cloud_account_id = :a",
+            {"a": account_id},
+        )
+        assert rows == [("production", "inherited")]
+
+    async def test_withdrawing_a_declaration_returns_to_inference(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await self._declare(org_id, account_id, criticality=Level.CRITICAL)
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text("DELETE FROM context_declarations WHERE cloud_account_id = :a"),
+                {"a": account_id},
+            )
+            await session.commit()
+        await run_scan(org_id, account_id)
+
+        contexts = await self._context_of(account_id)
+        assert not any(source == "inherited" for _, source in contexts.values())
+
+
+class TestVerification:
+    """A claimed fix, and whether CloudGuard can honestly confirm it.
+
+    The auto-resolve tests above prove a scan closes a finding it saw fixed.
+    These prove the other half, which is what a customer actually experiences:
+    that a claim is recorded, that an early failure is not reported as a failed
+    fix, and that failing to look is never dressed up as looking and
+    disagreeing.
+    """
+
+    async def _claim(self, org_id, finding_id, *, attempts: int = 0):
+        async with service_session() as session:
+            finding = await session.get(Finding, finding_id)
+            verification = await verification_service.open_verification(
+                session, organization_id=org_id, finding=finding
+            )
+            # Fast-forwarding the backoff rather than sleeping through it: the
+            # schedule itself is covered by unit tests, and what these need is
+            # the state a verification reaches after its attempts run out.
+            verification.attempts = attempts
+            await session.commit()
+            return verification.id
+
+    async def _verification(self, verification_id):
+        async with service_session() as session:
+            return await session.get(RemediationVerification, verification_id)
+
+    async def _open_finding(self, org_id, rule_id: str = "AZ-NET-001"):
+        rows = await fetch(
+            "SELECT id FROM findings WHERE organization_id = :o AND rule_id = :r",
+            {"o": org_id, "r": rule_id},
+        )
+        return rows[0][0]
+
+    def _fix_rdp(self, replay) -> None:
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+
+    async def test_a_pass_verifies_the_claim(self, replay, connected_account) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id, await self._open_finding(org_id)
+        )
+
+        self._fix_rdp(replay)
+        scan_2 = await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.VERIFIED
+        assert verification.verified_by_scan_id == scan_2
+        assert verification.next_attempt_at is None
+
+    async def test_an_unfixed_check_spends_an_attempt_rather_than_failing_it(
+        self, replay, connected_account
+    ) -> None:
+        """The environment is read and still says the same thing. That is not
+        yet an answer -- a change reaches a cloud's read paths in its own
+        time -- so the claim stays open with another look scheduled."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id, await self._open_finding(org_id)
+        )
+
+        await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.PENDING
+        assert verification.attempts == 1
+        assert verification.last_state == RuleState.FAIL
+        assert verification.next_attempt_at is not None
+
+    async def test_the_answer_arrives_once_the_attempts_run_out(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id,
+            await self._open_finding(org_id),
+            attempts=len(verification_service.ATTEMPT_SCHEDULE) - 1,
+        )
+
+        await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.STILL_FAILING
+        assert verification.settled_at is not None
+        assert verification.next_attempt_at is None
+
+    async def test_a_scan_that_could_not_look_says_so_rather_than_failing_the_fix(
+        self, replay, connected_account
+    ) -> None:
+        """The distinction the whole outcome vocabulary exists for.
+
+        A collection gap degrades the rule to UNKNOWN, and a customer who has
+        done the work must not be told their fix failed because CloudGuard could
+        not read the environment.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        verification_id = await self._claim(
+            org_id,
+            await self._open_finding(org_id),
+            attempts=len(verification_service.ATTEMPT_SCHEDULE) - 1,
+        )
+
+        blind = load_raw()
+        blind["errors"] = {"network": "the network API could not be read"}
+        blind["gaps"] = {
+            "network_security_groups": "the network API could not be read",
+            "network_interfaces": "the network API could not be read",
+        }
+        replay["payload"] = blind
+        await run_scan(org_id, account_id)
+
+        verification = await self._verification(verification_id)
+        assert verification.status == VerificationStatus.INSUFFICIENT_EVIDENCE
+        assert "not a failed fix" in verification.detail
+
+    async def test_a_claim_in_another_subscription_is_left_alone(
+        self, replay, connected_tenant
+    ) -> None:
+        """A scan settles what it read and nothing else.
+
+        Spending an attempt on a subscription this scan never opened would burn
+        the customer's answer on a reading that never looked at their fix.
+        """
+        org_id, connection_id = connected_tenant
+        await run_connection_scan(org_id, connection_id)
+
+        accounts = await fetch(
+            "SELECT id FROM cloud_accounts WHERE organization_id = :o ORDER BY "
+            "display_name",
+            {"o": org_id},
+        )
+        first, second = accounts[0][0], accounts[1][0]
+        rows = await fetch(
+            "SELECT f.id FROM findings f JOIN cloud_resources r ON r.id = f.resource_id "
+            "WHERE f.organization_id = :o AND r.cloud_account_id = :a LIMIT 1",
+            {"o": org_id, "a": second},
+        )
+        verification_id = await self._claim(org_id, rows[0][0])
+
+        await run_scan(org_id, first)
+
+        verification = await self._verification(verification_id)
+        assert verification.attempts == 0, "a scan of another subscription observed it"
+        assert verification.status == VerificationStatus.PENDING
+
+
+class TestEscalationChains:
+    """A route to an identity that can hand out roles.
+
+    A different question from the attack-path template rather than a variation
+    on it: not what an attacker reaches, but what they could be *given* once
+    they arrive. Fixing the reachable host does not shrink that -- only the
+    assignment does.
+    """
+
+    def _can_assign_roles(self, replay) -> None:
+        """Turn the fixture's Contributor into a role that can grant roles.
+
+        By removing the exclusions rather than renaming the role, because the
+        exclusions are the whole distinction: Contributor and Owner both carry
+        ``actions: ["*"]``, and only one of them may write role assignments.
+        """
+        escalating = load_raw()
+        for definition in escalating["data"]["role_definitions"]:
+            for permission in definition["properties"]["permissions"]:
+                permission["notActions"] = []
+        replay["payload"] = escalating
+
+    async def _risks(self, org_id) -> list:
+        return await fetch(
+            "SELECT id, title, risk_score, status, path FROM risks "
+            "WHERE organization_id = :o AND kind = 'ESCALATION'",
+            {"o": org_id},
+        )
+
+    async def test_a_contributor_is_not_an_escalation_path(
+        self, replay, connected_account
+    ) -> None:
+        """The case that decides whether this template is usable.
+
+        Contributor holds ``*`` and is excluded from writing role assignments.
+        It is on nearly every subscription in existence, and reporting it here
+        would bury the real ones under a false alarm per tenant.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        assert await self._risks(org_id) == []
+
+    async def test_a_role_that_can_assign_roles_raises_one(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+
+        risks = await self._risks(org_id)
+        assert len(risks) == 1
+        title, path = risks[0][1], risks[0][4]
+        assert "leads to control of" in title
+        # The route ends at the scope, because the scope is the size of the
+        # answer -- naming what the identity could take over is what makes the
+        # alarm actionable.
+        assert path[-1]["relationship"] == "can_grant_roles"
+
+    async def test_the_chain_outranks_the_findings_it_groups(
+        self, replay, connected_account
+    ) -> None:
+        """Same floor as any scenario: it cannot rank below its own evidence."""
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+
+        risks = await self._risks(org_id)
+        worst_member = await fetch(
+            "SELECT max(f.risk_score) FROM findings f "
+            "JOIN risk_findings rf ON rf.finding_id = f.id "
+            "WHERE rf.risk_id = :r",
+            {"r": risks[0][0]},
+        )
+        assert float(risks[0][2]) >= float(worst_member[0][0])
+
+    async def test_revoking_the_assignment_resolves_it_rather_than_deleting_it(
+        self, replay, connected_account
+    ) -> None:
+        """A closed route is the record of a fix, exactly as a resolved finding
+        is. Deleting it would erase the evidence that the remediation worked."""
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+        assert await self._risks(org_id)
+
+        revoked = load_raw()
+        revoked["data"]["role_assignments"] = []
+        replay["payload"] = revoked
+        await run_scan(org_id, account_id)
+
+        risks = await self._risks(org_id)
+        assert len(risks) == 1, "the scenario was deleted rather than resolved"
+        assert risks[0][3] == RiskStatus.RESOLVED
+
+    async def test_it_does_not_displace_the_route_to_the_data(
+        self, replay, connected_account
+    ) -> None:
+        """Both templates describe the same environment and neither replaces the
+        other: one says what can be reached, the other what could be granted."""
+        org_id, account_id = connected_account
+        self._can_assign_roles(replay)
+        await run_scan(org_id, account_id)
+
+        kinds = await fetch(
+            "SELECT DISTINCT kind FROM risks WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert {"ATTACK_PATH", "ESCALATION", "FINDING"} <= {k[0] for k in kinds}
+
+
+class TestTemporalModel:
+    """What changed, rather than only what is true now.
+
+    Two timestamps and a snapshot blob could describe the present. They could
+    not answer "what changed while I was away" or "how long did this take to
+    fix", and the second is the north-star metric.
+    """
+
+    async def _changes(self, org_id) -> list:
+        return await fetch(
+            "SELECT c.change, c.previous_value, c.current_value, r.name "
+            "FROM asset_change_events c "
+            "JOIN cloud_resources r ON r.id = c.resource_id "
+            "WHERE c.organization_id = :o ORDER BY c.change",
+            {"o": org_id},
+        )
+
+    async def _events(self, org_id, rule_id: str = "AZ-NET-001") -> list:
+        return await fetch(
+            "SELECT e.event, e.previous_status, e.current_status FROM finding_events e "
+            "JOIN findings f ON f.id = e.finding_id "
+            "WHERE e.organization_id = :o AND f.rule_id = :r "
+            "ORDER BY e.observed_at",
+            {"o": org_id, "r": rule_id},
+        )
+
+    def _fix_rdp(self, replay) -> None:
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
+
+    async def test_a_first_scan_records_every_asset_as_appearing(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        changes = await self._changes(org_id)
+        assert changes, "the first scan discovered assets and recorded none of them"
+        assert {c[0] for c in changes} == {"APPEARED"}
+
+    async def test_an_unchanged_environment_records_nothing_new(
+        self, replay, connected_account
+    ) -> None:
+        """A feed of movement, not a log of having looked. A second scan over
+        the same environment must leave the reader's week empty."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        first = len(await self._changes(org_id))
+
+        await run_scan(org_id, account_id)
+
+        assert len(await self._changes(org_id)) == first
+
+    async def test_an_asset_that_stops_being_returned_is_recorded_once(
+        self, replay, connected_account
+    ) -> None:
+        """A transition, not a standing condition. Derived from ``last_seen_at``
+        instead, an absence would re-report itself on every scan for ever."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        without_storage = load_raw()
+        removed = without_storage["data"]["storage_accounts"].pop(0)
+        replay["payload"] = without_storage
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        gone = [c for c in await self._changes(org_id) if c[0] == "DISAPPEARED"]
+        assert len(gone) == 1
+        assert gone[0][3] == removed["name"]
+
+    async def test_an_asset_that_comes_back_is_the_same_asset(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        without_storage = load_raw()
+        name = without_storage["data"]["storage_accounts"].pop(0)["name"]
+        replay["payload"] = without_storage
+        await run_scan(org_id, account_id)
+
+        replay["payload"] = load_raw()
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT absent_since FROM cloud_resources WHERE organization_id = :o "
+            "AND name = :n",
+            {"o": org_id, "n": name},
+        )
+        assert len(rows) == 1, "it came back as a second asset"
+        assert rows[0][0] is None, "it is still marked absent"
+
+    async def test_a_finding_carries_its_whole_life(
+        self, replay, connected_account
+    ) -> None:
+        """Raised, fixed, and back again. Two timestamps could not tell this
+        apart from one raised and fixed once."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        self._fix_rdp(replay)
+        await run_scan(org_id, account_id)
+        replay["payload"] = load_raw()
+        await run_scan(org_id, account_id)
+
+        assert [e[0] for e in await self._events(org_id)] == [
+            "DETECTED",
+            "RESOLVED",
+            "REOPENED",
+        ]
+
+    async def test_a_resolution_says_the_status_it_left(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        self._fix_rdp(replay)
+        await run_scan(org_id, account_id)
+
+        events = await self._events(org_id)
+        resolved = next(e for e in events if e[0] == "RESOLVED")
+        assert resolved[1] == "OPEN"
+        assert resolved[2] == "RESOLVED"
+
+    async def test_a_superseded_replay_writes_no_history(
+        self, replay, connected_account
+    ) -> None:
+        """A replay of an old capture makes no observation, so it must not
+        appear to have watched the environment change."""
+        org_id, account_id = connected_account
+        first = await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+        before = len(await self._changes(org_id)) + len(await self._events(org_id))
+
+        await run_replay(org_id, account_id, first)
+
+        after = len(await self._changes(org_id)) + len(await self._events(org_id))
+        assert after == before
+
+
+class TestEvidenceFreshness:
+    """How current the picture is, which is not what coverage says.
+
+    Coverage is the fraction of checks that reached a verdict. Freshness is how
+    recently the provider was asked. A posture can be fully covered and three
+    weeks out of date, and until this existed nothing said so.
+    """
+
+    async def test_a_scan_reports_what_it_read_and_when(
+        self, replay, connected_account
+    ) -> None:
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            summary = await build_dashboard(session, org_id)
+
+        freshness = summary["evidence_freshness"]
+        assert freshness["readings"] > 0
+        assert freshness["oldest_at"] is not None
+        # Just read, so the picture is current to within the length of a scan.
+        assert freshness["stale_hours"] < 1
+        assert freshness["unusable"] == 0
+
+    async def test_a_failed_reading_is_counted_as_unusable(
+        self, replay, connected_account
+    ) -> None:
+        """Recent and usable are two different halves of "can I trust this".
+
+        A customer reading a freshness figure is asking whether to believe the
+        picture, and a listing that failed an hour ago is fresh and worthless.
+        """
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        blind = load_raw()
+        blind["errors"] = {"storage": "the storage API could not be read"}
+        blind["gaps"] = {"storage_accounts": "the storage API could not be read"}
+        replay["payload"] = blind
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            summary = await build_dashboard(session, org_id)
+
+        assert summary["evidence_freshness"]["unusable"] >= 1
+
+    async def test_the_oldest_reading_is_the_headline(
+        self, replay, connected_account
+    ) -> None:
+        """An average would let a hundred fresh listings hide the one scope
+        nobody has managed to read since Tuesday."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE evidence SET collected_at = now() - interval '9 days' "
+                    "WHERE organization_id = :o AND evidence_key = 'storage_accounts'"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            summary = await build_dashboard(session, org_id)
+
+        assert summary["evidence_freshness"]["stale_hours"] > 200

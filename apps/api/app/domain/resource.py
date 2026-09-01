@@ -12,7 +12,7 @@ behind it. Two consequences that matter:
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.enums import Level, Provider, ResourceType
+from app.core.enums import ContextSource, Level, Provider, ResourceType
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,20 @@ class CloudResource:
     criticality: Level = Level.UNKNOWN
     data_sensitivity: Level = Level.UNKNOWN
     public_exposure: Level = Level.UNKNOWN
+    # Where each context value came from -- a tag, a guess at the name, the kind
+    # of thing this is, or a person at the customer saying so. Carried beside
+    # the value rather than derived later because by the time a score exists the
+    # inputs are indistinguishable: a CRITICAL somebody typed into a tag and a
+    # CRITICAL guessed from a resource name multiply a finding identically, and
+    # only one of them is worth arguing with.
+    #
+    # ``public_exposure`` has no source, and that is not an omission: it is read
+    # off the configuration in the capture -- a public IP is attached or it is
+    # not -- so there is nothing to attribute and nothing for a customer to
+    # declare.
+    criticality_source: ContextSource = ContextSource.NONE
+    data_sensitivity_source: ContextSource = ContextSource.NONE
+    environment_source: ContextSource = ContextSource.NONE
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def get(self, path: str, default: Any = None) -> Any:

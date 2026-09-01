@@ -3,6 +3,7 @@ from typing import ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
+from app.remediation import ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
 
@@ -50,6 +51,40 @@ class AzurePublicDatabaseRule(SecurityRule):
         "--resource-group <rg>\n\n"
         "Note that the 'Allow Azure services' rule (0.0.0.0 to 0.0.0.0) permits connections "
         "from every Azure tenant, not only yours."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="public_network_access",
+                equals="Disabled",
+                describes="Public network access is disabled",
+                # Declared for SQL only. The rule covers PostgreSQL flexible
+                # servers as well, and their alias sits under a different
+                # provider namespace -- so a single policy generated from this
+                # would silently not apply to half the servers the rule judges.
+                # The second alias goes in when it has been verified against the
+                # published list, not before: an alias that looks plausible and
+                # is not real fails the customer's deployment outright, exactly
+                # as an invented RBAC action does (``rbac.py``).
+                arm_alias="Microsoft.Sql/servers/publicNetworkAccess",
+                terraform_attribute="public_network_access_enabled",
+                # The provider inverts it: ARM disables, Terraform un-enables.
+                terraform_value=False,
+            ),
+        ),
+        cli=(
+            "az sql server update --name <server> --resource-group <rg> "
+            "--enable-public-network false",
+            "az sql server firewall-rule delete --name <rule> --server <server> "
+            "--resource-group <rg>",
+        ),
+        policy_resource_type="Microsoft.Sql/servers",
+        notes=(
+            "The firewall half of this rule is not expressible as a property "
+            "condition -- it is about the contents of a child collection -- so "
+            "the generated policy closes public network access and does not "
+            "claim to close an over-broad firewall rule."
+        ),
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["4.1.1", "4.1.2"],

@@ -12,6 +12,7 @@ from app.models.rule import Rule
 from app.risk.scorer import default_scorer
 from app.schemas.finding import RemediationCreate, RemediationOut, RemediationUpdate
 from app.services import findings as findings_service
+from app.services import verification as verification_service
 
 router = APIRouter(prefix="/remediation", tags=["remediation"])
 
@@ -115,6 +116,30 @@ async def update_task(
         task.status = payload.status
         if payload.status == RemediationStatus.DONE:
             task.completed_at = datetime.now(UTC)
+            # The claim, written down. Until this existed, marking work done
+            # left the expectation in the customer's head: nothing recorded what
+            # CloudGuard should now see, nothing looked again on its own, and
+            # every way of not being verified came out as the same silence.
+            finding = await findings_service.get_finding(
+                session, tenant, task.finding_id
+            )
+            await verification_service.open_verification(
+                session,
+                organization_id=tenant.organization_id,
+                finding=finding,
+                task=task,
+                claimed_by_user_id=tenant.user.id,
+            )
+        elif payload.status == RemediationStatus.CANCELLED:
+            # Work called off is not a fix that failed to verify, and leaving
+            # the question open would have the scheduler starting scans to
+            # settle something nobody is waiting on.
+            await verification_service.abandon(
+                session,
+                tenant.organization_id,
+                task.finding_id,
+                reason="The remediation task was cancelled.",
+            )
     if payload.assigned_to is not None:
         task.assigned_to = payload.assigned_to
     if payload.due_date is not None:
@@ -134,9 +159,11 @@ async def update_task(
 
     payload_out = RemediationOut.model_validate(task).model_dump(mode="json")
     if task.status == RemediationStatus.DONE:
-        # Marking work done does not resolve the finding. Only a scan does.
+        # Marking work done does not resolve the finding. Only an observation
+        # does -- but the customer no longer has to remember to ask for one.
         payload_out["note"] = (
-            "Marked done. Run a rescan to have CloudGuard verify the fix and close "
-            "the finding."
+            "Marked done. CloudGuard will check the environment shortly and "
+            "again after that if the change has not appeared yet, then close "
+            "the finding once the check passes."
         )
     return envelope(payload_out)

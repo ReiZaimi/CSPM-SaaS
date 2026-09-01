@@ -12,8 +12,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.azure.connector import AzureConnector
+from app.connectors.registry import get_connector_class
 from app.core.deps import TenantContext
+from app.core.enums import Provider
 from app.core.errors import CloudAccountNotFound
 from app.core.logging import get_logger
 from app.models.cloud_account import CloudAccount
@@ -73,5 +74,12 @@ async def first_scannable_account(
     return next((account for account in rows if account.is_scannable), None)
 
 
-def required_permissions() -> dict:
-    return AzureConnector.required_permissions()
+def required_permissions(provider: Provider = Provider.AZURE) -> dict:
+    """What the named provider asks a customer to grant.
+
+    Dispatched through the registry rather than answered by importing one
+    connector, which is what it did: every provider would have been shown
+    Azure's permissions, and the first customer to see that would have been
+    told CloudGuard wanted admin consent for an AWS account.
+    """
+    return get_connector_class(provider).required_permissions()

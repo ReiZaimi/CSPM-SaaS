@@ -37,30 +37,37 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.connectors.azure.evidence import keys_in
 from app.connectors.base import NormalizedState, RawSnapshot
 from app.connectors.evidence import EvidenceCategory
 from app.connectors.planning import CollectionPlan
 from app.connectors.registry import get_connector
+from app.context import ContextDeclaration, resolve_resource
 from app.core.db import scan_session, service_session
 from app.core.enums import (
+    AssetChange,
+    FindingEvent,
     FindingStatus,
     Level,
+    Provider,
     RelationshipType,
     RiskKind,
     RiskStatus,
+    RuleState,
     ScanStatus,
     ScanStepKind,
     ScanStepStatus,
     Severity,
     TaskOutcome,
+    VerificationStatus,
 )
-from app.core.logging import get_logger
+from app.core.logging import get_logger, log_context
 from app.domain.resource import CloudResource
 from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
+from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
+from app.models.history import AssetChangeEvent, FindingEventRecord
 from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding, RiskHistory
 from app.models.scan import (
@@ -72,10 +79,12 @@ from app.models.scan import (
     ScanRuleResult,
     ScanStep,
 )
+from app.models.verification import RemediationVerification
 from app.risk.scorer import RiskInputs, ScoredRisk, default_scorer
 from app.rules.base import RuleContext, SecurityRule
-from app.rules.engine import EvaluationReport, RuleEngine
+from app.rules.engine import EvaluatedResult, EvaluationReport, RuleEngine
 from app.services import orchestrator
+from app.services import verification as verification_service
 from app.services.cloud_connections import degraded_categories
 from app.services.evidence_planner import plan_collection, required_evidence
 
@@ -260,23 +269,32 @@ class ScanPipeline:
                 log.error("scan.step_missing", step_id=str(step_id))
                 return ScanStepStatus.FAILED
             kind = step.kind
+            scope = step.cloud_account_id
 
-        try:
-            if kind == ScanStepKind.PLAN:
-                await self.plan()
-            elif kind == ScanStepKind.COLLECT:
-                await self.collect(step_id)
-            else:
-                await self.analyze()
-        except ScanStepError as exc:
-            return await self._settle(step_id, str(exc), retryable=exc.retryable)
-        except Exception as exc:
-            log.exception(
-                "scan.step_failed", scan_id=str(self.scan_id), step_id=str(step_id)
-            )
-            return await self._settle(step_id, str(exc), retryable=True)
+        # Bound here rather than in the Celery task, so a step driven by the
+        # tests or by a future caller carries the same context a queued one
+        # does. The scope is the id that matters when a tenant-wide scan has
+        # fifty collections in flight and one of them is slow.
+        with log_context(
+            scan_id=str(self.scan_id),
+            step_id=str(step_id),
+            step_kind=kind.value,
+            cloud_account_id=str(scope) if scope else None,
+        ):
+            try:
+                if kind == ScanStepKind.PLAN:
+                    await self.plan()
+                elif kind == ScanStepKind.COLLECT:
+                    await self.collect(step_id)
+                else:
+                    await self.analyze()
+            except ScanStepError as exc:
+                return await self._settle(step_id, str(exc), retryable=exc.retryable)
+            except Exception as exc:
+                log.exception("scan.step_failed")
+                return await self._settle(step_id, str(exc), retryable=True)
 
-        return await self._settle(step_id, None, retryable=False)
+            return await self._settle(step_id, None, retryable=False)
 
     def _log_step(self, step: ScanStep, outcome: ScanStepStatus) -> None:
         """One line per stage, carrying what it cost.
@@ -965,6 +983,13 @@ class ScanPipeline:
             if check_freshness
             else {}
         )
+        # What the customer has said about these subscriptions since the capture
+        # was taken. Read here rather than at collection time on purpose: a
+        # declaration is not part of the environment, so it must not be frozen
+        # into the capture -- marking a subscription production today should
+        # change how its findings rank today, including on a replay of an older
+        # reading.
+        declarations = await self._declarations_for(session, org_id, list(accounts))
 
         for row in stored:
             # The directory capture, read on its own terms. It is a reading of
@@ -1006,6 +1031,15 @@ class ScanPipeline:
                 subscription_id=account.subscription_id,
             )
             account_state = connector.normalize(snapshot)
+            # Normalization is a pure function of the capture, so this is where
+            # the customer's own view of the subscription is applied: as a
+            # floor over what was inferred, never as an override of it.
+            declared = declarations.get(account.id)
+            if declared is not None:
+                account_state.resources = [
+                    resolve_resource(resource, declared)
+                    for resource in account_state.resources
+                ]
             state.account_state.append((account, account_state))
             state.merged.resources.extend(account_state.resources)
             state.merged.relationships.extend(account_state.relationships)
@@ -1019,6 +1053,44 @@ class ScanPipeline:
             state.merged.collection_errors.update(account_state.collection_errors)
 
         return state
+
+    async def _declarations_for(
+        self, session: AsyncSession, org_id: UUID, account_ids: list[UUID]
+    ) -> dict[UUID, ContextDeclaration]:
+        """Customer-declared context for the subscriptions this scan covers.
+
+        One statement for the whole scan. A tenant-wide scan covers as many
+        subscriptions as the customer has, and a lookup per subscription is the
+        shape that turned every other batch read in this pipeline into a
+        thousand statements.
+        """
+        if not account_ids:
+            return {}
+        rows = (
+            (
+                await session.execute(
+                    select(ContextDeclarationRecord).where(
+                        ContextDeclarationRecord.organization_id == org_id,
+                        ContextDeclarationRecord.cloud_account_id.in_(account_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            row.cloud_account_id: ContextDeclaration(
+                environment=row.environment,
+                criticality=row.criticality,
+                data_sensitivity=row.data_sensitivity,
+                # Declared about the subscription, so every asset inside it
+                # inherits the claim rather than being the subject of it. The
+                # recorded source has to say which, or "you told us this" would
+                # be shown against an asset nobody has ever looked at.
+                inherited=True,
+            )
+            for row in rows
+        }
 
     async def _directory_gap(
         self, session: AsyncSession, scan: Scan, state: ReconstructedScan
@@ -1061,9 +1133,35 @@ class ScanPipeline:
                 f"identity check could reach a verdict. ({step.error or 'unknown error'})"
             )
 
-        for key in keys_in(EvidenceCategory.IDENTITY):
+        # Asked of the connector rather than of Azure's key enum directly. The
+        # pipeline is the provider-neutral half of this system, and a second
+        # connector whose categories it could not ask would degrade nothing.
+        provider = await self._provider_of(session, scan)
+        for key in get_connector(provider).evidence_keys_in(EvidenceCategory.IDENTITY):
             state.merged.collection_errors[key.value] = reason
         return {EvidenceCategory.IDENTITY.value: reason}
+
+    async def _provider_of(self, session: AsyncSession, scan: Scan) -> Provider:
+        """Which cloud this scan is reading.
+
+        Off the connection or the subscription, because a scan is scoped to one
+        or the other and both name their provider. Not stored on the scan: it
+        would be a third place the same fact lives, and the one most likely to
+        disagree after a row is edited.
+        """
+        if scan.connection_id is not None:
+            connection = await session.get(CloudConnection, scan.connection_id)
+            if connection is not None:
+                return connection.provider
+        if scan.cloud_account_id is not None:
+            account = await session.get(CloudAccount, scan.cloud_account_id)
+            if account is not None:
+                return account.provider
+        # A scan scoped to neither cannot have collected anything, so nothing
+        # downstream of this will be asked for a key. Azure is the fallback
+        # rather than an error because raising here would turn "this scan had
+        # no scope" into an exception in the code that explains gaps.
+        return Provider.AZURE
 
     # --------------------------------------------------------------- evaluate
     async def _evaluate(
@@ -1100,7 +1198,12 @@ class ScanPipeline:
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
         if mutate_findings:
             id_map = await self._persist_resources(
-                session, org_id, account_state, observed_at, directory=directory
+                session,
+                org_id,
+                account_state,
+                observed_at,
+                directory=directory,
+                scan_id=scan.id,
             )
         else:
             # A superseded capture describes an environment that has since
@@ -1482,7 +1585,7 @@ class ScanPipeline:
             # sentence on the banner and a bare "Forbidden" against the check
             # that actually lost its verdict -- which is the one they clicked
             # into to find out why.
-            for key in keys_in(category):
+            for key in get_connector(account.provider).evidence_keys_in(category):
                 if key.value in snapshot.gaps:
                     snapshot.gaps[key.value] = (
                         f"{explanation} (underlying error: {snapshot.gaps[key.value]})"
@@ -1579,6 +1682,7 @@ class ScanPipeline:
         observed_at: datetime,
         *,
         directory: tuple[CloudConnection, NormalizedState] | None = None,
+        scan_id: UUID | None = None,
     ) -> dict[str, UUID]:
         """Upsert this scan's assets, returning provider id -> row id.
 
@@ -1629,6 +1733,10 @@ class ScanPipeline:
         # already in hand; the read-back loop existed only because this
         # reference was dropped.
         touched: dict[str, ResourceRecord] = {}
+        # (row, what changed, before, after). Collected rather than written
+        # inline because the rows are not flushed yet: a change event needs the
+        # asset's primary key, and a new asset has none until the flush below.
+        changes: list[tuple[ResourceRecord, AssetChange, str | None, str | None]] = []
 
         def upsert(
             resource: CloudResource,
@@ -1647,6 +1755,37 @@ class ScanPipeline:
                     first_seen_at=now,
                 )
                 session.add(row)
+                changes.append((row, AssetChange.APPEARED, None, None))
+            else:
+                # Everything the risk engine multiplies a finding by, and
+                # nothing else. Diffing whole payloads would produce a feed
+                # nobody can read, and the drift that matters already arrives
+                # as a finding.
+                for change, before, after in (
+                    (
+                        AssetChange.EXPOSURE_CHANGED,
+                        row.public_exposure,
+                        resource.public_exposure,
+                    ),
+                    (
+                        AssetChange.SENSITIVITY_CHANGED,
+                        row.data_sensitivity,
+                        resource.data_sensitivity,
+                    ),
+                    (
+                        AssetChange.CRITICALITY_CHANGED,
+                        row.criticality,
+                        resource.criticality,
+                    ),
+                ):
+                    if before != after:
+                        changes.append((row, change, before.value, after.value))
+                if row.absent_since is not None:
+                    # It came back. One asset that vanished for a week, not two
+                    # assets -- which is why the row was kept rather than
+                    # deleted when it went.
+                    changes.append((row, AssetChange.APPEARED, None, None))
+            row.absent_since = None
 
             row.resource_type = resource.resource_type
             row.name = resource.name
@@ -1655,6 +1794,12 @@ class ScanPipeline:
             row.criticality = resource.criticality
             row.data_sensitivity = resource.data_sensitivity
             row.public_exposure = resource.public_exposure
+            # Written beside the values they explain, never separately. A row
+            # holding CRITICAL with a source of 'none' would be a claim with no
+            # author, which is worse than no source at all.
+            row.criticality_source = resource.criticality_source
+            row.data_sensitivity_source = resource.data_sensitivity_source
+            row.environment_source = resource.environment_source
             row.resource_metadata = resource.metadata
             # Never moved backwards. A replay carries the capture's own
             # time, which is older than a detection already recorded
@@ -1684,8 +1829,30 @@ class ScanPipeline:
             for resource in directory_state.resources:
                 upsert(resource, account_id=None, connection_id=connection.id)
 
+        # Assets this scan covered and did not find. Recorded as a transition
+        # rather than left to be inferred: an absence derived from
+        # ``last_seen_at`` would need a scan cadence nobody records, and would
+        # re-report itself on every scan afterwards.
+        for row in existing.values():
+            if row.provider_resource_id in touched or row.absent_since is not None:
+                continue
+            row.absent_since = now
+            changes.append((row, AssetChange.DISAPPEARED, None, None))
+
         # One flush assigns every pending primary key.
         await session.flush()
+        for row, change, before, after in changes:
+            session.add(
+                AssetChangeEvent(
+                    organization_id=org_id,
+                    resource_id=row.id,
+                    scan_id=scan_id,
+                    change=change,
+                    previous_value=before,
+                    current_value=after,
+                    observed_at=now,
+                )
+            )
         id_map = {provider_id: row.id for provider_id, row in touched.items()}
 
         edges = [edge for _account, state in account_state for edge in state.relationships]
@@ -1868,6 +2035,10 @@ class ScanPipeline:
             tuple[str, UUID | None],
             tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str],
         ] = {}
+        # (finding, what happened, the status it left, the sentence). Held
+        # until the flush, because a finding raised by this scan has no primary
+        # key for an event to point at until then.
+        events: list[tuple[Finding, FindingEvent, FindingStatus | None, str]] = []
 
         for failure in report.failures:
             rule = failure.rule
@@ -1891,10 +2062,19 @@ class ScanPipeline:
                 # Registered immediately so a second failure on the same key
                 # updates this row rather than creating a rival for it.
                 existing_findings[key] = finding
+                events.append((finding, FindingEvent.DETECTED, None, title))
 
             elif finding.status in {FindingStatus.RESOLVED, FindingStatus.FALSE_POSITIVE}:
                 # It came back. Reopen rather than leaving a stale RESOLVED --
                 # a regression is not a historical record.
+                events.append(
+                    (
+                        finding,
+                        FindingEvent.REOPENED,
+                        finding.status,
+                        "The check failed again after being resolved.",
+                    )
+                )
                 finding.status = FindingStatus.OPEN
                 finding.resolved_at = None
                 finding.resolved_by_scan_id = None
@@ -1930,6 +2110,20 @@ class ScanPipeline:
 
         # One flush for every new finding, rather than one per finding.
         await session.flush()
+
+        for finding, event, previous, detail in events:
+            session.add(
+                FindingEventRecord(
+                    organization_id=org_id,
+                    finding_id=finding.id,
+                    scan_id=scan.id,
+                    event=event,
+                    previous_status=previous,
+                    current_status=finding.status,
+                    detail=detail,
+                    observed_at=now,
+                )
+            )
 
         linked_ids = [
             risk_by_finding[f.id] for f, *_ in pending.values() if f.id in risk_by_finding
@@ -2160,22 +2354,6 @@ class ScanPipeline:
         of one environment.
         """
         graph = AssetGraph.build(merged.resources, merged.relationships)
-        paths = graph.attack_paths()
-
-        existing = {
-            risk.scenario_key: risk
-            for risk in (
-                await session.execute(
-                    select(Risk).where(
-                        Risk.organization_id == org_id,
-                        Risk.kind == RiskKind.ATTACK_PATH,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-            if risk.scenario_key
-        }
 
         open_findings = {
             (finding.resource_id): finding
@@ -2194,9 +2372,67 @@ class ScanPipeline:
             if finding.resource_id is not None
         }
 
+        await self._correlate_template(
+            session,
+            org_id,
+            graph,
+            id_map,
+            open_findings,
+            kind=RiskKind.ATTACK_PATH,
+            paths=graph.attack_paths(),
+        )
+        # The second template. A route to an identity that can hand out roles is
+        # a different question from a route to data -- not what an attacker
+        # reaches, but what they could be given once they arrive -- so it is
+        # correlated separately and ranks on its own.
+        await self._correlate_template(
+            session,
+            org_id,
+            graph,
+            id_map,
+            open_findings,
+            kind=RiskKind.ESCALATION,
+            paths=graph.escalation_chains(),
+        )
+        await session.commit()
+
+    async def _correlate_template(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        graph: AssetGraph,
+        id_map: dict[str, UUID],
+        open_findings: dict[UUID, Finding],
+        *,
+        kind: RiskKind,
+        paths: list[Path],
+    ) -> None:
+        """One correlation template: routes of a kind, in and out of existence.
+
+        Shared by both templates rather than written twice, because everything
+        except the sentence and the score is the same discipline -- a route with
+        no failing check on it creates nothing, a route that closes is resolved
+        rather than deleted, and a route seen again keeps the risk it already
+        had.
+        """
+        existing = {
+            risk.scenario_key: risk
+            for risk in (
+                await session.execute(
+                    select(Risk).where(
+                        Risk.organization_id == org_id,
+                        Risk.kind == kind,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if risk.scenario_key
+        }
+
         seen: set[str] = set()
         for path in paths:
-            key = f"{path.entry.provider_resource_id}->{path.target.provider_resource_id}"
+            key = self._scenario_key(kind, path)
             members = self._members_on(path, open_findings, id_map)
             if not members:
                 # Nothing on this route is misconfigured. Real reach, and not a
@@ -2205,28 +2441,51 @@ class ScanPipeline:
                 continue
 
             seen.add(key)
+            # What is at stake at the far end. For a route to data that is the
+            # data; for an escalation it is the most sensitive thing under the
+            # scope being escalated over, because that is what the escalation
+            # would be an escalation *to*. Read from the graph rather than
+            # assumed, and UNKNOWN where the scope holds nothing CloudGuard can
+            # put a level on.
+            target_sensitivity = (
+                path.target.data_sensitivity
+                if kind is RiskKind.ATTACK_PATH
+                else self._sensitivity_under(graph, path.target)
+            )
             scored = default_scorer.scenario_score(
                 [float(m.risk_score or 0) for m in members],
                 hops=path.hops,
                 entry_exposure=path.entry.public_exposure,
-                target_sensitivity=path.target.data_sensitivity,
+                target_sensitivity=target_sensitivity,
             )
             risk = existing.get(key)
             if risk is None:
                 risk = Risk(
                     organization_id=org_id,
-                    kind=RiskKind.ATTACK_PATH,
+                    kind=kind,
                     scenario_key=key,
                 )
                 session.add(risk)
 
             step = path.cheapest_break()
-            risk.title = f"{path.entry.name} can reach {path.target.name}"
-            risk.description = (
-                f"{path.entry.name} is reachable from the internet and, in "
-                f"{path.hops} steps, reaches {path.target.name}. "
-                + (f"Severing it: {step.describe()}." if step else "")
-            )
+            if kind is RiskKind.ATTACK_PATH:
+                risk.title = f"{path.entry.name} can reach {path.target.name}"
+                risk.description = (
+                    f"{path.entry.name} is reachable from the internet and, in "
+                    f"{path.hops} steps, reaches {path.target.name}. "
+                    + (f"Severing it: {step.describe()}." if step else "")
+                )
+            else:
+                risk.title = (
+                    f"{path.entry.name} leads to control of {path.target.name}"
+                )
+                risk.description = (
+                    f"{path.entry.name} is reachable from the internet and, in "
+                    f"{path.hops} steps, reaches an identity that can assign "
+                    f"roles over {path.target.name} -- so whatever it holds "
+                    "today is not the limit of what it could hold. "
+                    + (f"Severing it: {step.describe()}." if step else "")
+                )
             risk.path = [
                 {
                     "source": s.source.name,
@@ -2242,7 +2501,7 @@ class ScanPipeline:
             risk.risk_level = scored.level
             risk.severity = Severity.HIGH.value
             risk.asset_criticality = path.target.criticality
-            risk.data_sensitivity = path.target.data_sensitivity
+            risk.data_sensitivity = target_sensitivity
             risk.internet_exposure = path.entry.public_exposure
             risk.exploitability = 0
             risk.business_impact = scored.business_impact
@@ -2262,7 +2521,35 @@ class ScanPipeline:
                 risk.status = RiskStatus.RESOLVED
                 risk.resolved_at = now
 
-        await session.commit()
+    @staticmethod
+    def _scenario_key(kind: RiskKind, path: Path) -> str:
+        """What makes a route the same route between scans.
+
+        Namespaced per template, except for attack paths, which keep the bare
+        form they were written with. The unique index covers (organization,
+        key) across every kind, so a second template needs its own namespace --
+        and re-keying the first would orphan every scenario risk a customer
+        already has, resolving them all and raising identical new ones with no
+        history.
+        """
+        ends = f"{path.entry.provider_resource_id}->{path.target.provider_resource_id}"
+        return ends if kind is RiskKind.ATTACK_PATH else f"{kind.value.lower()}:{ends}"
+
+    @staticmethod
+    def _sensitivity_under(graph: AssetGraph, scope: CloudResource) -> Level:
+        """The most sensitive thing a scope holds.
+
+        What an escalation over that scope would reach. Taken over known levels
+        only: an UNKNOWN is CloudGuard failing to work out a sensitivity, and
+        letting it win here would score a scope full of unclassified assets
+        above one holding a database everyone agrees is critical.
+        """
+        levels = [
+            asset.data_sensitivity
+            for asset in graph.contained_by(scope.provider_resource_id)
+            if asset.data_sensitivity.is_known
+        ]
+        return max(levels, key=lambda level: level.rank, default=Level.UNKNOWN)
 
     def _members_on(
         self,
@@ -2347,10 +2634,25 @@ class ScanPipeline:
             (rule_id, id_map.get(provider_id) if provider_id else None)
             for rule_id, provider_id in report.passes
         }
-        if not passed:
-            return
-
         now = datetime.now(UTC)
+        # Settled first, and regardless of whether anything passed. A scan that
+        # proves nothing is still an observation: it is how a claimed fix that
+        # did not work eventually gets told so, and how one CloudGuard cannot
+        # see gets called insufficient evidence rather than left in silence.
+        await self._settle_verifications(
+            session,
+            org_id,
+            scan,
+            report,
+            id_map,
+            now=now,
+            account_ids=account_ids,
+            connection_id=connection_id,
+        )
+
+        if not passed:
+            await session.commit()
+            return
         open_findings = (
             (
                 await session.execute(
@@ -2375,6 +2677,11 @@ class ScanPipeline:
             if (finding.rule_id, finding.resource_id) in passed
         ]
         if not resolved:
+            # Nothing to close, but the verifications settled above are still
+            # this scan's work. Returning without committing would throw away
+            # the attempt it just spent, and the customer would be told nothing
+            # for a scan that did look.
+            await session.commit()
             return
 
         # Both lookups batched. They ran inside the loop -- one statement for the
@@ -2404,6 +2711,21 @@ class ScanPipeline:
         } if links else {}
 
         for finding in resolved:
+            session.add(
+                FindingEventRecord(
+                    organization_id=org_id,
+                    finding_id=finding.id,
+                    scan_id=scan.id,
+                    event=FindingEvent.RESOLVED,
+                    previous_status=finding.status,
+                    current_status=FindingStatus.RESOLVED,
+                    detail=(
+                        "A scan observed the check passing on the same asset, "
+                        "so CloudGuard closed it."
+                    ),
+                    observed_at=now,
+                )
+            )
             finding.status = FindingStatus.RESOLVED
             finding.resolved_at = now
             finding.resolved_by_scan_id = scan.id
@@ -2421,6 +2743,111 @@ class ScanPipeline:
                 risk.resolved_at = now
 
         await session.commit()
+
+    async def _settle_verifications(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        scan: Scan,
+        report: EvaluationReport,
+        id_map: dict[str, UUID],
+        *,
+        now: datetime,
+        account_ids: list[UUID],
+        connection_id: UUID | None,
+    ) -> None:
+        """Apply this scan's verdicts to the fixes customers say they have made.
+
+        Every scan does this, not only one started to verify something. A
+        nightly scan that happens to pass the rule a customer fixed this morning
+        has answered their question, and making them wait for a scan with the
+        right label on it would be ceremony.
+
+        Scoped to what this scan read. A verification about a subscription this
+        scan never opened has not been observed by it, and spending one of its
+        attempts would burn the customer's answer on a scan that never looked.
+
+        A pending verification this scan reached no verdict on **still counts as
+        an attempt**, recorded as UNKNOWN. That is the honest reading -- the
+        scan covered the scope and produced nothing about that asset, usually
+        because the asset is no longer in the environment being returned -- and
+        without it a verification whose asset vanished would stay pending for
+        ever, with the scheduler starting scans to settle a question that can no
+        longer be answered.
+        """
+        pending = (
+            (
+                await session.execute(
+                    select(RemediationVerification).where(
+                        RemediationVerification.organization_id == org_id,
+                        RemediationVerification.status == VerificationStatus.PENDING,
+                        self._verification_scope(account_ids, connection_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not pending:
+            return
+
+        observed: dict[tuple[str, UUID | None], RuleState] = {}
+        # Least specific first, so an explicit verdict always wins: a rule can
+        # produce a gap for one asset and a pass for another in the same run.
+        for gap in report.gaps:
+            observed[self._verdict_key(gap, id_map)] = RuleState.UNKNOWN
+        for failure in report.failures:
+            observed[self._verdict_key(failure, id_map)] = RuleState.FAIL
+        for rule_id, provider_id in report.passes:
+            observed[(rule_id, id_map.get(provider_id) if provider_id else None)] = (
+                RuleState.PASS
+            )
+
+        for verification in pending:
+            state = observed.get(
+                (verification.rule_id, verification.resource_id), RuleState.UNKNOWN
+            )
+            outcome = verification_service.observe(
+                verification, state, scan_id=scan.id, now=now
+            )
+            log.info(
+                "verification.observed",
+                verification_id=str(verification.id),
+                rule_id=verification.rule_id,
+                state=state.value,
+                attempts=verification.attempts,
+                outcome=outcome.value,
+            )
+
+    @staticmethod
+    def _verdict_key(
+        result: EvaluatedResult, id_map: dict[str, UUID]
+    ) -> tuple[str, UUID | None]:
+        provider_id = (
+            result.resource.provider_resource_id if result.resource is not None else None
+        )
+        return result.rule.rule_id, id_map.get(provider_id) if provider_id else None
+
+    def _verification_scope(
+        self, account_ids: list[UUID], connection_id: UUID | None
+    ) -> ColumnElement[bool]:
+        """The verifications this scan is entitled to have an opinion about."""
+        clauses: list[ColumnElement[bool]] = []
+        if account_ids:
+            clauses.append(RemediationVerification.cloud_account_id.in_(account_ids))
+        if connection_id is not None:
+            # Directory findings belong to no subscription. They are settled by
+            # any scan that read the tenant through the same connection, which
+            # is every scan under it.
+            clauses.append(
+                and_(
+                    RemediationVerification.cloud_account_id.is_(None),
+                    RemediationVerification.connection_id == connection_id,
+                )
+            )
+        if not clauses:
+            return RemediationVerification.id.is_(None)
+        return or_(*clauses) if len(clauses) > 1 else clauses[0]
 
     def _title(self, rule_name: str, resource: CloudResource | None) -> str:
         """Plain language, naming the asset.

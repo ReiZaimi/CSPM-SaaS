@@ -3,7 +3,9 @@
 from app.models.base import Base
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
+from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
+from app.models.history import AssetChangeEvent, FindingEventRecord
 from app.models.organization import Organization, OrganizationMember
 from app.models.remediation import AuditLog, RemediationTask, RiskException
 from app.models.resource import ResourceRecord, ResourceRelationship
@@ -18,19 +20,24 @@ from app.models.scan import (
     ScanRuleResult,
     ScanStep,
 )
+from app.models.verification import RemediationVerification
 
 __all__ = [
+    "AssetChangeEvent",
     "AuditLog",
     "Base",
     "CloudAccount",
     "CloudConnection",
     "CloudSnapshot",
+    "ContextDeclarationRecord",
     "Evidence",
     "EvidenceBlob",
     "Finding",
+    "FindingEventRecord",
     "Organization",
     "OrganizationMember",
     "RemediationTask",
+    "RemediationVerification",
     "ResourceRecord",
     "ResourceRelationship",
     "Risk",

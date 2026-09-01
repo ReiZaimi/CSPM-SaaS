@@ -8,15 +8,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
-from app.core.enums import ExceptionStatus, FindingStatus, RiskKind, RiskStatus
+from app.core.enums import (
+    ExceptionStatus,
+    FindingEvent,
+    FindingStatus,
+    RiskKind,
+    RiskStatus,
+)
 from app.core.errors import FindingNotFound, ValidationFailed
 from app.models.finding import Finding
+from app.models.history import FindingEventRecord
 from app.models.remediation import AuditLog, RiskException
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
 from app.models.rule import Rule
+from app.models.verification import RemediationVerification
+from app.remediation import Comparison, ExpectedState, azure_policy, terraform_hints
 from app.risk.scorer import default_scorer
 from app.rules.registry import get_rule
+from app.services import verification as verification_service
 
 
 async def get_finding(
@@ -61,6 +71,16 @@ async def load_detail(
         "risk": risk,
         "priority": default_scorer.priority(score, effort),
         "estimated_effort_minutes": effort,
+        # Everything that has happened to it, which two timestamps could not
+        # say: a finding raised, fixed, regressed and fixed again looked
+        # exactly like one raised and fixed once.
+        "timeline": await timeline(session, finding),
+        # Where the claimed fix has got to, if somebody has claimed one. The
+        # answer to "did my work count" belongs on the page where the work was
+        # reported, and the interesting part of it is the sentence: "still
+        # failing" and "CloudGuard could not read enough to tell" are the same
+        # open finding and entirely different news.
+        "verification": await latest_verification(session, finding),
     }
 
 
@@ -79,7 +99,25 @@ async def accept_risk(
     if finding.status == FindingStatus.RESOLVED:
         raise ValidationFailed("This finding is already resolved")
 
+    _record_event(
+        session,
+        tenant,
+        finding,
+        FindingEvent.RISK_ACCEPTED,
+        FindingStatus.ACCEPTED_RISK,
+        detail=reason,
+    )
     finding.status = FindingStatus.ACCEPTED_RISK
+
+    # A risk somebody has decided to live with is not a fix waiting to be
+    # confirmed. Left pending, the scheduler would keep starting scans to settle
+    # a question that has been answered by a decision instead of by evidence.
+    await verification_service.abandon(
+        session,
+        tenant.organization_id,
+        finding.id,
+        reason="The risk was accepted, so CloudGuard stopped checking for a fix.",
+    )
 
     session.add(
         RiskException(
@@ -126,6 +164,7 @@ async def set_status(
             "rescan — CloudGuard resolves it once a scan confirms the fix."
         )
 
+    _record_event(session, tenant, finding, FindingEvent.STATUS_CHANGED, status)
     finding.status = status
     await record_audit(
         session,
@@ -137,6 +176,76 @@ async def set_status(
     )
     await commit_unless_externally_managed(session)
     return finding
+
+
+def _record_event(
+    session: AsyncSession,
+    tenant: TenantContext,
+    finding: Finding,
+    event: FindingEvent,
+    new_status: FindingStatus,
+    *,
+    detail: str | None = None,
+) -> None:
+    """Write the transition to the finding's own timeline.
+
+    Beside the audit log rather than instead of it, and the difference is who
+    is asking. The audit log answers "what has anybody in this organization
+    done", for a security reviewer; this answers "what happened to *this
+    finding*", for whoever is looking at it -- and only the second is complete,
+    because it also holds the transitions a scan made, which no person did.
+    """
+    session.add(
+        FindingEventRecord(
+            organization_id=tenant.organization_id,
+            finding_id=finding.id,
+            scan_id=finding.scan_id,
+            user_id=tenant.user.id,
+            event=event,
+            previous_status=finding.status,
+            current_status=new_status,
+            detail=detail,
+            observed_at=datetime.now(UTC),
+        )
+    )
+
+
+async def timeline(
+    session: AsyncSession, finding: Finding, limit: int = 50
+) -> list[FindingEventRecord]:
+    """Everything that has happened to this finding, newest first."""
+    return list(
+        (
+            await session.execute(
+                select(FindingEventRecord)
+                .where(FindingEventRecord.finding_id == finding.id)
+                .order_by(FindingEventRecord.observed_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def latest_verification(
+    session: AsyncSession, finding: Finding
+) -> RemediationVerification | None:
+    """The most recent claim that this finding was fixed, settled or not.
+
+    Newest rather than pending, because a settled verification is the more
+    useful answer once there is one: a customer looking at a finding that is
+    still open after they fixed it wants to be told why, not told nothing on
+    the grounds that CloudGuard has finished asking.
+    """
+    return (
+        await session.execute(
+            select(RemediationVerification)
+            .where(RemediationVerification.finding_id == finding.id)
+            .order_by(RemediationVerification.claimed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def own_risk(session: AsyncSession, finding: Finding) -> Risk | None:
@@ -198,4 +307,65 @@ def rule_metadata(rule_id: str) -> dict:
         "category": rule.category,
         "compliance_mappings": rule.compliance_mappings,
         "estimated_effort_minutes": rule.estimated_effort_minutes,
+        # The machine-readable half of the remediation, beside the prose the
+        # finding already carries. Read from the registry rather than the
+        # finding, deliberately: the prose is snapshot-copied so an old finding
+        # keeps the guidance it was raised with, while this describes what
+        # CloudGuard checks *today* -- and being told to satisfy a condition
+        # that is no longer the one being checked would be worse than not being
+        # told at all.
+        "remediation_spec": remediation_detail(rule_id),
+    }
+
+
+def _state_json(state: ExpectedState) -> dict:
+    """One expected state, in a shape that cannot be misread.
+
+    ``comparison`` travels with the value because without it a collection
+    expectation serializes as ``equals: null``, which reads as "this must be
+    null" rather than "this must not be empty". The witness goes out too: for a
+    network rule it is the clearest statement of what is being looked for, and
+    a customer can compare it against what they have.
+    """
+    payload: dict = {
+        "field": state.field,
+        "comparison": state.comparison.value,
+        "describes": state.describes,
+    }
+    if state.comparison is Comparison.EQUALS:
+        payload["equals"] = state.equals
+        payload["also_accepts"] = list(state.also_accepts)
+    if state.example is not None:
+        payload["example"] = state.example
+    return payload
+
+
+def remediation_detail(rule_id: str) -> dict | None:
+    """What must become true, plus the artifacts generated from that.
+
+    ``None`` where a rule has no declaration yet, which is a different answer
+    from a declaration saying no policy can enforce it: the first is work not
+    done, the second is a fact about the check. The API keeps them apart because
+    a customer reading "no preventive policy" deserves to know which they are
+    looking at.
+    """
+    rule = get_rule(rule_id)
+    if rule is None or rule.remediation_spec is None:
+        return None
+
+    spec = rule.remediation_spec
+    policy = azure_policy(rule.rule_id, rule.name, spec)
+    return {
+        "expected_state": [_state_json(state) for state in spec.expected],
+        # Who the expectation is about, where it is not everyone. A rule that
+        # returns NOT_APPLICABLE for every ordinary account is not passing them.
+        "applies_when": spec.applies_when,
+        "cli": list(spec.cli),
+        "terraform": terraform_hints(spec),
+        # Present where a policy can genuinely refuse this misconfiguration,
+        # null where none can. A definition invented for the second case would
+        # deploy and check nothing.
+        "azure_policy": policy,
+        "enforceable": spec.enforceable,
+        "notes": spec.notes,
     }

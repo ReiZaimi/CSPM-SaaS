@@ -1,0 +1,86 @@
+{#
+  The posture block, shared by both reports so the executive summary and the
+  technical detail can never disagree about the same organization.
+#}
+<h2>Security posture</h2>
+
+<div class="score-row">
+  <span class="score">{{ report.posture.security_score }}</span>
+  <span class="muted">/ 100</span>
+  {% if report.posture.score_delta is not none %}
+    <span class="muted">
+      {{ '+' if report.posture.score_delta > 0 else '' }}{{ report.posture.score_delta }}
+      since the previous reading
+    </span>
+  {% else %}
+    {# Not "no change". There is nothing to compare against, and the two mean
+       opposite things to somebody deciding whether remediation is working. #}
+    <span class="muted">no earlier reading to compare against</span>
+  {% endif %}
+</div>
+
+{#
+  The shape behind the delta. One number says something moved; the line says
+  whether that is a trend or a wobble, which is the difference between a
+  customer acting on this report and filing it.
+
+  `safe` because the SVG is built from integers the chart module has already
+  bounded to 0-100 -- no customer-supplied string reaches it.
+#}
+{% set trend = report.posture.history | score_trend %}
+{% if trend %}
+{{ trend | safe }}
+<p class="small muted">
+  Security score across the {{ report.posture.history | length }} reading{{ '' if report.posture.history | length == 1 else 's' }}
+  taken in the last {{ report.posture.window_days }} days, on a fixed 0–100 scale.
+</p>
+{% endif %}
+
+<table>
+  <thead>
+    <tr><th>Severity</th><th class="num">Open findings</th></tr>
+  </thead>
+  <tbody>
+    {% for row in report.posture.by_severity %}
+    <tr>
+      <td><span class="sev sev-{{ row.severity }}">{{ row.severity | title }}</span></td>
+      <td class="num">{{ row.count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<table>
+  <tbody>
+    <tr><td>Assets under assessment</td><td class="num">{{ report.posture.asset_count }}</td></tr>
+    <tr><td>Open findings</td><td class="num">{{ report.posture.open_finding_count }}</td></tr>
+    <tr>
+      <td>Verified fixed in the last {{ report.posture.window_days }} days</td>
+      <td class="num">{{ report.posture.verified_resolved_in_window }}</td>
+    </tr>
+    <tr>
+      <td>Share of findings ever raised that are now verified fixed</td>
+      <td class="num">{{ (report.posture.remediation_rate * 100) | round(0) | int }}%</td>
+    </tr>
+    {#
+      A finding somebody decided to live with is not a finding that went away.
+      Folding accepted risks into "not open" would let a report claim a clean
+      environment that is clean by decision rather than by remediation, so the
+      count is stated wherever it is not zero.
+    #}
+    {% if report.posture.accepted_risk_count %}
+    <tr>
+      <td>Open findings accepted as risk</td>
+      <td class="num">{{ report.posture.accepted_risk_count }}</td>
+    </tr>
+    {% endif %}
+  </tbody>
+</table>
+<p class="small muted">
+  "Verified fixed" means a later scan observed the check passing. CloudGuard
+  never closes a finding because somebody said it was fixed.
+  {% if report.posture.accepted_risk_count %}
+  An accepted risk is a decision to live with a finding, not a fix — it is
+  excluded from the counts above and is still present in the environment.
+  {% endif %}
+</p>

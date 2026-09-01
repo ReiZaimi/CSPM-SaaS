@@ -105,3 +105,15 @@ class ScopeSelection(BaseModel):
     """Which discovered subscriptions to actually scan, keyed by subscription id."""
 
     in_scope: dict[str, bool]
+
+
+class ChangeEventsUpdate(BaseModel):
+    """Turn change-triggered scanning on or off.
+
+    A bare boolean, because there is nothing else for the customer to choose:
+    the quiet period and the minimum interval between change-triggered scans are
+    CloudGuard's judgement about not turning a deployment into a scan storm, not
+    a preference.
+    """
+
+    enabled: bool

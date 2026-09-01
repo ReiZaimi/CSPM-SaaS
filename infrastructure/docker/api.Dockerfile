@@ -12,8 +12,14 @@ ENV PYTHONPATH=/srv/apps/api
 
 WORKDIR /srv
 
+# WeasyPrint renders the PDF reports through pango/cairo rather than in pure
+# Python, so those libraries have to be in the image. Without them the package
+# imports and then fails at `dlopen` -- which looks like a code fault and is a
+# missing apt package.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential curl \
+ && apt-get install -y --no-install-recommends \
+      build-essential curl \
+      libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libffi8 \
  && rm -rf /var/lib/apt/lists/*
 
 # Dependency layer: copy only the manifest so edits to source don't reinstall.

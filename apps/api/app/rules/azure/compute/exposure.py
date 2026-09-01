@@ -11,6 +11,7 @@ from typing import ClassVar
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, Severity
 from app.domain.resource import CloudResource
+from app.remediation import RemediationSpec
 from app.rules.azure.network.exposure import _find_public_port
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
@@ -51,6 +52,28 @@ class AzureExposedComputeRule(SecurityRule):
         "       --resource-group <rg> --remove publicIpAddress\n"
         "3. Where occasional public access is unavoidable, enable just-in-time VM access in "
         "Microsoft Defender for Cloud so the port opens only on approved request."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        # Also empty, and for a different reason again. This rule is about a
+        # *relationship*: a machine with a public address, and the network
+        # security groups that govern it admitting a management port. Neither
+        # half is a setting on the VM -- the fix lands on the NSG, where
+        # AZ-NET-001 and AZ-NET-002 already declare it -- so an expected state
+        # here would describe an asset that cannot satisfy it alone.
+        expected=(),
+        cli=(
+            "az network nic ip-config update --name <ipconfig> --nic-name <nic> "
+            "--resource-group <rg> --remove publicIpAddress",
+            "az network nsg rule update --resource-group <rg> --nsg-name <nsg> "
+            "--name <rule> --source-address-prefixes <your.ip.range/24>",
+        ),
+        notes=(
+            "Two ways to close it and they are not equivalent: remove the "
+            "public address, or narrow the rules that admit management ports "
+            "to it. The first ends the exposure; the second ends this "
+            "exposure. Reach the machine through Azure Bastion or just-in-time "
+            "access rather than a standing public address."
+        ),
     )
     compliance_mappings: ClassVar[dict[str, list[str]]] = {
         "CIS_AZURE_2.0": ["6.1", "6.2"],

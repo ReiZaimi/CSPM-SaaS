@@ -15,8 +15,8 @@ const SEGMENTS: { status: ControlStatus; className: string }[] = [
   { status: "FAILING", className: "bg-critical" },
   { status: "INCONCLUSIVE", className: "bg-unknown" },
   { status: "PASSING", className: "bg-ok" },
-  { status: "NOT_ASSESSED", className: "bg-stone-300" },
-  { status: "NOT_COVERED", className: "bg-stone-200" },
+  { status: "NOT_ASSESSED", className: "bg-muted-foreground/40" },
+  { status: "NOT_COVERED", className: "bg-muted" },
 ];
 
 export function CoverageBar({
@@ -31,7 +31,7 @@ export function CoverageBar({
 
   return (
     <div>
-      <div className="flex h-2 w-full overflow-hidden rounded-full bg-stone-100">
+      <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
         {SEGMENTS.map(({ status, className }) => {
           const count = counts[status] ?? 0;
           if (count === 0) return null;
@@ -52,7 +52,7 @@ export function CoverageBar({
           return (
             <span
               key={status}
-              className="flex items-center gap-1.5 text-[11px] text-stone-500"
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
               title={t.compliance.statusHelp[status]}
             >
               <span className={cn("h-2 w-2 rounded-full", className)} aria-hidden="true" />
@@ -88,7 +88,7 @@ export function ControlStatusPill({ status }: { status: ControlStatus }) {
 export function EvidenceNotice() {
   const t = useT();
   return (
-    <p className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-xs leading-relaxed text-stone-600">
+    <p className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
       {t.compliance.notALegalClaim}
     </p>
   );

@@ -77,9 +77,17 @@ MSP
 
 Designed in `MULTI_CLOUD.md`: which seams already hold, the region dimension AWS
 introduces and Azure does not, how trust is established per provider, and why
-rules stay provider-specific over neutral resource types. One item there is
-worth doing before any second provider exists — `SecurityRule.matches()` ignores
-the provider it declares.
+rules stay provider-specific over neutral resource types. The one item there
+worth doing before any second provider exists — `SecurityRule.matches()`
+ignoring the provider it declares — is **done**, along with the aggregate-path
+hole beside it (`MULTI_CLOUD.md` §8).
+
+Two more seams have since been built provider-neutral for the same reason, and
+each was cheaper to do now than to retrofit: `CloudConnector.baseline_evidence`,
+so a rule-derived collection plan does not silently stop gathering what a second
+provider's product surface needs (`DECISIONS.md` §16), and `app/context/`, so a
+second connector does not write its own slightly different copy of the tag
+vocabulary (§17).
 
 ---
 
