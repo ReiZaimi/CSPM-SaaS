@@ -1086,6 +1086,128 @@ class TestFindingSearchAndSort:
         assert response.status_code == 422
 
 
+class TestLiveRisks:
+    """Which risks the list is willing to call current.
+
+    A risk row outlives the finding it was scored from. Listed unfiltered, the
+    page showed every risk ever raised as Open while the dashboard reported two
+    open findings for the same estate on the same day — the two screens
+    disagreeing because only one applied the product's own definition of live.
+    """
+
+    async def _risk(
+        self, org_id, *, title: str, finding_status=None
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from app.core.db import service_session
+        from app.core.enums import Level, RiskKind, RiskStatus, Severity
+        from app.models.finding import Finding
+        from app.models.risk import Risk, RiskFinding
+
+        async with service_session() as session:
+            risk = Risk(
+                organization_id=org_id,
+                kind=RiskKind.FINDING,
+                title=title,
+                description="",
+                risk_score=80,
+                risk_level=Level.HIGH,
+                status=RiskStatus.OPEN,
+                severity="HIGH",
+                asset_criticality=Level.HIGH,
+                data_sensitivity=Level.HIGH,
+                internet_exposure=Level.HIGH,
+            )
+            session.add(risk)
+            await session.flush()
+
+            if finding_status is not None:
+                finding = Finding(
+                    organization_id=org_id,
+                    rule_id=f"AZ-TEST-{title[:8]}",
+                    severity=Severity.HIGH,
+                    status=finding_status,
+                    title=title,
+                    description="",
+                    remediation="",
+                    rule_version="1.0",
+                    first_detected_at=datetime.now(UTC),
+                    last_detected_at=datetime.now(UTC),
+                )
+                session.add(finding)
+                await session.flush()
+                session.add(
+                    RiskFinding(
+                        organization_id=org_id,
+                        risk_id=risk.id,
+                        finding_id=finding.id,
+                    )
+                )
+            await session.commit()
+
+    async def test_a_risk_whose_finding_has_closed_is_not_listed_as_current(
+        self, client, cleanup_orgs
+    ) -> None:
+        from app.core.enums import FindingStatus
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Settled Ltd"))
+        cleanup_orgs.append(org_id)
+
+        await self._risk(org_id, title="Still wrong", finding_status=FindingStatus.OPEN)
+        await self._risk(
+            org_id, title="Fixed last week", finding_status=FindingStatus.RESOLVED
+        )
+
+        response = await client.get("/api/v1/risks", headers=auth_header(user))
+
+        assert response.status_code == 200, response.text
+        titles = [risk["title"] for risk in response.json()["data"]]
+        assert titles == ["Still wrong"]
+
+    async def test_a_risk_linked_to_nothing_is_kept_rather_than_dropped(
+        self, client, cleanup_orgs
+    ) -> None:
+        # The link table is the only thing that could vouch for such a row, so
+        # its absence is not evidence the risk is over. Hiding it would trade
+        # duplicates for an empty page, which is the worse failure.
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Unlinked Ltd"))
+        cleanup_orgs.append(org_id)
+
+        await self._risk(org_id, title="No finding on record")
+
+        response = await client.get("/api/v1/risks", headers=auth_header(user))
+
+        assert response.status_code == 200, response.text
+        assert [risk["title"] for risk in response.json()["data"]] == [
+            "No finding on record"
+        ]
+
+    async def test_a_settled_risk_is_still_reachable_by_naming_its_status(
+        self, client, cleanup_orgs
+    ) -> None:
+        from app.core.enums import FindingStatus
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Named Status Ltd"))
+        cleanup_orgs.append(org_id)
+
+        await self._risk(
+            org_id, title="Fixed last week", finding_status=FindingStatus.RESOLVED
+        )
+
+        response = await client.get(
+            "/api/v1/risks?status=OPEN", headers=auth_header(user)
+        )
+
+        assert response.status_code == 200, response.text
+        assert [risk["title"] for risk in response.json()["data"]] == [
+            "Fixed last week"
+        ]
+
+
 class TestRiskSearch:
     async def test_search_matches_a_risk_by_title(self, client, cleanup_orgs) -> None:
         from app.core.db import service_session

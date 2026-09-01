@@ -74,11 +74,14 @@ export function AutomaticScanning({
             </Link>
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-4">
             {connections.map((connection) => (
-              <div key={connection.id}>
+              <div key={connection.id} className="flex flex-col gap-2">
+                {/* Named only when there is more than one: with a single
+                    connection the panel heading has already said which
+                    environment this is. */}
                 {connections.length > 1 && (
-                  <p className="mb-1 text-xs font-medium text-muted-foreground">
+                  <p className="text-xs font-medium text-foreground">
                     {connection.name}
                   </p>
                 )}

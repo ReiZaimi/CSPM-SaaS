@@ -36,11 +36,19 @@ async def list_risks(
     # for. The two screens disagreed because only one of them was applying the
     # product's own definition of live.
     #
-    # This is that definition, and it is the same one `build_dashboard` uses: a
-    # finding risk counts while its finding is open, a scenario counts until
-    # the route closes. Asking for a status explicitly still reaches the rest,
-    # which is how a resolved risk is looked up rather than lost.
+    # The rule is *settled* rather than *strict*: a risk is hidden when its
+    # findings say it is over, not merely when they fail to say it is current.
+    # A risk linked to nothing at all stays listed — the link table is the only
+    # thing that could vouch for it, and a row whose evidence is missing is
+    # exactly the row a security product must not quietly drop. Hiding it would
+    # trade four duplicates for an empty page, which is the worse failure.
+    #
+    # Asking for a status explicitly still reaches everything, which is how a
+    # resolved risk is looked up rather than lost.
     if risk_status is None:
+        linked_findings = select(RiskFinding.risk_id).where(
+            RiskFinding.organization_id == tenant.organization_id
+        )
         live_finding_risks = (
             select(RiskFinding.risk_id)
             .join(Finding, Finding.id == RiskFinding.finding_id)
@@ -52,6 +60,7 @@ async def list_risks(
         stmt = stmt.where(
             or_(
                 Risk.kind != RiskKind.FINDING,
+                Risk.id.notin_(linked_findings),
                 Risk.id.in_(live_finding_risks),
             ),
             Risk.status != RiskStatus.RESOLVED,

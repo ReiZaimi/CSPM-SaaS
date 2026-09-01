@@ -66,33 +66,11 @@ export function ScheduleControl({
   const known = options.some((o) => o.value === String(current ?? ""));
 
   return (
-    <div className="mt-4 rounded-lg border border-border bg-muted/40 px-4 py-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-foreground">
-            {t.connection.scheduleTitle}
-          </p>
-          <p className="mt-1 max-w-prose text-xs leading-relaxed text-muted-foreground">
-            {t.connection.scheduleHelp}
-          </p>
-        </div>
-        {/* Not a `Badge`: that primitive maps a *severity* level through
-            `levelStyle`, and scheduling being on is not a severity. Borrowing
-            the scale would tint an ordinary setting with the colours the rest
-            of the product reserves for how bad a finding is. */}
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium",
-            current === null
-              ? "border-border bg-background text-muted-foreground"
-              : "border-ok-border bg-ok-bg text-ok",
-          )}
-        >
-          {current === null ? t.connection.scheduleOff : t.connection.scheduleOn}
-        </span>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-3">
+    // A row, not a card. The panel around it already says what this is; a
+    // second bordered box repeating the same heading made one setting look
+    // like two, which is the version the customer saw.
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+      <div className="flex flex-wrap items-center gap-3">
         <SelectField
           value={known ? String(current ?? "") : String(current)}
           disabled={save.isPending}
@@ -110,22 +88,36 @@ export function ScheduleControl({
             ...options,
           ]}
         />
+
+        {/* Not a `Badge`: that primitive maps a *severity* level through
+            `levelStyle`, and scheduling being on is not a severity. Borrowing
+            the scale would tint an ordinary setting with the colours the rest
+            of the product reserves for how bad a finding is. */}
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+            current === null
+              ? "border-border bg-background text-muted-foreground"
+              : "border-ok-border bg-ok-bg text-ok",
+          )}
+        >
+          {current === null ? t.connection.scheduleOff : t.connection.scheduleOn}
+        </span>
+
         {save.isPending && (
-          <span className="text-xs text-muted-foreground">{t.connection.scheduleSaving}</span>
+          <span className="text-xs text-muted-foreground">
+            {t.connection.scheduleSaving}
+          </span>
         )}
         {saved && !save.isPending && (
           <span className="text-xs text-ok">{t.connection.scheduleSaved}</span>
         )}
       </div>
 
-      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+      <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
         {t.connection.scheduleFloorNote}
+        {current !== null && ` ${t.connection.scheduleFirstRunNote}`}
       </p>
-      {current !== null && (
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          {t.connection.scheduleFirstRunNote}
-        </p>
-      )}
     </div>
   );
 }

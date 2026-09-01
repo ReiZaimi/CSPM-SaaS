@@ -1233,6 +1233,15 @@ closes — so `GET /risks` now applies it by default. Asking for a status by nam
 still reaches the rest, which is how a resolved risk is looked up rather than
 lost.
 
+**The rule is *settled*, not *strict*, and the difference matters.** A risk is
+hidden when its findings say it is over, never merely because they fail to say
+it is current: a risk linked to no finding at all stays listed. The link table
+is the only thing that could vouch for such a row, so its absence is not
+evidence the risk has been dealt with — and hiding it would trade four
+duplicates for an empty page, which is the worse failure for a security
+product. The first version of this filter was strict, and an integration test
+that inserts a risk without links caught it.
+
 **Tabs rendered as a vertical strip beside their own panel.** The registry's
 classes matched `data-horizontal`, a bare attribute Base UI never writes: it
 writes `data-orientation="horizontal"`. So `data-horizontal:flex-col` compiled
@@ -1245,6 +1254,12 @@ empty as "nothing selected" and fell through to the placeholder, but the
 schedule control's "Manual scanning only" *is* the empty value, so that control
 rendered blank — which reads as broken rather than as switched off. Options are
 consulted first now, empty string included.
+
+**The schedule is a row inside one panel, not a card inside a card.** Moved as
+it was, `ScheduleControl` kept its own border and heading inside the new
+panel's border and heading, so one setting rendered as two nested boxes both
+titled "Automatic scanning". The control now draws only the control; the panel
+around it says what it is, once.
 
 **Automatic scanning moved from the connection card to the scans page**, at the
 customer's request and for a reason worth recording: the connections page

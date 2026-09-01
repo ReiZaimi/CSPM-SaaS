@@ -234,7 +234,9 @@ on the two panels nobody scrolls to first.
 `/risks` lists **live** risks unless a `status` is named: a finding risk while
 its finding is open, a scenario until the route closes. A risk row outlives the
 finding it was scored from, and listing every row ever raised made the page
-disagree with the dashboard about the same estate on the same day.
+disagree with the dashboard about the same estate on the same day. The rule is
+settled rather than strict — a risk linked to no finding at all is still
+listed, because the absence of a link is not evidence that a risk is over.
 
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's
