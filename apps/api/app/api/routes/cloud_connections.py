@@ -1,4 +1,5 @@
 import json
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Query, status
@@ -55,6 +56,18 @@ def _serialize(
     # endpoints that do not are reporting on a connection mid-setup.
     data["is_ready_to_scan"] = connection.is_verified and any(
         a.is_scannable for a in (subscriptions or [])
+    )
+    # Whether this environment reports its own changes, and when it last did.
+    # Sent with the connection rather than left to the change-events endpoint:
+    # the list states how often each environment is read, and a clock is only
+    # half of that answer -- fetching the other half would be one request per
+    # row to render one line. Coerced, because a connection built in memory has
+    # not had the column default applied.
+    data["change_events_enabled"] = bool(connection.change_events_enabled)
+    data["last_change_event_at"] = (
+        connection.last_change_event_at.isoformat()
+        if connection.last_change_event_at
+        else None
     )
 
     # Regenerated on every read, not just on create. Returning it only from the
@@ -174,30 +187,42 @@ async def consent_callback(
 ) -> RedirectResponse:
     """Entra redirects the customer's browser here after admin consent.
 
-    Redirects to the Connect page with the connection ID as a query param.
+    Redirects into the setup wizard for this connection, which is where the
+    customer left off. Failures land on the same page rather than on the
+    connections list: the state parameter comes back on a denial too, so the
+    reason can be shown against the step it belongs to, next to the button that
+    starts consent again.
+
+    The list is the fallback for the one case where there is no connection to
+    return to -- a state that is missing, tampered with, or expired.
     """
     frontend = settings.app_url.rstrip("/")
-
-    if error:
-        return RedirectResponse(
-            f"{frontend}/connections?consent_error={error_description or error}"
-        )
 
     try:
         payload = verify_state(state)
     except SignedStateError as exc:
-        return RedirectResponse(f"{frontend}/connections?consent_error={exc}")
-
-    if admin_consent.lower() not in {"true", "1", ""}:
+        reason = error_description or error or str(exc)
         return RedirectResponse(
-            f"{frontend}/connections?consent_error=Admin+consent+was+not+granted"
+            f"{frontend}/connections?consent_error={quote(reason)}"
         )
 
     connection_id = UUID(payload["cloud_connection_id"])
+    setup = f"{frontend}/connections/{connection_id}/setup"
+
+    if error:
+        return RedirectResponse(
+            f"{setup}?consent_error={quote(error_description or error)}"
+        )
+
+    if admin_consent.lower() not in {"true", "1", ""}:
+        return RedirectResponse(
+            f"{setup}?consent_error={quote('Admin consent was not granted')}"
+        )
+
     async with service_session() as session:
         await service.record_consent(session, connection_id, tenant)
 
-    return RedirectResponse(f"{frontend}/connections?id={connection_id}")
+    return RedirectResponse(setup)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

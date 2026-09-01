@@ -1,0 +1,192 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ConnectionRow } from "@/components/connections/ConnectionRow";
+import { api } from "@/lib/api";
+import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
+
+const minutesAgo = (minutes: number) =>
+  new Date(Date.now() - minutes * 60_000).toISOString();
+
+function subscription(
+  overrides: Partial<DiscoveredSubscription> = {},
+): DiscoveredSubscription {
+  return {
+    id: "s1",
+    subscription_id: "00000000-0000-0000-0000-000000000001",
+    display_name: "prod-payments-weu",
+    in_scope: true,
+    status: "ACTIVE",
+    discovered_at: minutesAgo(60 * 24 * 20),
+    last_scan_at: minutesAgo(12),
+    is_scannable: true,
+    ...overrides,
+  } as DiscoveredSubscription;
+}
+
+function connection(overrides: Partial<CloudConnection> = {}): CloudConnection {
+  return {
+    id: "c1",
+    provider: "azure",
+    name: "new_architecture",
+    scope_type: "TENANT_ROOT",
+    scope_id: null,
+    scope_path: null,
+    role_version: "v2",
+    tenant_id: "8e482025-7ac9-4323-81e5-bc9fa528afd7",
+    service_principal_object_id: null,
+    consent_status: "GRANTED",
+    consented_at: minutesAgo(60 * 24 * 18),
+    rbac_verified_at: minutesAgo(60 * 24),
+    status: "ACTIVE",
+    status_detail: null,
+    last_discovery_at: minutesAgo(30),
+    scan_interval_hours: 24,
+    created_at: "2026-01-01T00:00:00Z",
+    is_verified: true,
+    is_ready_to_scan: true,
+    subscription_count: 1,
+    subscriptions: [subscription()],
+    consent_url: null,
+    template_url: null,
+    deploy_stalled: false,
+    change_events_enabled: true,
+    last_change_event_at: minutesAgo(240),
+    ...overrides,
+  } as CloudConnection;
+}
+
+function mount(value: CloudConnection) {
+  vi.spyOn(api, "get").mockResolvedValue({ data: value, meta: {} });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ConnectionRow connection={value} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("a connection row", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("answers when and how often without being opened", () => {
+    // The question this page is skimmed for. An absolute timestamp would make
+    // the reader do the subtraction against a clock they cannot see.
+    mount(connection());
+
+    expect(screen.getByText("12 minutes ago")).toBeInTheDocument();
+    expect(screen.getByText(/on change · every day/i)).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
+  it("does not call a connection live when nothing beneath it is ticked", () => {
+    // `status` is ACTIVE either way; the reader is being told whether anything
+    // is actually read.
+    mount(
+      connection({
+        is_ready_to_scan: false,
+        subscriptions: [subscription({ in_scope: false, is_scannable: false })],
+      } as Partial<CloudConnection>),
+    );
+
+    expect(screen.getByText(/nothing in scope/i)).toBeInTheDocument();
+  });
+
+  it("offers the step a half-finished connection stopped on, not a scan", () => {
+    mount(
+      connection({
+        consent_status: "PENDING",
+        rbac_verified_at: null,
+        is_verified: false,
+        is_ready_to_scan: false,
+        status: "PENDING",
+        status_detail: "Waiting for an administrator to consent.",
+        subscriptions: [],
+      } as Partial<CloudConnection>),
+    );
+
+    expect(screen.getByRole("link", { name: /continue setup/i })).toHaveAttribute(
+      "href",
+      "/connections/c1/setup",
+    );
+    expect(screen.queryByRole("button", { name: /scan now/i })).not.toBeInTheDocument();
+  });
+
+  it("states the access it holds, and the access it does not", async () => {
+    mount(connection());
+
+    await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
+
+    // The product's central claim about itself, beside the grants it did get.
+    expect(await screen.findByText("None, by design")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /re-check access/i })).toBeInTheDocument();
+  });
+
+  it("says when a subscription was taken out of scope, not just that it was", async () => {
+    // A boolean cannot distinguish a decision made last week from one nobody
+    // remembers making.
+    mount(
+      connection({
+        subscriptions: [
+          subscription(),
+          subscription({
+            id: "s2",
+            subscription_id: "00000000-0000-0000-0000-000000000002",
+            display_name: "sandbox-scratch",
+            in_scope: false,
+            is_scannable: false,
+            scope_changed_at: "2026-08-20T09:00:00Z",
+          }),
+        ],
+      } as Partial<CloudConnection>),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
+
+    expect(await screen.findByText(/excluded by you/)).toHaveTextContent("Aug 20, 2026");
+  });
+
+  it("marks a subscription discovered since the last read", async () => {
+    // The case the product exists to prevent: an environment created last
+    // Tuesday that nothing has ever scanned, sitting beside twelve that are
+    // green.
+    mount(
+      connection({
+        subscriptions: [
+          subscription(),
+          subscription({
+            id: "s3",
+            subscription_id: "00000000-0000-0000-0000-000000000003",
+            display_name: "prod-data-neu",
+            discovered_at: minutesAgo(5),
+            last_scan_at: null,
+          }),
+        ],
+      } as Partial<CloudConnection>),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
+
+    expect(await screen.findByText("new since last read")).toBeInTheDocument();
+  });
+
+  it("scans the connection through one of its scannable subscriptions", async () => {
+    // A scan is connection-scoped server-side: the worker resolves what sits
+    // beneath, so one scannable subscription names the target for all of them.
+    const post = vi
+      .spyOn(api, "post")
+      .mockResolvedValue({ data: { id: "scan-1" }, meta: {} } as never);
+    mount(connection());
+
+    await userEvent.click(screen.getByRole("button", { name: /scan now/i }));
+
+    expect(post).toHaveBeenCalledWith("/api/v1/scans", { cloud_account_id: "s1" });
+  });
+});

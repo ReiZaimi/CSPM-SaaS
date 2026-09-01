@@ -34,6 +34,11 @@ const OnboardingPage = lazy(() =>
 const ConnectPage = lazy(() =>
   import("@/pages/Connect").then((m) => ({ default: m.ConnectPage })),
 );
+const ConnectionSetupPage = lazy(() =>
+  import("@/pages/ConnectionSetup").then((m) => ({
+    default: m.ConnectionSetupPage,
+  })),
+);
 const DashboardPage = lazy(() =>
   import("@/pages/Dashboard").then((m) => ({ default: m.DashboardPage })),
 );
@@ -163,6 +168,14 @@ export function App() {
             element={<ComplianceFrameworkPage />}
           />
           <Route path="/connections" element={<ConnectPage />} />
+          {/* The wizard has its own URLs because setup leaves the browser for
+              Microsoft and for Azure Portal and comes back through a full page
+              load. A dialog over the list could not survive either trip. */}
+          <Route path="/connections/new" element={<ConnectionSetupPage />} />
+          <Route
+            path="/connections/:connectionId/setup"
+            element={<ConnectionSetupPage />}
+          />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

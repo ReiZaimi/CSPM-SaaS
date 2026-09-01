@@ -42,6 +42,11 @@ class CloudAccount(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     # A discovered subscription the customer chose not to scan. Kept rather than
     # deleted: it must not silently reappear on the next discovery run.
     in_scope: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # When that choice was last made. A boolean can say a subscription is
+    # excluded; only this can say whether somebody decided that last week or
+    # last year, which is what makes "excluded by you" readable as a decision
+    # rather than as a defect.
+    scope_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     provider: Mapped[Provider] = mapped_column(
         StrEnumType(Provider, 16), nullable=False, default=Provider.AZURE

@@ -76,6 +76,7 @@ class DiscoveredSubscription(BaseModel):
     subscription_id: str | None = None
     display_name: str | None = None
     in_scope: bool
+    scope_changed_at: datetime | None = None
     status: CloudAccountStatus
     discovered_at: datetime | None = None
     last_scan_at: datetime | None = None

@@ -255,6 +255,84 @@ class TestConnectionListing:
         assert rows[0]["subscription_count"] == 0
 
 
+class TestSubscriptionScope:
+    async def test_excluding_a_subscription_records_when_it_was_decided(
+        self, client, cleanup_orgs
+    ) -> None:
+        """"Excluded by you" is a decision, and a decision has a date.
+
+        The screen tells the customer that unticking keeps existing findings and
+        marks the subscription out of scope rather than deleting it. Months
+        later, a boolean cannot distinguish a choice somebody made last week
+        from one nobody remembers making -- so the flip is stamped, and only the
+        flip: re-sending a row that did not change must not move its date.
+        """
+        from app.core.db import service_session
+        from app.core.enums import (
+            CloudAccountStatus,
+            ConnectionScope,
+            ConsentStatus,
+            Provider,
+        )
+        from app.models.cloud_account import CloudAccount
+        from app.models.cloud_connection import CloudConnection
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Scope Ltd"))
+        cleanup_orgs.append(org_id)
+
+        tenant_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        subscription_id = "00000000-0000-0000-0000-000000000009"
+        async with service_session() as session:
+            connection = CloudConnection(
+                organization_id=org_id,
+                provider=Provider.AZURE,
+                name="prod",
+                scope_type=ConnectionScope.TENANT_ROOT,
+                role_version="v2",
+                tenant_id=tenant_id,
+                consent_status=ConsentStatus.GRANTED,
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+            )
+            session.add(connection)
+            await session.flush()
+            session.add(
+                CloudAccount(
+                    organization_id=org_id,
+                    connection_id=connection.id,
+                    provider=Provider.AZURE,
+                    account_name="Sandbox",
+                    tenant_id=tenant_id,
+                    subscription_id=subscription_id,
+                    consent_status=ConsentStatus.GRANTED,
+                    rbac_verified_at=datetime.now(UTC),
+                    status=CloudAccountStatus.ACTIVE,
+                )
+            )
+            await session.commit()
+            connection_id = connection.id
+
+        excluded = await client.patch(
+            f"/api/v1/cloud-connections/{connection_id}/subscriptions",
+            json={"in_scope": {subscription_id: False}},
+            headers=auth_header(user),
+        )
+        assert excluded.status_code == 200, excluded.text
+        row = excluded.json()["data"][0]
+        assert row["in_scope"] is False
+        stamped = row["scope_changed_at"]
+        assert stamped is not None
+
+        # The same answer again is not a new decision.
+        unchanged = await client.patch(
+            f"/api/v1/cloud-connections/{connection_id}/subscriptions",
+            json={"in_scope": {subscription_id: False}},
+            headers=auth_header(user),
+        )
+        assert unchanged.json()["data"][0]["scope_changed_at"] == stamped
+
+
 class TestCloudConnections:
     async def test_connection_screen_never_asks_for_a_credential(self, client) -> None:
         """The published contract: read-only, no customer secret."""

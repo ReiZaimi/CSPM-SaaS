@@ -1307,6 +1307,111 @@ not to do the work.
 
 ---
 
+## 42. Setup is a wizard at its own URL, and the step is derived, not remembered
+
+Connecting Azure leaves this application twice: to Microsoft for admin consent,
+and to Azure Portal for the reader role. Each trip returns through a full page
+load, so a dialog over the connections list could not survive either one, and a
+step number held in React state is gone before the customer comes back. The
+wizard therefore lives at `/connections/new` and `/connections/:id/setup`, and
+which step it shows is computed from the connection itself
+(`lib/connectionStage.ts`): consent is recorded by the callback, read access by
+the probe that runs on every read of the connection. That is the only answer
+still correct after the tab is closed, or after the consent link is opened by an
+administrator on a different machine.
+
+The consent callback now redirects into that URL rather than to the connections
+list, on failure as well as on success — the signed state comes back on a denial
+too, so a failure knows which connection it belongs to and can be shown against
+the step that produced it, beside the button that starts consent again. Only a
+state that cannot be verified at all has nothing to return to, and that is the
+one case that still lands on the list.
+
+The steps moved out of `ConnectionCard` entirely. A card that carried a consent
+button, a deploy button, a discovery retry and a scope list was the largest
+component in the product and the first screen a customer ever used, and it read
+as four things to do at once when three of them were not yet possible. The card
+now states what a half-finished connection is waiting for and links to the step
+it stopped on. What genuinely outlives setup — the subscription scope list, and
+the discovery retry, since a subscription created next month appears on the next
+read — is shared between the card and the wizard as one component rather than
+copied.
+
+Handing the consent link to someone else is a first-class branch of the consent
+step, not advice in a paragraph. Admin consent needs a Global Administrator and
+the person evaluating CloudGuard usually is not one; the step offers the link
+together with a sentence explaining what is being approved, because a bare URL
+pasted into a chat window is exactly the request an administrator should refuse.
+For the same reason every waiting step offers "Finish later" alongside "Cancel
+setup": both grants are somebody else's to give, and a flow that can only be
+completed or abandoned makes a customer sit on a spinner waiting for a colleague
+who is in a meeting.
+
+A stalled deployment names its three causes — propagation, wrong scope, and
+Contributor rather than Owner — with the scope one worded for the scope this
+connection actually covers. Changing scope is offered there as discard and start
+again, because the scope is what both the consent state and the role assignment
+were bound to; there is no edit that would leave either of them meaning what
+they meant.
+
+---
+
+## 43. The connections page is a table of rows, and each row answers the same four questions
+
+Four connections as four stacked cards answered "how is this one connection
+doing" four times, and never answered the question the page is actually opened
+for: is every environment being read, and how recently. That is a comparison, so
+the shape is a row — connection, status, subscriptions, last read — with
+everything needed to *act* behind a disclosure rather than in front of it.
+
+Column labels sit above the rows, but this is not a `<table>`. Every row opens
+into a two-column panel, which a table cell cannot hold without colspan
+gymnastics or a nested grid inside a cell; on narrow screens the labels are
+hidden and each row stacks carrying its own.
+
+The status column does not print the enum. `ACTIVE` is true of a connection with
+every subscription unticked, and `PENDING` is true both of one waiting on an
+administrator and of one whose deployment failed an hour ago — so `statusSummary`
+answers "is CloudGuard reading this environment" in words, with a second line
+saying what to do when the answer is no. Last read is derived from the
+subscriptions rather than fetched, including ones now out of scope: the question
+is when this environment was last looked at, and one excluded yesterday was
+still looked at last week. It is rendered as elapsed time, because an absolute
+timestamp asks the reader to subtract against a clock they cannot see.
+
+A closed row costs nothing. The list endpoint already carries subscriptions, so
+the per-connection request runs only while a row is open — and the polling that
+used to justify itself on this page (a card left open was what noticed a
+finished deployment) moved with setup into the wizard. `change_events_enabled`
+and `last_change_event_at` are serialized onto the connection for the same
+reason: the cadence line needs both halves of the answer, and fetching the
+second half from the change-events endpoint would be one request per row to
+render one line.
+
+Each subscription row carries its own history — first seen, new since last read,
+excluded by you and when. `scope_changed_at` (migration 0021) is stamped only
+when the flag actually flips, so a screen re-sending rows it displayed cannot
+move the date on subscriptions nobody touched. Without it the product could say
+*that* a subscription was excluded and never *when*, which is the difference
+between a decision somebody made in August and an environment that has been
+silently unscanned for as long as anyone can remember. Long estates collapse
+behind a count rather than pushing the panels beside them off the screen.
+
+"Scan now" on a row posts one scan naming any scannable subscription beneath the
+connection, because a scan is already connection-scoped server-side: the worker
+resolves the subscriptions when it runs, so one discovered between queueing and
+running is still read.
+
+The empty state states the read-only claim and then proves it: "Read what
+CloudGuard will do" fetches `/cloud-accounts/azure/permissions` and lists the
+directory permissions, the Azure role and the writes performed. A hardcoded list
+would be a second copy of the claim, free to drift from the one Microsoft's
+consent screen actually shows. Its four-step preview is the wizard's own
+`SETUP_STEPS`, in the same words, so the list cannot drift from the flow it
+previews.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

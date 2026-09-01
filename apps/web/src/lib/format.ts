@@ -120,6 +120,39 @@ export function formatDateTime(value: string | null): string {
   });
 }
 
+/**
+ * How long ago, in the words a person would use.
+ *
+ * The connections list is read to answer "is this current?", and an absolute
+ * timestamp makes the reader do the subtraction -- against a clock they cannot
+ * see, since the row is about a machine somewhere else. Rounded down at every
+ * step: saying "1 hour ago" of something 119 minutes old is the direction that
+ * flatters the product, so it says 1 hour only from 60 minutes.
+ */
+export function formatRelative(value: string | null): string {
+  if (!value) return "\u2014";
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return "\u2014";
+
+  const seconds = Math.floor((Date.now() - then) / 1000);
+  // A clock that is a little behind the server's is ordinary; reporting a read
+  // that has not happened yet is not.
+  if (seconds < 60) return "just now";
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+
+  // Past a month, "63 days ago" is arithmetic nobody asked for and the date
+  // itself is the more useful answer.
+  return formatDate(value);
+}
+
 export function formatEffort(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
   const hours = minutes / 60;

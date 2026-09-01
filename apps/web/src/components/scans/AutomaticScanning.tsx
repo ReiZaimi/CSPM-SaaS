@@ -67,7 +67,7 @@ export function AutomaticScanning({
               No verified connection to put on a schedule yet.
             </p>
             <Link
-              to="/connections"
+              to="/connections/new"
               className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
             >
               Connect Azure

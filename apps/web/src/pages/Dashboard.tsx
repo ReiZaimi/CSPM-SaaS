@@ -141,7 +141,7 @@ export function DashboardPage() {
           }
           action={
             <Link
-              to={hasConnection ? "/scans" : "/connections"}
+              to={hasConnection ? "/scans" : "/connections/new"}
               className={buttonVariants()}
             >
               {hasConnection ? t.dashboard.runFirstScan : t.connection.connectAzure}

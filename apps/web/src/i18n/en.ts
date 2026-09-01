@@ -178,6 +178,53 @@ export const en = {
     changeTiming:
       "A burst of changes becomes one scan, not one per event: CloudGuard waits for {quiet} minutes of quiet, and scans a connection at most once every {interval} minutes for change.",
 
+    // The empty state, which is the first meaningful screen in the product.
+    readWhatItDoes: "Read what CloudGuard will do",
+    hideWhatItDoes: "Hide the detail",
+    readOnlyPromise:
+      "The role CloudGuard asks for is read-only. It cannot change your configuration, and it cannot read the data inside your storage accounts, databases or key vaults.",
+    permissionsTitle: "The exact access CloudGuard asks for",
+    graphPermissions: "Directory permissions",
+    rbacRole: "Azure role",
+    writesPerformed: "Writes performed",
+    permissionsUnavailable:
+      "This list comes from the API and could not be loaded. It is the same list Microsoft shows on the consent screen, which is the copy that actually governs.",
+
+    // The connections list: one row per connection, opened for the detail.
+    columnConnection: "Connection",
+    columnStatus: "Status",
+    columnSubscriptions: "Subscriptions",
+    columnLastRead: "Last read",
+    columnActions: "Actions",
+    subscriptionsHeading: "Subscriptions",
+    allInScope: "all in scope",
+    someInScope: "in scope",
+    expandRow: "Show this connection's detail",
+    collapseRow: "Hide this connection's detail",
+    scanNow: "Scan now",
+    scanStarting: "Starting\u2026",
+    scanQueued: "Scan queued",
+    changeSchedule: "Change schedule",
+    cadenceTitle: "How often this is read",
+    cadenceLastRead: "Last read",
+    cadenceNeverRead: "Not yet",
+    cadenceClock: "On a clock",
+    cadenceOnChange: "On change",
+    accessTitle: "Access",
+    readerRole: "Reader role",
+    verifiedOn: "verified",
+    writePermission: "Write permission",
+    noneByDesign: "None, by design",
+    recheckAccess: "Re-check access",
+    firstSeen: "first seen",
+    newSinceLastRead: "new since last read",
+    excludedByYou: "excluded by you",
+    moreSubscriptions: "more subscriptions",
+    discoveryPromise:
+      "A subscription created in this tenant appears here on the next read.",
+    scopeFootnote:
+      "Unticking a subscription stops CloudGuard reading it. Existing findings for it are kept and marked out of scope, not deleted.",
+
     noSubscriptionsTitle: "No subscriptions found yet",
     noSubscriptionsBody:
       "Both grants are working, but CloudGuard cannot see any subscription to scan. A role assigned moments ago can take a few minutes to show up, and a role deployed to the wrong scope will never show up at all.",
@@ -250,6 +297,87 @@ export const en = {
     notConfiguredDetail:
       "This is a setup step on CloudGuard's side, not yours \u2014 whoever operates this deployment needs to register its Entra application (docs/AZURE_INTEGRATION.md \u00a72.1).",
   },
+
+  // The setup wizard. Its own block rather than more keys on `connection`,
+  // because these strings are read in one sitting by somebody who has never
+  // seen the product before, and they have to make sense in sequence.
+  setup: {
+    title: "Connect Azure",
+    intro:
+      "Two grants and about three minutes. You will not be asked for a tenant id, a subscription id, or any credential.",
+    backToConnections: "Cloud connections",
+    railTitle: "What the three minutes look like",
+
+    stepScope: "Choose the scope, and name it",
+    stepScopeDetail:
+      "A whole tenant, one management group, or a single subscription. The name is yours \u2014 it is what you will see on every finding.",
+    stepConsent: "A Global Administrator grants admin consent",
+    stepConsentDetail:
+      "One Microsoft prompt, once per tenant. If that is not you, CloudGuard gives you a link to send.",
+    stepDeploy: "Deploy the reader role",
+    stepDeployDetail:
+      "One ARM template in Azure Portal. Needs Owner at the scope you chose \u2014 the form says which, before you start.",
+    stepSubscriptions: "Then CloudGuard finds the rest",
+    stepSubscriptionsDetail:
+      "Every subscription beneath the scope is discovered and kept in step \u2014 including the ones created after today.",
+
+    // Consent step.
+    consentTitle: "Ask a Global Administrator to consent",
+    consentBody:
+      "This is one Microsoft prompt, granted once for the whole directory. Nothing is scanned by it \u2014 it is what lets CloudGuard ask Azure who exists.",
+    notAdmin: "I am not a Global Administrator",
+    handoffTitle: "Send it to someone who is",
+    handoffBody:
+      "The link works once and expires in 30 minutes, so send it when they are at their desk. This page keeps waiting; you can close it and come back.",
+    handoffMessage:
+      "Please open this link and approve read-only access for CloudGuard, our cloud security tool. It needs a Global Administrator, takes one click, and grants no permission to change anything:",
+    copyMessage: "Copy the message",
+    consentFailed: "Admin consent did not complete",
+    consentRetry: "Start consent again",
+
+    // Deploy step.
+    deployTitle: "Grant read access at the scope you chose",
+    deployBody:
+      "The template is pre-filled. Azure Portal opens on a review screen; there is nothing to type.",
+    deployToAzure: "Deploy to Azure",
+    stalledTitle: "This is taking longer than a deployment should",
+    stalledBody:
+      "The three things that usually explain it, in the order they are worth checking:",
+    stalledPropagation:
+      "A role assigned in the last few minutes has not propagated yet. Waiting a little longer is the fix.",
+    stalledScopeTenant:
+      "The deployment landed on a subscription rather than the tenant root. A connection covering the whole tenant only sees a role assigned at the root management group.",
+    stalledScopeGroup:
+      "The deployment landed on a subscription rather than on the management group this connection covers.",
+    stalledScopeSubscription:
+      "The deployment landed on a different subscription from the one this connection covers.",
+    stalledOwner:
+      "Whoever ran it holds Contributor rather than Owner or User Access Administrator. Contributor can deploy a template but cannot assign a role, and Azure reports that as a failed deployment rather than a missing permission.",
+    checkAgain: "Check again",
+    checking: "Checking\u2026",
+    changeScope: "Choose a different scope",
+
+    // Subscriptions step.
+    discoverTitle: "Looking for subscriptions",
+    reviewTitle: "Choose what CloudGuard reads",
+    reviewBody:
+      "Everything beneath the scope is in scope by default. Unticking one stops CloudGuard reading it; existing findings are kept and marked out of scope, not deleted.",
+    nothingInScopeTitle: "Nothing is ticked, so nothing will be read",
+    nothingInScopeBody:
+      "Every subscription found beneath this scope is out of scope. Tick at least one above, or leave it — the connection stays and picks up whatever is ticked later.",
+    doneTitle: "Connected",
+    doneBody:
+      "Nothing is read until a scan runs. The first one is worth starting now \u2014 after that, the scans page decides how often this environment is re-read.",
+    backToList: "Back to connections",
+
+    // Footer, on every step, and the way back in from the connections list.
+    continueSetup: "Continue setup",
+    finishLater: "Finish later",
+    paused: "Setup is paused",
+    pausedBody:
+      "Nothing has been scanned and nothing was granted. Pick it up whenever the right person is available.",
+  },
+
   dashboard: {
     title: "Security posture",
     score: "Security score",

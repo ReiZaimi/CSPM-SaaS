@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { formatEffort, levelStyle, label, outcomeStyle, scoreColor } from "../format";
+import {
+  formatDate,
+  formatEffort,
+  formatRelative,
+  levelStyle,
+  label,
+  outcomeStyle,
+  scoreColor,
+} from "../format";
 
 describe("severity presentation", () => {
   it("gives UNKNOWN its own treatment rather than reusing LOW", () => {
@@ -79,5 +87,32 @@ describe("outcomeStyle", () => {
     // would send someone hunting a second problem one hop from the real one.
     expect(outcomeStyle("SKIPPED")).toContain("unknown");
     expect(outcomeStyle("SKIPPED")).not.toContain("critical");
+  });
+});
+
+describe("how long ago something happened", () => {
+  const minutesAgo = (minutes: number) =>
+    new Date(Date.now() - minutes * 60_000).toISOString();
+
+  it("rounds down at every step", () => {
+    // "1 hour ago" of something 119 minutes old flatters the product, which is
+    // the wrong direction for a page about how current the data is.
+    expect(formatRelative(minutesAgo(119))).toBe("1 hour ago");
+    expect(formatRelative(minutesAgo(12))).toBe("12 minutes ago");
+    expect(formatRelative(minutesAgo(60 * 25))).toBe("1 day ago");
+  });
+
+  it("never reports a read that has not happened yet", () => {
+    // A browser clock a little behind the server's is ordinary.
+    expect(formatRelative(new Date(Date.now() + 30_000).toISOString())).toBe("just now");
+  });
+
+  it("gives the date once the arithmetic stops being useful", () => {
+    expect(formatRelative("2020-03-04T00:00:00Z")).toBe(formatDate("2020-03-04T00:00:00Z"));
+  });
+
+  it("says nothing rather than 'Invalid Date'", () => {
+    expect(formatRelative(null)).toBe("—");
+    expect(formatRelative("not a date")).toBe("—");
   });
 });

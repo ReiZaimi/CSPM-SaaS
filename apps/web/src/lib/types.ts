@@ -475,6 +475,9 @@ export interface CloudConnection {
   template_url: string | null;
   /** True once waiting no longer explains why read access has not appeared. */
   deploy_stalled: boolean;
+  /** Whether this environment reports its own changes, and when it last did. */
+  change_events_enabled?: boolean;
+  last_change_event_at?: string | null;
 }
 
 export interface DiscoveredSubscription {
@@ -482,6 +485,11 @@ export interface DiscoveredSubscription {
   subscription_id: string | null;
   display_name: string | null;
   in_scope: boolean;
+  /**
+   * When the scope choice was last changed. Null on a subscription nobody has
+   * ever ticked or unticked, which is every one of them until somebody does.
+   */
+  scope_changed_at?: string | null;
   status: "PENDING" | "ACTIVE" | "ERROR" | "DISABLED";
   discovered_at: string | null;
   last_scan_at: string | null;
@@ -706,4 +714,12 @@ export interface ChangeEventSetup {
   quiet_period_minutes: number;
   minimum_interval_minutes: number;
   commands: { subscription_id: string; command: string }[];
+}
+
+/** What CloudGuard asks a customer to grant, shown before they grant it. */
+export interface AzurePermissions {
+  graph_application_permissions: string[];
+  azure_rbac_role: string;
+  access_type: string;
+  writes_performed: string;
 }

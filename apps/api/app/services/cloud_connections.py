@@ -869,7 +869,14 @@ async def set_subscription_scope(
 
     for account in accounts:
         if account.subscription_id in in_scope:
-            account.in_scope = in_scope[account.subscription_id]
+            chosen = in_scope[account.subscription_id]
+            # Stamped only when the answer actually changes. A screen that
+            # re-sends every row it displayed would otherwise move the date on
+            # subscriptions nobody touched, and the date is there precisely to
+            # say when somebody last made a decision about this one.
+            if chosen != account.in_scope:
+                account.scope_changed_at = datetime.now(UTC)
+            account.in_scope = chosen
             account.status = (
                 CloudAccountStatus.ACTIVE
                 if account.in_scope
