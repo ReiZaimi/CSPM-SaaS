@@ -55,6 +55,27 @@ describe("SelectField", () => {
     expect(onValueChange).toHaveBeenCalledWith("7");
   });
 
+  it("labels an option whose value is the empty string", () => {
+    // The schedule control's "manual" option really is `""`, and treating an
+    // empty value as "nothing selected" left that control blank — which reads
+    // as broken rather than as switched off.
+    render(
+      <SelectField
+        value=""
+        onValueChange={() => {}}
+        options={[
+          { value: "", label: "Manual scanning only" },
+          { value: "24", label: "Daily" },
+        ]}
+        ariaLabel="Schedule"
+      />,
+    );
+
+    expect(screen.getByLabelText("Schedule")).toHaveTextContent(
+      "Manual scanning only",
+    );
+  });
+
   it("falls back to the raw value rather than showing nothing", () => {
     // A value the option list does not carry — a stored filter from an older
     // build, say. Showing it is worse than showing a label and better than an

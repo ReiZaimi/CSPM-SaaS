@@ -1217,6 +1217,47 @@ subscription" and an interval the list does not offer keeps its own "18 h".
 
 ---
 
+## 40. The risks list shows live risks, and the schedule moved to the scans page
+
+**Spec:** none. Three bugs from screenshots, and two of them had the same
+shape — a screen showing something the product itself does not believe.
+
+**The risks page listed every risk row ever raised.** A risk outlives the
+finding it was scored from: the finding closes, a later scan supersedes it, and
+the row stays. Unfiltered, that rendered four identical "Storage account allows
+public access" cards, all marked Open, on an estate the dashboard was
+simultaneously reporting two open findings for. The two screens disagreed
+because only one was applying the product's own definition of live — a finding
+risk counts while its finding is open, a scenario counts until the route
+closes — so `GET /risks` now applies it by default. Asking for a status by name
+still reaches the rest, which is how a resolved risk is looked up rather than
+lost.
+
+**Tabs rendered as a vertical strip beside their own panel.** The registry's
+classes matched `data-horizontal`, a bare attribute Base UI never writes: it
+writes `data-orientation="horizontal"`. So `data-horizontal:flex-col` compiled
+to a rule nothing matched, the root stayed a flex row, and the remediation
+panel's Steps/CLI tabs stacked into a narrow column. Same family as §35 —
+syntax that is silently inert rather than loudly wrong.
+
+**A select whose value is the empty string had no label.** `SelectField` treated
+empty as "nothing selected" and fell through to the placeholder, but the
+schedule control's "Manual scanning only" *is* the empty value, so that control
+rendered blank — which reads as broken rather than as switched off. Options are
+consulted first now, empty string included.
+
+**Automatic scanning moved from the connection card to the scans page**, at the
+customer's request and for a reason worth recording: the connections page
+answers "can CloudGuard see my cloud", a setup question asked once, while the
+scans page answers "when was this last read, and when will it be read next" —
+and a schedule is the second half of that sentence. A history of runs with no
+visible cadence makes the gaps between them look like something that happened
+rather than something that was chosen. The connection card keeps a line saying
+where the setting went and what it is currently set to: somebody who configured
+it there once should be told it moved, not left to conclude it was dropped.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

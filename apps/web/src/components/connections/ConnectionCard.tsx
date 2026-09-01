@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
 import { useT } from "@/i18n";
 import { StatusPill } from "@/components/security/StatusPill";
-import { ScheduleControl } from "@/components/connections/ScheduleControl";
+
 import { ChangeEventsControl } from "@/components/connections/ChangeEventsControl";
 import { RemoveConfirm } from "@/components/connections/RemoveConfirm";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -328,12 +328,20 @@ function ConnectionCard({
         </Alert>
       )}
 
-      {/* And the answer to "do I have to remember to do that?". Placed after
-          the scan button rather than beside it: the first scan is the thing to
-          do now, and the schedule is the thing that stops there being a next
-          time somebody forgets. */}
+      {/* The schedule used to sit here and now lives on the scans page, beside
+          the history it explains. Named rather than silently moved: somebody
+          who set it here once should be told where it went instead of
+          concluding the feature was dropped. */}
       {connection.is_verified && scoped.length > 0 && (
-        <ScheduleControl connection={connection} onError={setError} />
+        <p className="mt-4 text-xs text-muted-foreground">
+          Automatic scanning is set on the{" "}
+          <Link to="/scans" className="underline underline-offset-2">
+            scans page
+          </Link>
+          {connection.scan_interval_hours === null
+            ? " — this connection is read only when somebody asks for it."
+            : ` — this connection is re-read every ${connection.scan_interval_hours} hours.`}
+        </p>
       )}
 
       {/* And beneath the clock, the thing the clock cannot do. A schedule

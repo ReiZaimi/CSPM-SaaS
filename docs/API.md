@@ -231,6 +231,11 @@ by the dashboard. A path costs a graph build and changes are a windowed feed, so
 folding either into this payload would make the numbers everybody came for wait
 on the two panels nobody scrolls to first.
 
+`/risks` lists **live** risks unless a `status` is named: a finding risk while
+its finding is open, a scenario until the route closes. A risk row outlives the
+finding it was scored from, and listing every row ever raised made the page
+disagree with the dashboard about the same estate on the same day.
+
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's
 latest scan. Each control resolves to FAILING, INCONCLUSIVE, PASSING,

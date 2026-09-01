@@ -15,7 +15,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ScheduleControl } from "@/components/connections/ScheduleControl";
+import { ScheduleControl } from "@/components/scans/ScheduleControl";
 import type { CloudConnection } from "@/lib/types";
 import { api } from "@/lib/api";
 

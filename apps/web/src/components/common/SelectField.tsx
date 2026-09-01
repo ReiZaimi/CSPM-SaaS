@@ -69,12 +69,14 @@ export function SelectField({
         <SelectValue placeholder={placeholder}>
           {(current) => {
             const chosen = String(current ?? "");
+            // The options are consulted first, including for the empty string:
+            // "" is a legitimate value with a legitimate label — "Manual
+            // scanning only" — and treating empty as "nothing selected" left
+            // that control blank, which reads as broken rather than as off.
+            const known = options.find((option) => option.value === chosen);
+            if (known) return known.label;
             if (!chosen) return placeholder ?? "";
-            return (
-              options.find((option) => option.value === chosen)?.label ??
-              fallbackLabel?.(chosen) ??
-              chosen
-            );
+            return fallbackLabel?.(chosen) ?? chosen;
           }}
         </SelectValue>
       </SelectTrigger>

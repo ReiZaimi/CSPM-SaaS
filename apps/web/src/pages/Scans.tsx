@@ -6,6 +6,7 @@ import { api, ApiError } from "@/lib/api";
 import type { CloudAccount, Scan } from "@/lib/types";
 import { useT } from "@/i18n";
 import { ScanCard } from "@/components/scans/ScanCard";
+import { AutomaticScanning } from "@/components/scans/AutomaticScanning";
 import { IN_FLIGHT } from "@/components/scans/status";
 import { CardsSkeleton, EmptyState, PageHeader } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -99,6 +100,11 @@ export function ScansPage() {
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+
+      {/* The clock, above the history it explains: a list of runs with no
+          visible cadence makes the gaps between them look like something that
+          happened rather than something that was chosen. */}
+      <AutomaticScanning onError={setError} />
 
       {scans.isLoading && <CardsSkeleton />}
 

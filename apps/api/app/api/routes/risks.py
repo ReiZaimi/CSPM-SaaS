@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, or_, select
 
 from app.core.deps import DbSession, Tenant
-from app.core.enums import Level, RiskKind, RiskStatus
+from app.core.enums import FindingStatus, Level, RiskKind, RiskStatus
 from app.core.errors import NotFound, envelope
 from app.models.finding import Finding
 from app.models.risk import Risk, RiskFinding
@@ -25,6 +25,38 @@ async def list_risks(
     offset: int = 0,
 ) -> dict:
     stmt = select(Risk).where(Risk.organization_id == tenant.organization_id)
+
+    # Live risks only, unless a status is asked for by name.
+    #
+    # A risk row outlives the finding it was scored from: the finding closes,
+    # the next scan supersedes it, and the row stays. Listed unfiltered, the
+    # page showed every risk ever raised as though all of them were current --
+    # four identical "Storage account allows public access" cards, all Open,
+    # on an estate the dashboard was simultaneously reporting two open findings
+    # for. The two screens disagreed because only one of them was applying the
+    # product's own definition of live.
+    #
+    # This is that definition, and it is the same one `build_dashboard` uses: a
+    # finding risk counts while its finding is open, a scenario counts until
+    # the route closes. Asking for a status explicitly still reaches the rest,
+    # which is how a resolved risk is looked up rather than lost.
+    if risk_status is None:
+        live_finding_risks = (
+            select(RiskFinding.risk_id)
+            .join(Finding, Finding.id == RiskFinding.finding_id)
+            .where(
+                RiskFinding.organization_id == tenant.organization_id,
+                Finding.status.in_([FindingStatus.OPEN, FindingStatus.IN_PROGRESS]),
+            )
+        )
+        stmt = stmt.where(
+            or_(
+                Risk.kind != RiskKind.FINDING,
+                Risk.id.in_(live_finding_risks),
+            ),
+            Risk.status != RiskStatus.RESOLVED,
+        )
+
     if risk_level:
         stmt = stmt.where(Risk.risk_level == risk_level)
     if risk_status:

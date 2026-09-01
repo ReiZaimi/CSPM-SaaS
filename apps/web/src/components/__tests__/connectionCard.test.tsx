@@ -98,7 +98,40 @@ describe("a connection card", () => {
       } as Partial<CloudConnection>),
     );
 
-    expect(screen.getByRole("link", { name: /scan/i })).toHaveAttribute("href", "/scans");
+    expect(screen.getByRole("link", { name: /run a scan/i })).toHaveAttribute(
+      "href",
+      "/scans",
+    );
+  });
+
+  it("says where automatic scanning went rather than dropping it silently", () => {
+    // The schedule used to live on this card. Somebody who set it here once
+    // should be told it moved, not left to conclude the feature was removed.
+    mount(
+      connection({
+        consent_status: "GRANTED",
+        rbac_verified_at: "2026-01-01T00:00:00Z",
+        is_verified: true,
+        is_ready_to_scan: true,
+        status: "ACTIVE",
+        subscription_count: 1,
+        scan_interval_hours: null,
+        subscriptions: [
+          {
+            id: "sub-row-1",
+            subscription_id: "00000000-0000-0000-0000-000000000001",
+            display_name: "Production",
+            in_scope: true,
+          },
+        ],
+      } as Partial<CloudConnection>),
+    );
+
+    expect(screen.getByText(/Automatic scanning is set on the/)).toBeInTheDocument();
+    // And it states the current cadence, so the pointer is also an answer.
+    expect(
+      screen.getByText(/read only when somebody asks for it/),
+    ).toBeInTheDocument();
   });
 
   it("lets a subscription be taken out of scope", () => {
