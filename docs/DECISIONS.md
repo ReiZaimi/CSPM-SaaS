@@ -1831,6 +1831,44 @@ refuses to boot on.
 
 ---
 
+## 52. The asset graph is cached against its data, not against a clock
+
+Six callers build the graph and four are request handlers — the attack-path
+list, choke points, blast radius, and a finding's routes. Every one read the
+whole tenant, every present asset and every edge, and somebody clicking between
+those screens paid for it each time. On the one page where a tenant large enough
+to have interesting paths is also large enough to be slow.
+
+**Cached on the version of the data rather than on a TTL.** A time-based cache
+would make these pages briefly wrong after every scan, and briefly wrong here
+means telling somebody an attacker can still reach their data through a route
+they closed this morning. §"the graph holds present assets" already established
+that a stale path is not a weaker claim than a real one, it is a false one — a
+TTL would reintroduce exactly that, on a timer.
+
+The version is three aggregates: the newest `cloud_resources.updated_at`, the
+newest `resource_relationships.created_at`, and the count of present assets. The
+count is not redundant. A scan that only *removed* an asset moves no timestamp —
+the rows that remain were not touched, and the one that went is not there to
+carry a time — so without it the graph would go on serving routes through
+something no longer in the estate.
+
+Keyed on the data rather than on "the newest scan", though a scan is the only
+thing that rewrites assets today. Keying on the scan would be an inference about
+which processes write, and the day something else does — a context declaration
+applied in place, a manual edit — the cache goes stale silently.
+
+Bounded at eight tenants, LRU. This is a read cache in a process that serves
+every customer, and holding a graph per tenant for the life of the process
+trades a latency problem for a memory one whose size is a function of how many
+customers happened to open one page.
+
+The scan pipeline does not read it: `_correlate_paths` builds from the
+normalized state in hand, so it can neither be served a stale graph nor leave
+one behind.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

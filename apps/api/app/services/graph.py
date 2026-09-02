@@ -21,9 +21,11 @@ never contained it. Two views of one tenant disagreeing, with the wrong one
 facing the customer.
 """
 
+from collections import OrderedDict
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import RelationshipType
@@ -31,15 +33,101 @@ from app.domain.resource import CloudResource
 from app.graph import AssetGraph, ChokePoint, Path
 from app.models.resource import ResourceRecord, ResourceRelationship
 
+# Graphs held in memory, keyed by tenant, each remembered with the version of
+# the data it was built from.
+#
+# Six callers build this and four of them are request handlers: the attack-path
+# list, choke points, blast radius, and a finding's routes. Every one of them
+# read the whole tenant -- every present asset and every edge -- and a person
+# clicking between those screens paid for it each time, on the one page where a
+# tenant large enough to have interesting paths is also large enough to be slow.
+#
+# Small on purpose. This is a read cache in a process that serves many tenants,
+# and holding a graph per tenant indefinitely trades a latency problem for a
+# memory one.
+_MAX_CACHED = 8
+_cache: "OrderedDict[UUID, tuple[tuple[datetime | None, datetime | None, int], AssetGraph]]" = (
+    OrderedDict()
+)
+
+
+async def graph_version(
+    session: AsyncSession, organization_id: UUID
+) -> tuple[datetime | None, datetime | None, int]:
+    """What the graph would be built from, cheaply enough to ask every time.
+
+    Keyed on the data rather than on the scan that wrote it. A scan is the only
+    thing that rewrites assets and edges today, but keying on "the newest scan"
+    would be an inference about *which processes write*, and the day something
+    else does -- a context declaration applied in place, a manual asset edit --
+    the cache would go stale silently and serve routes through an estate that
+    has moved.
+
+    Three aggregates rather than one: assets change by being written, and edges
+    change by being replaced, and a scan that only removed an edge would move
+    neither timestamp on its own. The count is what catches that.
+    """
+    assets = (
+        await session.execute(
+            select(
+                func.max(ResourceRecord.updated_at),
+                func.count(ResourceRecord.id),
+            ).where(
+                ResourceRecord.organization_id == organization_id,
+                ResourceRecord.absent_since.is_(None),
+            )
+        )
+    ).one()
+    edges = (
+        await session.execute(
+            select(func.max(ResourceRelationship.created_at)).where(
+                ResourceRelationship.organization_id == organization_id
+            )
+        )
+    ).scalar_one_or_none()
+    return (assets[0], edges, int(assets[1] or 0))
+
 
 async def load_graph(session: AsyncSession, organization_id: UUID) -> AssetGraph:
     """Every asset this organization holds, and the edges between them.
 
-    Two queries whatever the size of the tenant. The edges are stored by
-    database id and the graph works in provider ids -- the ones a customer can
-    paste into a portal -- so the mapping happens here rather than leaking a
-    surrogate key into something a person reads.
+    Two queries whatever the size of the tenant, and a third small one first to
+    ask whether they are needed at all. The edges are stored by database id and
+    the graph works in provider ids -- the ones a customer can paste into a
+    portal -- so the mapping happens here rather than leaking a surrogate key
+    into something a person reads.
+
+    **Cached against the version of the data, not against a clock.** A TTL would
+    make the page briefly wrong after every scan, which on this page means
+    showing a route somebody has already closed -- and a stale path is worse
+    than no path. Keyed on the data's own version, a scan invalidates it by
+    happening, and a tenant nobody has scanned pays for the traversal once.
     """
+    version = await graph_version(session, organization_id)
+    cached = _cache.get(organization_id)
+    if cached is not None and cached[0] == version:
+        _cache.move_to_end(organization_id)
+        return cached[1]
+
+    graph = await _build_graph(session, organization_id)
+    _cache[organization_id] = (version, graph)
+    _cache.move_to_end(organization_id)
+    while len(_cache) > _MAX_CACHED:
+        _cache.popitem(last=False)
+    return graph
+
+
+def forget_cached_graphs() -> None:
+    """Drop everything held. For tests, and for a worker that has just written.
+
+    Not called by the scan pipeline: it builds its graph from the normalized
+    state in hand rather than from the database, so it never reads this cache
+    and cannot leave it stale for its own process.
+    """
+    _cache.clear()
+
+
+async def _build_graph(session: AsyncSession, organization_id: UUID) -> AssetGraph:
     records = list(
         (
             await session.execute(

@@ -2346,6 +2346,56 @@ class TestAssetGraph:
         )
 
 
+class TestGraphCaching:
+    """The cache is keyed on a version, so the version has to actually move.
+
+    The unit tests hold the caching logic. What only a real database can settle
+    is the premise underneath it: that a scan changes what ``graph_version``
+    reports. If it did not, the attack-path pages would serve the estate as it
+    was the first time anybody looked at them, indefinitely, and nothing would
+    say so.
+    """
+
+    async def test_a_scan_changes_the_version_the_graph_is_keyed_on(
+        self, replay, connected_account
+    ) -> None:
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            before = await graph_service.graph_version(session, org_id)
+
+        # A second reading of a changed environment: assets are rewritten, and
+        # the version must move with them.
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            after = await graph_service.graph_version(session, org_id)
+
+        assert before != after, (
+            "a scan left the graph version unchanged, so cached attack paths "
+            "would outlive the estate they describe"
+        )
+
+    async def test_the_version_is_stable_when_nothing_has_scanned(
+        self, replay, connected_account
+    ) -> None:
+        """Otherwise the cache would never hit and the whole thing is dead
+        weight that costs an extra query per request."""
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            first = await graph_service.graph_version(session, org_id)
+            second = await graph_service.graph_version(session, org_id)
+
+        assert first == second
+
+
 class TestChokePoints:
     """Which single change closes the most routes.
 
