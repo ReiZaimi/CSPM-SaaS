@@ -413,6 +413,23 @@ export const en = {
     empty: "No findings match these filters.",
     whyItMatters: "Why this matters",
     evidence: "Evidence",
+    provenance: "How we know",
+    provenanceIntro:
+      "Where the evidence above came from \u2014 which listing, when the provider was read, and under which permission.",
+    // `null` from the API: a fact about CloudGuard, not about this finding.
+    provenanceUnrecorded:
+      "This finding was raised before CloudGuard recorded where its evidence came from. The next scan that detects it will.",
+    // `[]`: a fact about the rule, and a different sentence for that reason.
+    provenanceNone: "This check reads no collected evidence.",
+    provenanceRead: "Read",
+    provenanceItems: "{count} items",
+    provenanceUnder: "Read under",
+    provenancePayload: "Capture",
+    provenanceHeld: "Still stored",
+    // The citation outlives the bytes on purpose, so this is a statement about
+    // retention rather than an error.
+    provenancePruned: "No longer stored",
+    provenanceRule: "Evaluated by {rule} v{version}",
     controlsTitle: "What is standing in the way",
     controlsHelp:
       "Defences CloudGuard observed in the same reading. They make this harder to exploit without making it right, so this finding is ranked lower than it otherwise would be \u2014 and it is still open, because every one of them can be switched off, rescoped or have this account excluded in a change nobody reviews.",

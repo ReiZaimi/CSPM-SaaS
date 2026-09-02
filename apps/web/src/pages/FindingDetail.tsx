@@ -5,7 +5,12 @@ import { toast } from "sonner";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
-import type { FindingAttackPath, FindingDetail } from "@/lib/types";
+import type {
+  EvidenceCitation,
+  FindingAttackPath,
+  FindingDetail,
+  FindingProvenance,
+} from "@/lib/types";
 import { useT } from "@/i18n";
 import { StatusPill } from "@/components/security/StatusPill";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
@@ -35,7 +40,13 @@ import { RemediationPanel } from "@/components/security/RemediationPanel";
 import { TrackFix } from "@/components/security/TrackFix";
 import { VerificationPanel } from "@/components/security/VerificationPanel";
 import { FindingTimeline } from "@/components/security/FindingTimeline";
-import { cn, formatDateTime, resourceTypeLabel } from "@/lib/format";
+import {
+  cn,
+  formatDateTime,
+  formatRelative,
+  outcomeStyle,
+  resourceTypeLabel,
+} from "@/lib/format";
 
 /**
  * The page the whole product is really about. It must answer, in order:
@@ -72,6 +83,23 @@ export function FindingDetailPage() {
         .get<FindingAttackPath[]>(`/api/v1/findings/${findingId}/attack-paths`)
         .then((r) => r.data),
     enabled: Boolean(data?.resource),
+    retry: false,
+  });
+
+  /**
+   * How CloudGuard knows.
+   *
+   * A separate request for the same reason the routes are: the page answering
+   * "what is wrong" must not wait on a question most readers never ask. Unlike
+   * the routes it is asked for every finding, because a tenant-wide finding has
+   * provenance even though it has no asset.
+   */
+  const provenance = useQuery({
+    queryKey: ["finding-provenance", findingId],
+    queryFn: () =>
+      api
+        .get<FindingProvenance>(`/api/v1/findings/${findingId}/provenance`)
+        .then((r) => r.data),
     retry: false,
   });
 
@@ -211,6 +239,12 @@ export function FindingDetailPage() {
 
           {/* EVIDENCE */}
           <EvidencePanel evidence={data.evidence} />
+
+          {/* WHERE THAT EVIDENCE CAME FROM */}
+          <ProvenancePanel
+            provenance={provenance.data}
+            loading={provenance.isLoading}
+          />
 
           {/* WHAT IT IS PART OF */}
           <AttackPathContext
@@ -593,6 +627,165 @@ function EvidencePanel({ evidence }: { evidence: unknown }) {
         </Collapsible>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Where the evidence above came from.
+ *
+ * The excerpt says what the rule saw. This says which listing produced it, when
+ * the provider was actually read, under which permission, and whether the bytes
+ * are still held — which is the difference between a claim a customer has to
+ * accept and one they can check.
+ *
+ * Sat directly under the excerpt rather than in its own tab, because the two
+ * are one thought: a reader who has just looked at a capture and wondered where
+ * it came from should not have to go looking.
+ */
+function ProvenancePanel({
+  provenance,
+  loading,
+}: {
+  provenance?: FindingProvenance;
+  loading: boolean;
+}) {
+  const t = useT();
+
+  if (loading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>{t.findings.provenance}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-4 w-1/2" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // A failed request is not an absent citation: saying "not recorded" here
+  // would invent a fact about the finding out of a network error. Absent data
+  // is the whole test -- a failed first fetch leaves it undefined, and a failed
+  // *refetch* leaves the last good answer in place, which is the one that
+  // should stay on screen rather than being hidden because a later request
+  // fell over.
+  if (!provenance) return null;
+
+  const citations = provenance.evidence;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t.findings.provenance}</CardTitle>
+        <CardDescription>{t.findings.provenanceIntro}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {citations === null ? (
+          // `null` and `[]` are different answers and the page must not blur
+          // them. This one is about CloudGuard, not about the finding.
+          <p className="text-sm text-muted-foreground">
+            {t.findings.provenanceUnrecorded}
+          </p>
+        ) : citations.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {t.findings.provenanceNone}
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {citations.map((citation) => (
+              <Citation key={citation.evidence_key} citation={citation} />
+            ))}
+          </ul>
+        )}
+
+        <p className="text-xs text-muted-foreground">
+          {t.findings.provenanceRule
+            .replace("{rule}", provenance.rule_id)
+            .replace("{version}", provenance.rule_version)}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** One reading, with the four things that make it checkable. */
+function Citation({ citation }: { citation: EvidenceCitation }) {
+  const t = useT();
+  // A reading whose scan has been pruned has no outcome left to show. Rendered
+  // as absent rather than as SKIPPED: "we no longer hold that" is not a verdict
+  // the collector ever reached.
+  const outcome = citation.outcome;
+
+  return (
+    <li className="rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <code className="text-sm font-medium text-foreground">
+          {citation.evidence_key}
+        </code>
+        {outcome && (
+          <Badge
+            variant="outline"
+            className={cn("border text-xs", outcomeStyle(outcome))}
+          >
+            {outcome}
+          </Badge>
+        )}
+        {typeof citation.item_count === "number" && (
+          <span className="text-xs text-muted-foreground">
+            {t.findings.provenanceItems.replace(
+              "{count}",
+              String(citation.item_count),
+            )}
+          </span>
+        )}
+      </div>
+
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+        <div className="flex gap-2">
+          <dt className="text-muted-foreground">{t.findings.provenanceRead}</dt>
+          {/* Relative first, because the question is "how current is this",
+              and the exact moment on hover for whoever needs to cite it. */}
+          <dd className="text-foreground" title={formatDateTime(citation.collected_at)}>
+            {formatRelative(citation.collected_at)}
+          </dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="text-muted-foreground">
+            {t.findings.provenancePayload}
+          </dt>
+          <dd className="text-foreground">
+            {citation.payload_available
+              ? t.findings.provenanceHeld
+              : t.findings.provenancePruned}
+          </dd>
+        </div>
+      </dl>
+
+      {citation.permissions.length > 0 && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {t.findings.provenanceUnder}{" "}
+          {citation.permissions.map((permission) => (
+            <code key={permission} className="text-foreground">
+              {permission}
+            </code>
+          ))}
+        </p>
+      )}
+
+      {citation.content_hash && (
+        // Truncated because nobody reads sixty-four hex characters, and shown
+        // at all because it is what makes the reading identifiable: two scans
+        // citing the same hash read byte-identical bytes.
+        <p
+          className="mt-1 font-mono text-[11px] text-muted-foreground"
+          title={citation.content_hash}
+        >
+          sha256 {citation.content_hash.slice(0, 12)}…
+        </p>
+      )}
+    </li>
   );
 }
 

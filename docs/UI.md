@@ -111,6 +111,18 @@ knows where they are, not only where to leave.
 
 **Finding detail** — title, severity, asset, why it matters, evidence, risk score, recommended fix, estimated effort, owner, and actions: **Assign / Mark In Progress / Accept Risk / Rescan**. It also says what the finding is *part of*: the attack paths its asset sits on, drawn as routes with the link worth cutting marked, and labelled by where the asset sits on each — the way in, a link in the middle, or the target. No route found is written as a fact about the graph rather than as reassurance, because what counts as sensitive is something the customer declares. Evidence is the raw capture, clipped past about two screens with the rest one click away and copyable whole.
 
+**Finding detail — how we know.** Under the evidence excerpt, the readings that
+excerpt came from: which listing, how long ago the *provider* was read, the
+permission the read was made under, and whether the capture is still stored. The
+excerpt says what the rule saw; this says where it came from, which is the
+difference between a claim a customer accepts and one they check. Three answers
+are kept apart that a careless rendering would flatten into one blank space —
+"raised before CloudGuard recorded this" is a fact about the product, "this
+check reads no collected evidence" is a fact about the rule, and a failed
+request is neither, so the panel does not render at all. Age is the API's
+number, not the browser's: a carried reading is older than the scan that raised
+the finding, and a clock-side calculation would differ per machine.
+
 **Rules** — the catalogue, filterable by severity and free text. It lists what CloudGuard *runs*: a rule withdrawn from the registry (`enabled: false`) is held back behind a toggle and named as withdrawn, because it no longer runs and compliance coverage no longer counts it. Each rule expands to its rationale and the fix in every form the backend holds — prose, CLI, Terraform, Azure Policy.
 
 **Risk detail** — the findings a risk was built from, each one openable, plus the arithmetic in the terms that score was actually built from: the six weighted components for a finding risk, or worst-member/amplifier/hops for a route. The two are never mixed — a scenario was not scored from criticality and exploitability, so it is not shown them.

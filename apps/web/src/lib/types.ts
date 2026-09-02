@@ -561,6 +561,45 @@ export interface AttackPath {
  * on the route the asset in question sits — which is what decides what a
  * reader should do about it.
  */
+/**
+ * One reading a finding rests on.
+ *
+ * The citation, not the excerpt. `evidence` on the finding is what the rule
+ * saw; this is where it came from, and it is what turns "CloudGuard says this
+ * is public" into something the customer can check.
+ */
+export interface EvidenceCitation {
+  evidence_key: string;
+  /** `null` is the directory: a tenant-wide read happened in no subscription. */
+  cloud_account_id: string | null;
+  /** `null` once the scan that read it has been pruned. */
+  outcome: CollectionOutcome | null;
+  item_count: number | null;
+  permissions: string[];
+  content_hash: string | null;
+  collected_at: string;
+  /**
+   * Computed by the API, not here. A carried reading is older than the scan
+   * that raised the finding, and a browser measuring it against its own clock
+   * would show a different age on every machine.
+   */
+  age_seconds: number;
+  source_scan_id: string | null;
+  /** Whether the payload is still stored. A pruned blob does not void the citation. */
+  payload_available: boolean;
+}
+
+/**
+ * `evidence: null` means no citation was recorded — a finding raised before
+ * CloudGuard tracked this. An empty array would mean the rule reads nothing,
+ * and the UI must not say the second when the API said the first.
+ */
+export interface FindingProvenance {
+  rule_id: string;
+  rule_version: string;
+  evidence: EvidenceCitation[] | null;
+}
+
 export interface FindingAttackPath extends AttackPath {
   asset_role: "ENTRY" | "STEP" | "TARGET";
 }
