@@ -16,7 +16,7 @@ import {
 } from "@/components/common/states";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/format";
+import { cn, formatRelative } from "@/lib/format";
 import {
   Card,
   CardContent,
@@ -148,6 +148,17 @@ export function RiskDetailPage() {
               </CardHeader>
               <CardContent>
                 <AttackPathRoute steps={data.path} />
+                {/* A route is a claim about how an environment is wired as of
+                    a reading. Without this, one that survived the latest scan
+                    and one nothing has re-checked since Tuesday look the same. */}
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {data.observed_at
+                    ? t.risks.lastSeen.replace(
+                        "{when}",
+                        formatRelative(data.observed_at),
+                      )
+                    : t.risks.lastSeenUnknown}
+                </p>
               </CardContent>
             </Card>
           )}

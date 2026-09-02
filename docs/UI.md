@@ -152,6 +152,14 @@ request renders nothing at all, because a network error is not an all-clear.
 
 **Risk detail** — the findings a risk was built from, each one openable, plus the arithmetic in the terms that score was actually built from: the six weighted components for a finding risk, or worst-member/amplifier/hops for a route. The two are never mixed — a scenario was not scored from criticality and exploitability, so it is not shown them.
 
+**Risk detail — when a route was last confirmed.** A scenario says when
+anything last looked, under the route it draws. A path is a claim about how an
+environment is wired *as of a reading*, and without a date one that survived the
+latest scan and one nothing has re-checked since Tuesday render identically —
+with the second reading as current. Where the scan that found it has been
+pruned, the page says CloudGuard cannot tell rather than showing a date it
+cannot support.
+
 **Settings** — the half of the evidence a person supplies. The organization profile (name, industry, country; the slug is shown and never editable, because a rename must not change an identifier already in stored references). Per-subscription **context declarations** — environment, criticality, data sensitivity, note — which are what the risk engine multiplies every finding by, and which beat anything inferred from a tag or a resource name. `UNKNOWN` is not offered: it is CloudGuard's word for "nothing said anything", so leaving a field unset withdraws a claim rather than declaring the value unknown. A declaration applies at the next evaluation, not retroactively. Deletion lives here too, gated on typing the organization name, and offered to owners only.
 
 **Reports** — two generated documents, with an **activity window** (30/90/365 days, which moves the verified-fix and completed-work counts and the trend line but never the posture) and per-section tickboxes (top risks, attack paths, remediation progress, compliance coverage, and — technical only — the full findings list). Anything unticked is named on the report's cover as excluded, so a reader downstream can tell a choice from a gap; the posture and the evidence caveats cannot be switched off. The two documents: **Executive** (posture, a fixed-scale 0–100 score sparkline, top risks, compliance coverage — no findings list) and **Technical** (the same numbers, then every open finding worst first). Both offer a PDF download and an HTML preview of the same document. Nothing is stored: reports are generated on request, and the page says so. Fetched with the caller's token rather than linked, because the bearer token lives in memory and a plain anchor would arrive unauthenticated.

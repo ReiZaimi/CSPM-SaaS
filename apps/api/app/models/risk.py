@@ -79,6 +79,19 @@ class Risk(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     # Full component -> contribution breakdown from the scorer.
     score_breakdown: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
+    # The reading this was last seen in. Set for scenario risks, where it is
+    # the answer to a question the row could not previously address: a route is
+    # a claim about how an environment is wired *as of a scan*, and "this route
+    # is open" with no reading behind it cannot be told apart from one nothing
+    # has re-checked since Tuesday.
+    #
+    # SET NULL on a pruned scan, because risks outlive scans exactly as findings
+    # do. The row then says it was seen and no longer which reading saw it,
+    # which is a worse answer than the full one and a much better one than the
+    # route quietly disappearing with its scan.
+    observed_scan_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="SET NULL")
+    )
     owner_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     due_date: Mapped[date | None] = mapped_column(Date)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

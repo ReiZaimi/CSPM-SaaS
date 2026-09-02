@@ -140,6 +140,14 @@ export interface Risk {
  * findings scored 84 is an assertion until the members are named.
  */
 export interface RiskDetail extends Risk {
+  /**
+   * When the route was last seen, not when it first appeared.
+   *
+   * `null` where the scan that saw it has been pruned, or where the route
+   * predates this being tracked. Both mean "we cannot say when" and must not
+   * render as "just now".
+   */
+  observed_at?: string | null;
   findings: {
     id: string;
     rule_id: string;

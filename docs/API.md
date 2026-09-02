@@ -341,6 +341,12 @@ disagree with the dashboard about the same estate on the same day. The rule is
 settled rather than strict — a risk linked to no finding at all is still
 listed, because the absence of a link is not evidence that a risk is over.
 
+`GET /risks/{id}` returns `observed_at` on a scenario: when the route was last
+seen, resolved from the scan that saw it. `null` where that scan has been pruned
+or the route predates this being tracked — both mean "we cannot say when", and
+the page renders that rather than a date it cannot support. A finding risk
+carries none, taking its reading from the finding it was scored from.
+
 `/compliance` reads the rule catalogue's `compliance_mappings` against the
 framework catalogue in `app/compliance/catalog.py` and this organization's
 latest scan. Each control resolves to FAILING, INCONCLUSIVE, PASSING,

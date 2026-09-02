@@ -137,6 +137,12 @@ risks
                              -- re-running anything
   scenario_key               -- stable identity of a route across scans; NULL for
   path JSONB                 -- FINDING risks. `path` is the route's steps
+  observed_scan_id           -- which reading a route was last seen in. Set on
+                             -- scenario risks and rewritten on every
+                             -- observation, because the useful question about a
+                             -- route is not when it appeared but whether
+                             -- anything has looked since. SET NULL on a pruned
+                             -- scan: risks outlive scans, as findings do
   owner_id, due_date, resolved_at, created_at, updated_at
   -- kind: FINDING / ATTACK_PATH / ESCALATION. A scenario risk is several
   --       findings seen as one route and is scored by a different formula

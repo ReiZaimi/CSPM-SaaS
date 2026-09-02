@@ -172,4 +172,36 @@ describe("RiskDetailPage", () => {
     // Not a retry: retrying a 404 just fails again.
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
+
+  /**
+   * When anything last looked.
+   *
+   * A route is a claim about how an environment is wired *as of a reading*.
+   * Without a date, one that survived the latest scan and one nothing has
+   * re-checked since Tuesday render identically -- and the second reads as
+   * current, which is the direction that gets somebody hurt.
+   */
+  it("says when a route was last confirmed", async () => {
+    mount(
+      scenarioRisk({
+        observed_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+      }),
+    );
+
+    expect(
+      await screen.findByText(/still there 2 hours ago/),
+    ).toBeInTheDocument();
+  });
+
+  it("says it cannot tell rather than implying the route is current", async () => {
+    // The scan that found it has been pruned. "Never seen" would be wrong --
+    // the route exists because a scan found it -- and a bare date would be a
+    // claim CloudGuard cannot support.
+    mount(scenarioRisk({ observed_at: null }));
+
+    expect(
+      await screen.findByText(/no longer stored/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/still there/)).not.toBeInTheDocument();
+  });
 });

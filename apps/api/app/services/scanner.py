@@ -1289,7 +1289,7 @@ class ScanPipeline:
             # them: the worst member is the floor a route is scored from, and
             # a route assembled before its members would have nothing to stand
             # on.
-            await self._correlate_paths(session, org_id, merged, id_map)
+            await self._correlate_paths(session, org_id, scan, merged, id_map)
             # Last, because it is a reading of everything above it: the
             # findings this scan wrote, the risks they were scored into, and
             # the routes correlation found between them.
@@ -2626,6 +2626,7 @@ class ScanPipeline:
         self,
         session: AsyncSession,
         org_id: UUID,
+        scan: Scan,
         merged: NormalizedState,
         id_map: dict[str, UUID],
     ) -> None:
@@ -2674,6 +2675,7 @@ class ScanPipeline:
             open_findings,
             kind=RiskKind.ATTACK_PATH,
             paths=graph.attack_paths(),
+            scan=scan,
         )
         # The second template. A route to an identity that can hand out roles is
         # a different question from a route to data -- not what an attacker
@@ -2687,6 +2689,7 @@ class ScanPipeline:
             open_findings,
             kind=RiskKind.ESCALATION,
             paths=graph.escalation_chains(),
+            scan=scan,
         )
         await session.commit()
 
@@ -2700,6 +2703,7 @@ class ScanPipeline:
         *,
         kind: RiskKind,
         paths: list[Path],
+        scan: Scan,
     ) -> None:
         """One correlation template: routes of a kind, in and out of existence.
 
@@ -2807,6 +2811,12 @@ class ScanPipeline:
             risk.score_breakdown = scored.breakdown
             risk.status = RiskStatus.OPEN
             risk.resolved_at = None
+            # Which reading saw it. Written on every observation rather than
+            # only at creation: the useful question about a route is not when it
+            # first appeared but whether anything has looked since, and a value
+            # frozen at creation would answer the first while looking like the
+            # second.
+            risk.observed_scan_id = scan.id
 
             await session.flush()
             await self._link_members(session, org_id, risk, members)

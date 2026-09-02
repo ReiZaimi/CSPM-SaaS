@@ -72,6 +72,10 @@ class RiskOut(BaseModel):
     exploitability: float
     business_impact: float
     score_breakdown: dict = Field(default_factory=dict)
+    #: The reading a route was last seen in. ``None`` on a finding risk, which
+    #: is about one asset and takes its reading from the finding, and on a route
+    #: recorded before this was tracked.
+    observed_scan_id: UUID | None = None
     due_date: date | None = None
 
 

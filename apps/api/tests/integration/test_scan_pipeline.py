@@ -2346,6 +2346,124 @@ class TestAssetGraph:
         )
 
 
+class TestRouteProvenance:
+    """Which reading a route was seen in.
+
+    A finding has always named the scan that detected it. A route did not, and
+    it is the risk kind where the question carries most weight: a path is a
+    claim about how an environment is wired, assembled from one scan's
+    normalized state, and "this route is open" is only ever true as of a
+    reading.
+
+    Without it, a customer who fixed the middle hop this morning cannot tell a
+    route that survived the latest scan from one nothing has re-checked since
+    Tuesday. The two render identically.
+    """
+
+    async def test_a_route_names_the_scan_that_saw_it(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT kind, observed_scan_id FROM risks "
+            "WHERE organization_id = :o AND kind <> 'FINDING'",
+            {"o": org_id},
+        )
+        assert rows, "the scan produced no scenario risks to attribute"
+        for kind, observed in rows:
+            assert observed == scan_id, f"{kind} named no reading"
+
+    async def test_re_observing_a_route_moves_it_to_the_newer_reading(
+        self, replay, connected_account
+    ) -> None:
+        """Written on every observation, not only at creation.
+
+        The useful question about a route is not when it first appeared but
+        whether anything has looked since. A value frozen at creation would
+        answer the first while looking like the second -- a route last checked
+        in March, reported as though it were current.
+        """
+        org_id, account_id = connected_account
+        first = await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT count(*) FROM risks WHERE organization_id = :o "
+            "AND observed_scan_id = :s AND kind <> 'FINDING'",
+            {"o": org_id, "s": first},
+        )
+        assert before[0][0] > 0
+
+        second = await run_scan(org_id, account_id)
+
+        stale = await fetch(
+            "SELECT count(*) FROM risks WHERE organization_id = :o "
+            "AND observed_scan_id = :s AND kind <> 'FINDING'",
+            {"o": org_id, "s": first},
+        )
+        current = await fetch(
+            "SELECT count(*) FROM risks WHERE organization_id = :o "
+            "AND observed_scan_id = :s AND kind <> 'FINDING'",
+            {"o": org_id, "s": second},
+        )
+
+        assert stale[0][0] == 0, "a route still names the reading before last"
+        assert current[0][0] > 0
+
+    async def test_a_finding_risk_names_no_reading_of_its_own(
+        self, replay, connected_account
+    ) -> None:
+        """It takes its reading from the finding it was scored from.
+
+        Setting it here as well would be a second answer to one question, and
+        the two would drift the first time a finding was re-detected by a scan
+        that produced no scenario at all.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT count(*) FROM risks WHERE organization_id = :o "
+            "AND kind = 'FINDING' AND observed_scan_id IS NOT NULL",
+            {"o": org_id},
+        )
+        assert rows[0][0] == 0
+
+    async def test_deleting_the_scan_leaves_the_route_standing(
+        self, replay, connected_account
+    ) -> None:
+        """``SET NULL``, because risks outlive scans exactly as findings do.
+
+        The row then says it was seen and no longer which reading saw it, which
+        is a worse answer than the full one and a much better one than the route
+        disappearing with its scan.
+        """
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT count(*) FROM risks WHERE organization_id = :o "
+            "AND kind <> 'FINDING'",
+            {"o": org_id},
+        )
+        assert before[0][0] > 0
+
+        async with service_session() as session:
+            await session.execute(
+                text("DELETE FROM scans WHERE id = :s"), {"s": scan_id}
+            )
+            await session.commit()
+
+        after = await fetch(
+            "SELECT count(*), count(observed_scan_id) FROM risks "
+            "WHERE organization_id = :o AND kind <> 'FINDING'",
+            {"o": org_id},
+        )
+        assert after[0][0] == before[0][0], "routes were deleted with the scan"
+        assert after[0][1] == 0, "the reference should have been nulled"
+
+
 class TestCaptureReconstruction:
     """Whether the readings add back up to the capture, on real scans.
 

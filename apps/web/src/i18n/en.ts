@@ -467,6 +467,12 @@ export const en = {
     escalationBadge: "Privilege escalation",
     scenarioIntro: "Several findings, seen as one route",
     escalationIntro: "A route to an identity that can grant itself more",
+    lastSeen: "This route was still there {when}.",
+    // Not "never seen": the route exists because a scan found it. What is
+    // missing is which reading, and saying so beats implying staleness we
+    // cannot demonstrate.
+    lastSeenUnknown:
+      "The reading that found this route is no longer stored, so CloudGuard cannot say when it was last confirmed.",
     routeLabel: "The route",
     cutLabel: "Severing it",
     // The scoring, said in the terms the breakdown actually stores. A customer

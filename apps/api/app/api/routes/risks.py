@@ -8,6 +8,7 @@ from app.core.enums import FindingStatus, Level, RiskKind, RiskStatus
 from app.core.errors import NotFound, envelope
 from app.models.finding import Finding
 from app.models.risk import Risk, RiskFinding
+from app.models.scan import Scan
 from app.schemas.finding import RiskOut
 
 router = APIRouter(prefix="/risks", tags=["risks"])
@@ -136,10 +137,28 @@ async def get_risk(risk_id: UUID, session: DbSession, tenant: Tenant) -> dict:
         .all()
     )
 
+    # When the route was last seen, not merely which scan saw it. A bare id is
+    # not an answer a person can act on, and one extra lookup on a single-row
+    # page is cheaper than a client fetching the scan itself to render a date.
+    observed_at = None
+    if risk.observed_scan_id is not None:
+        observed_at = (
+            await session.execute(
+                select(Scan.completed_at).where(
+                    Scan.id == risk.observed_scan_id,
+                    Scan.organization_id == tenant.organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+
     return envelope(
         {
             **RiskOut.model_validate(risk).model_dump(mode="json"),
             "status": risk.status,
+            # ``None`` where a route predates this being tracked, or where the
+            # scan that saw it has been pruned. Both mean "we cannot say when",
+            # which the page must not render as "just now".
+            "observed_at": observed_at.isoformat() if observed_at else None,
             "findings": [
                 {
                     "id": str(f.id),
