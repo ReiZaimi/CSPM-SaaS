@@ -16,12 +16,13 @@ from app.core.enums import (
     RiskStatus,
 )
 from app.core.errors import FindingNotFound, ValidationFailed
-from app.models.finding import Finding
+from app.models.finding import Finding, FindingEvidence
 from app.models.history import FindingEventRecord
 from app.models.remediation import AuditLog, RiskException
 from app.models.resource import ResourceRecord
 from app.models.risk import Risk, RiskFinding
 from app.models.rule import Rule
+from app.models.scan import Evidence, EvidenceBlob
 from app.models.verification import RemediationVerification
 from app.remediation import Comparison, ExpectedState, azure_policy, terraform_hints
 from app.risk.scorer import default_scorer
@@ -369,3 +370,102 @@ def remediation_detail(rule_id: str) -> dict | None:
         "enforceable": spec.enforceable,
         "notes": spec.notes,
     }
+
+
+async def load_provenance(
+    session: AsyncSession, tenant: TenantContext, finding: Finding
+) -> list[dict] | None:
+    """Where this finding's evidence came from.
+
+    ``None`` rather than ``[]`` for a finding with no citations, and the
+    distinction is the point: an empty list would conflate "this rule reads
+    nothing" with "this finding was raised before CloudGuard recorded where its
+    evidence came from", and a customer asking how we know cannot be answered
+    with a shrug that looks like an answer.
+
+    Joined out to the reading itself where it survives, so outcome, item count
+    and the permissions the read was made under come along. Where the scan has
+    since been pruned the citation still stands on its own copied fields --
+    which is why they are copied.
+    """
+    links = (
+        (
+            await session.execute(
+                select(FindingEvidence)
+                .where(
+                    FindingEvidence.organization_id == tenant.organization_id,
+                    FindingEvidence.finding_id == finding.id,
+                )
+                .order_by(FindingEvidence.evidence_key)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not links:
+        return None
+
+    evidence_ids = [link.evidence_id for link in links if link.evidence_id]
+    readings = (
+        {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(Evidence).where(
+                        Evidence.organization_id == tenant.organization_id,
+                        Evidence.id.in_(evidence_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        if evidence_ids
+        else {}
+    )
+
+    # Which payloads are still held. One query for all of them rather than one
+    # per citation, and asked of the blob store rather than assumed from the
+    # hash being non-null: a hash records what was read, and retention prunes
+    # the bytes on its own schedule.
+    hashes = [link.content_hash for link in links if link.content_hash]
+    stored: set[str] = set()
+    if hashes:
+        stored = set(
+            (
+                await session.execute(
+                    select(EvidenceBlob.content_hash).where(
+                        EvidenceBlob.organization_id == tenant.organization_id,
+                        EvidenceBlob.content_hash.in_(hashes),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    now = datetime.now(UTC)
+    out: list[dict] = []
+    for link in links:
+        reading = readings.get(link.evidence_id) if link.evidence_id else None
+        out.append(
+            {
+                "evidence_key": link.evidence_key,
+                "cloud_account_id": reading.cloud_account_id if reading else None,
+                "outcome": reading.outcome if reading else None,
+                "item_count": reading.item_count if reading else None,
+                "permissions": list(reading.permissions or []) if reading else [],
+                "content_hash": link.content_hash,
+                "collected_at": link.collected_at,
+                # Computed here rather than left to the client, because the
+                # client would compute it against its own clock and a reading
+                # that looks four days old on one machine and four hours old on
+                # another is worse than no figure at all.
+                "age_seconds": max(0, int((now - link.collected_at).total_seconds())),
+                "source_scan_id": link.source_scan_id,
+                "payload_available": bool(
+                    link.content_hash and link.content_hash in stored
+                ),
+            }
+        )
+    return out

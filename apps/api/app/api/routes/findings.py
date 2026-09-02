@@ -14,6 +14,7 @@ from app.models.resource import ResourceRecord
 from app.models.scan import Scan
 from app.schemas.finding import (
     AcceptRiskRequest,
+    EvidenceCitationOut,
     FindingEventOut,
     FindingOut,
     ResourceSummary,
@@ -168,6 +169,50 @@ async def finding_attack_paths(
             for path in paths
         ],
         {"total": len(paths), "asset": resource.provider_resource_id},
+    )
+
+
+@router.get("/{finding_id}/provenance")
+async def finding_provenance(
+    finding_id: UUID, session: DbSession, tenant: Tenant
+) -> dict:
+    """How CloudGuard knows: the readings this finding rests on.
+
+    The finding already carries an *excerpt* of its evidence. This is the
+    citation -- which listing, taken when, under which permissions, and the hash
+    of the bytes -- which is the difference between a claim a customer has to
+    accept and one they can check.
+
+    Its own endpoint rather than a field on the finding, for the same reason
+    ``/attack-paths`` is: the page answering "what is wrong" must not wait on a
+    question most readers never ask.
+
+    ``evidence: null`` means no citation was recorded, which for a finding
+    raised before this existed is a fact about CloudGuard rather than about the
+    finding. An empty list would say the rule reads nothing, and the two must
+    not be answered the same way -- a product that cannot tell them apart is
+    back to asking to be believed.
+    """
+    finding = await service.get_finding(session, tenant, finding_id)
+    citations = await service.load_provenance(session, tenant, finding)
+
+    return envelope(
+        {
+            "rule_id": finding.rule_id,
+            # The rule as it was when this finding was raised, not as it is now.
+            # A citation to evidence read by a rule that has since changed its
+            # mind is a different claim, and the version is what says so.
+            "rule_version": finding.rule_version,
+            "evidence": (
+                [EvidenceCitationOut(**row).model_dump() for row in citations]
+                if citations is not None
+                else None
+            ),
+        },
+        {
+            "total": len(citations) if citations is not None else 0,
+            "recorded": citations is not None,
+        },
     )
 
 

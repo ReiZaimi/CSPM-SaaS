@@ -49,7 +49,7 @@ POST   /remediation                        GET    /remediation
 PATCH  /remediation/{id}
 POST   /findings/{id}/accept-risk          POST   /findings/{id}/status
 POST   /findings/{id}/rescan
-GET    /findings/{id}/attack-paths
+GET    /findings/{id}/attack-paths         GET    /findings/{id}/provenance
 
 GET    /attack-paths                       GET    /attack-paths/choke-points
 GET    /attack-paths/blast-radius/{resource_id}
@@ -105,10 +105,11 @@ one endpoint answering `Access-Control-Allow-Origin: *`; and
 `/events/azure/{connection_id}`, which Azure Event Grid delivers to when their
 environment changes. All three are `include_in_schema=False`: they are reached
 by Azure and by browsers following a link, never by this product's client, and
-listing them in the OpenAPI document would invite a consumer to call them. The last is separated from the template token by the
-`purpose` claim, not by the signature — both are signed with the same secret, so
-the webhook checks the claim rather than treating a valid signature as proof of
-intent.
+listing them in the OpenAPI document would invite a consumer to call them.
+
+The webhook is separated from the template token by the `purpose` claim, not by
+the signature — both are signed with the same secret, so it checks the claim
+rather than treating a valid signature as proof of intent.
 
 `/cloud-connections/{id}/change-events` returns the commands the customer runs
 to wire their subscriptions up. CloudGuard cannot create the Event Grid
@@ -211,6 +212,30 @@ Its own endpoint rather than a field on the list, because it costs a full
 re-traversal per candidate and the list is read far more often than the question
 is asked. Only removable links are candidates — a storage account has to live
 somewhere, so containment is never offered.
+
+`/findings/{id}/provenance` answers "how do you know?" — the readings the
+finding rests on, each with the listing it came from, when the *provider* was
+read, the actions the read was made under, and the hash of the payload. The
+finding's own `evidence` block is an excerpt of what the rule saw; this is the
+citation for it, and the difference is whether a customer has to accept the
+claim or can check it.
+
+`evidence: null` means no citation was recorded — a finding raised before
+CloudGuard tracked this. `[]` would mean the rule reads nothing, and answering
+the first as the second would make a claim about the rule out of a gap in our
+own history; `meta.recorded` says which. `age_seconds` is computed here rather
+than left to the client, because a carried reading is older than the scan that
+raised the finding and a client would measure it against its own clock.
+`payload_available` is asked of the blob store rather than inferred from the
+hash: retention prunes payloads on their own schedule, and a citation whose
+bytes have aged out is still a true statement about what was read. Where the
+scan itself has been deleted the reading's `outcome`, `item_count` and
+`permissions` come back `null`/`[]` — "we no longer hold that", never `0`,
+which would claim the listing came back empty.
+
+Its own endpoint rather than a field on the finding, like `/attack-paths`: the
+page answering "what is wrong" must not wait on a question most readers never
+ask.
 
 `/findings/{id}/attack-paths` answers whether this finding's asset stands on a
 route from an internet-facing asset to a sensitive one, and where on it —

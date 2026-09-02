@@ -12,6 +12,7 @@ from app.core.enums import (
     RiskKind,
     RuleState,
     Severity,
+    TaskOutcome,
     VerificationStatus,
 )
 
@@ -162,3 +163,35 @@ class FindingEventOut(BaseModel):
     user_id: UUID | None = None
     detail: str | None = None
     observed_at: datetime
+
+
+class EvidenceCitationOut(BaseModel):
+    """One reading a finding rests on.
+
+    The citation rather than the excerpt. ``findings.evidence`` already says
+    what the rule saw; this says where it came from and whether it can still be
+    followed back to the bytes.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    evidence_key: str
+    # Where the reading was taken. ``None`` is the directory: a tenant-wide read
+    # did not happen in a subscription, and naming one would point somebody at a
+    # scope that is fine.
+    cloud_account_id: UUID | None = None
+    outcome: TaskOutcome | None = None
+    item_count: int | None = None
+    # The actions the read was made under, so a customer asking "how did you
+    # even see this" gets the permission rather than a shrug.
+    permissions: list[str] = []
+    content_hash: str | None = None
+    # When the *provider* was read. For a carried reading this is older than the
+    # scan that raised the finding, which is the question the age answers.
+    collected_at: datetime
+    age_seconds: int
+    source_scan_id: UUID | None = None
+    # Whether the payload is still stored. A citation whose bytes have aged out
+    # is still a true statement about what was read, and saying so beats a link
+    # that 404s when somebody follows it.
+    payload_available: bool
