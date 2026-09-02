@@ -74,8 +74,14 @@ export function CodeBlock({
       {/* `min-w-0`, or the flex item refuses to shrink below its content and
           the block widens its container instead of scrolling inside it. */}
       {/* The size and colour live on the frame, so a caller restyling one
-          block changes both the code and the space around it. */}
-      <pre className="min-w-0 flex-1 overflow-x-auto font-mono">
+          block changes both the code and the space around it.
+
+          Centred against the button, not hung from the top of the row: the
+          button is taller than a line of text, so a one-line command sat at the
+          top of a box with a gap beneath it and looked like the first line of
+          something that had failed to load. Once the code is taller than the
+          button, centring and top-aligning are the same thing. */}
+      <pre className="flex min-h-7 min-w-0 flex-1 items-center overflow-x-auto font-mono">
         {code}
       </pre>
       <Button
