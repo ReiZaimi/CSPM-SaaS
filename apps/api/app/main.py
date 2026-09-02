@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.db import ping
 from app.core.errors import (
     AppError,
+    UnhandledErrorMiddleware,
     app_error_handler,
     envelope,
     http_error_handler,
@@ -69,6 +70,15 @@ app = FastAPI(
     description="Azure-first Cloud Security Posture Management.",
     lifespan=lifespan,
 )
+
+# Added before CORS on purpose, and the order is the whole point.
+# ``add_middleware`` inserts at the front, so the last one added is the
+# outermost -- which puts this one *inside* CORS, where the response it writes
+# still picks up the access-control headers on the way back out. A bare
+# ``Exception`` handler cannot do this: Starlette hands that to
+# ``ServerErrorMiddleware``, outside everything, and the browser then refuses
+# to read the 500 and reports a network failure instead.
+app.add_middleware(UnhandledErrorMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

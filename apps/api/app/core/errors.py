@@ -7,6 +7,11 @@ from fastapi import HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.core.logging import get_logger
+
+log = get_logger(__name__)
 
 
 def envelope(data: Any = None, meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -126,6 +131,52 @@ class NotConfigured(AppError):
 
     code = "NOT_CONFIGURED"
     status_code_default = status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+class UnhandledErrorMiddleware(BaseHTTPMiddleware):
+    """Turn an unhandled exception into the envelope, inside CORS.
+
+    Starlette special-cases a handler registered for bare ``Exception``: it
+    becomes ``ServerErrorMiddleware``'s handler, which is the **outermost**
+    layer of the stack. Its response therefore never passes back out through
+    ``CORSMiddleware``, so it carries no ``Access-Control-Allow-Origin`` -- and
+    a browser refuses to read a cross-origin response without one.
+
+    The consequence was that every 500 in this API reached the frontend as
+    ``TypeError: Failed to fetch``, which is what a browser says when a request
+    never completed at all. So a server-side bug was indistinguishable from the
+    API being unreachable, on a page whose whole job is telling somebody what
+    is wrong: the "turn on change detection" button reported a network failure
+    while the request had in fact arrived, run, and raised.
+
+    This sits *inside* CORS instead -- ``main.py`` adds it first, and
+    ``add_middleware`` inserts at the front, so the last one added is the
+    outermost. Registered exception handlers run further in still, so anything
+    the taxonomy already covers has become a response long before it reaches
+    here. What arrives here is only what nobody anticipated.
+    """
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        try:
+            return await call_next(request)
+        except Exception:
+            # Logged in full here because this is the only place that sees it:
+            # the caller gets a sentence, and the sentence deliberately does
+            # not carry the exception. A stack trace rendered into a browser is
+            # a disclosure, and this is a security product.
+            log.exception(
+                "request.unhandled",
+                method=request.method,
+                path=request.url.path,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content=error_envelope(
+                    "INTERNAL_ERROR",
+                    "Something went wrong handling this request. It has been "
+                    "logged; nothing was changed.",
+                ),
+            )
 
 
 async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:

@@ -56,6 +56,16 @@ export function ChangeEventsControl({
       // returns the same shape the GET does, and the commands appearing a
       // request later would read as the toggle not having taken.
       queryClient.setQueryData(["change-events", connection.id], response.data);
+      // And the connection itself, which is a different query holding the same
+      // fact. ``ReadCadencePanel`` reads ``change_events_enabled`` off the
+      // connection, not off this endpoint, so writing only the line above left
+      // the panel beside this one still saying "Not listening" after a toggle
+      // that had worked -- which reads as the button doing nothing. Every other
+      // control on this page invalidates both keys for the same reason.
+      queryClient.invalidateQueries({
+        queryKey: ["cloud-connection", connection.id],
+      });
+      queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
     },
     onError: (err) =>
       onError(

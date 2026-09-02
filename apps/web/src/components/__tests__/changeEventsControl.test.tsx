@@ -32,11 +32,12 @@ function setup(overrides: Partial<ChangeEventSetup> = {}): ChangeEventSetup {
 function mount(value: ChangeEventSetup) {
   vi.spyOn(api, "get").mockResolvedValue({ data: value, meta: {} });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <ChangeEventsControl connection={connection} onError={() => {}} />
     </QueryClientProvider>,
   );
+  return { ...rendered, client };
 }
 
 describe("the change-events control", () => {
@@ -134,5 +135,30 @@ describe("the change-events control", () => {
       "/api/v1/cloud-connections/c1/change-events",
       { enabled: true },
     );
+  });
+
+  it("refreshes the connection the panel beside it reads", async () => {
+    // ``ReadCadencePanel`` renders "On change" from the connection, not from
+    // this endpoint. Writing only this component's own cache left that panel
+    // saying "Not listening" after a toggle that had worked, which is
+    // indistinguishable from the button doing nothing.
+    const { client } = mount(setup());
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    vi.spyOn(api, "patch").mockResolvedValue({
+      data: setup({ enabled: true }),
+      meta: {},
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Turn on change detection" })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Turn on change detection" }));
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["cloud-connections"] }),
+    );
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["cloud-connection", "c1"],
+    });
   });
 });
