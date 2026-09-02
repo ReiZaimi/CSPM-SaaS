@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { CircleCheckIcon, CopyIcon } from "lucide-react";
+import { CircleCheckIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +10,7 @@ import { useT } from "@/i18n";
 import { StatusPill } from "@/components/security/StatusPill";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { Breadcrumbs, DetailSkeleton, ErrorState } from "@/components/common/states";
+import { CodeBlock } from "@/components/common/CodeBlock";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -507,25 +508,6 @@ function EvidencePanel({ evidence }: { evidence: unknown }) {
       <CardHeader>
         <CardTitle>{t.findings.evidence}</CardTitle>
         <CardDescription>Exactly what CloudGuard observed</CardDescription>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="col-start-2 row-span-2 row-start-1 self-start justify-self-end"
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(json)
-              .then(() => toast.success("Evidence copied"))
-              .catch(() =>
-                toast.error("Could not copy", {
-                  description:
-                    "This browser refused clipboard access — select the text instead.",
-                }),
-              );
-          }}
-        >
-          <CopyIcon data-icon="inline-start" />
-          Copy
-        </Button>
       </CardHeader>
       <CardContent>
         <Collapsible open={expanded || !long} onOpenChange={setExpanded}>
@@ -541,9 +523,7 @@ function EvidencePanel({ evidence }: { evidence: unknown }) {
               // reaches the part that is out of view.
               keepMounted
             >
-              <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
-                {json}
-              </pre>
+              <CodeBlock code={json} label="Copy this evidence" />
             </CollapsibleContent>
             {!expanded && long && (
               <div

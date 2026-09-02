@@ -168,7 +168,6 @@ export const en = {
       "The webhook is open. Nothing reaches it until you run the command below in each subscription \u2014 CloudGuard cannot create that subscription for you, because it holds no write permission in your tenant and does not ask for one.",
     changeCommandsLabel: "Run this once per subscription",
     changeCopyCommand: "Copy command",
-    changeCopied: "Copied",
     changeNoEndpoint: "CloudGuard has no public address to receive deliveries",
     changeNoEndpointHelp:
       "This deployment has no public API base URL configured, so there is no endpoint for Event Grid to deliver to. Change detection cannot be wired up until that is set.",

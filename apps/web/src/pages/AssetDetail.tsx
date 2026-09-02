@@ -7,6 +7,7 @@ import { StatusPill } from "@/components/security/StatusPill";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { formatDateTime, resourceTypeLabel } from "@/lib/format";
 import { Breadcrumbs, DetailSkeleton, ErrorState } from "@/components/common/states";
+import { CodeBlock } from "@/components/common/CodeBlock";
 import {
   Card,
   CardContent,
@@ -189,9 +190,10 @@ export function AssetDetailPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 font-mono text-xs leading-relaxed">
-            {JSON.stringify(data.metadata, null, 2)}
-          </pre>
+          <CodeBlock
+            code={JSON.stringify(data.metadata, null, 2)}
+            label="Copy this configuration"
+          />
         </CardContent>
       </Card>
     </div>

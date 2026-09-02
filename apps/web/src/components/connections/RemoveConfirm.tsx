@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import type { Revocation, RevocationCheck } from "@/lib/types";
 import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/common/CodeBlock";
 
 /**
  * Removing a connection, and the revocation it does not perform.
@@ -70,9 +71,11 @@ export function RemoveConfirm({
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
                   {step.detail}
                 </p>
-                <pre className="mt-1 overflow-x-auto rounded bg-stone-900 px-2.5 py-1.5 font-mono text-[11px] text-stone-100">
-                  {step.command}
-                </pre>
+                <CodeBlock
+                  code={step.command}
+                  className="mt-1 border-0 bg-stone-900 px-2.5 py-1.5 text-[11px] text-stone-100"
+                  label={`Copy: ${step.title}`}
+                />
               </li>
             ))}
           </ol>

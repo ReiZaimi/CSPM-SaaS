@@ -1,9 +1,8 @@
-import { useState } from "react";
-import { CheckIcon, CopyIcon, InfoIcon } from "lucide-react";
+import { CheckIcon, InfoIcon } from "lucide-react";
 
 import type { RemediationSpec } from "@/lib/types";
 import { formatEffort } from "@/lib/format";
-import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/common/CodeBlock";
 import {
   Card,
   CardContent,
@@ -138,30 +137,5 @@ export function RemediationPanel({
         {footer && <div className="border-t pt-4">{footer}</div>}
       </CardContent>
     </Card>
-  );
-}
-
-function CodeBlock({ code }: { code: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div className="group relative">
-      <pre className="overflow-x-auto rounded-lg border bg-muted/60 p-3 pr-11 font-mono text-xs leading-relaxed">
-        {code}
-      </pre>
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={copied ? "Copied" : "Copy to clipboard"}
-        className="absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-        onClick={() => {
-          void navigator.clipboard?.writeText(code);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
-        }}
-      >
-        {copied ? <CheckIcon className="text-ok" /> : <CopyIcon />}
-      </Button>
-    </div>
   );
 }

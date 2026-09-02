@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
@@ -6,6 +5,7 @@ import type { ChangeEventSetup, CloudConnection } from "@/lib/types";
 import { useT } from "@/i18n";
 import { cn, formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/common/CodeBlock";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -195,27 +195,19 @@ function CommandRow({
   command: string;
 }) {
   const t = useT();
-  const [copied, setCopied] = useState(false);
 
   return (
     <li className="rounded-md border border-border bg-background px-3 py-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <code className="text-[11px] text-muted-foreground">{subscriptionId}</code>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => {
-            void navigator.clipboard.writeText(command);
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 2000);
-          }}
-        >
-          {copied ? t.connection.changeCopied : t.connection.changeCopyCommand}
-        </Button>
-      </div>
-      <pre className="mt-1 overflow-x-auto text-[11px] leading-relaxed text-foreground">
-        <code>{command}</code>
-      </pre>
+      <code className="text-[11px] text-muted-foreground">{subscriptionId}</code>
+      {/* One copy control, on the command itself. The text button that used to
+          sit in this header copied the same string from a foot away, and two
+          buttons for one command invited the reader to wonder what the other
+          one copied. */}
+      <CodeBlock
+        code={command}
+        className="mt-1 border-0 bg-transparent p-0 text-[11px] text-foreground"
+        label={`${t.connection.changeCopyCommand}: ${subscriptionId}`}
+      />
     </li>
   );
 }
