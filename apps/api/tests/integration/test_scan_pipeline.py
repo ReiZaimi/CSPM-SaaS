@@ -2512,6 +2512,31 @@ class TestCaptureReconstruction:
             assert "coverage" in manifest and "errors" in manifest
             assert "data" not in manifest
 
+    async def test_the_capture_column_carries_no_default(self) -> None:
+        """What made the manifest flip fail every scan for a release.
+
+        ``data`` was created ``DEFAULT '{}'::jsonb`` and 0027 dropped only its
+        NOT NULL, so a capture written as a manifest came back holding an empty
+        object -- and the read path, which chose the inline form on "``data`` is
+        not NULL", rebuilt an estate with nothing in it. Collection succeeded,
+        the manifest was correct, and ANALYZE raised ``KeyError: 'provider'``.
+
+        The read path now asks about the manifest instead, so this is belt and
+        braces. It is here because a default that nothing writes is invisible
+        until something stops writing the column, which is exactly the shape of
+        the next change like 0027.
+        """
+        rows = await fetch(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name = 'cloud_snapshots' AND column_name = 'data'",
+            {},
+        )
+
+        assert rows and rows[0][0] is None, (
+            "cloud_snapshots.data has a default again, so a capture written as "
+            "a manifest will come back looking like an empty inline capture"
+        )
+
     async def test_a_replay_of_a_manifest_reproduces_the_scan(
         self, replay, connected_account
     ) -> None:

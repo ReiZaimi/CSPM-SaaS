@@ -138,11 +138,26 @@ async def _rebuild_capture(
     replays as an estate that has lost whatever was in the missing half, which
     is the same overclaim as a PASS nobody earned -- retention's interlock
     exists so this cannot happen, and this is what says so if it ever does.
+
+    **The manifest decides which form this is, not ``data``.** This used to ask
+    whether ``data`` was NULL, and that question could not be answered by the
+    column: 0001 created it ``DEFAULT '{}'::jsonb`` and 0027 dropped only its
+    NOT NULL, so a capture written as a manifest came back carrying an empty
+    object and read as an inline capture of an estate with nothing in it. Every
+    scan then failed in ANALYZE, on a capture that had been stored perfectly.
+    0029 removes the default and clears those rows; asking about the manifest
+    instead is what stops a column default ever answering "did anybody write
+    this" again.
     """
-    if row.data is not None:
+    if row.manifest is None:
+        if not row.data:
+            raise SnapshotUnavailable(
+                "this capture carries neither a manifest nor any inline "
+                "readings, so there is nothing to replay it from"
+            )
         return dict(row.data)
 
-    manifest = dict(row.manifest or {})
+    manifest = dict(row.manifest)
     hashes = dict(manifest.pop("payload_hashes", {}) or {})
     payloads = {
         blob.content_hash: blob.content

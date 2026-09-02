@@ -1936,6 +1936,29 @@ where it is a bound parameter of the `->` operator and never appears; and a fake
 `DELETE` reported no rowcount, so every prune looked like a no-op regardless of
 what it named. Each made a test pass by proving the opposite of its name.
 
+**And the column default that made all of this fail in CI.**
+`cloud_snapshots.data` was created in 0001 as `jsonb NOT NULL DEFAULT
+'{}'::jsonb`. 0027 stopped writing the column and dropped its NOT NULL — and
+left the default. So every capture written after the flip came back holding an
+empty object rather than NULL, and `_rebuild_capture`, which chose between the
+inline and manifest forms by asking whether `data` was NULL, took the inline
+branch and rebuilt an estate with nothing in it.
+
+Nothing failed where the mistake was. Collection succeeded, the capture was
+stored, the payloads were stored, the manifest was correct — and then every
+scan died in ANALYZE with `KeyError: 'provider'` on a capture that was
+perfectly good. Sixty integration tests failed, all of them downstream of the
+one question asked the wrong way round.
+
+The fix is 0029 and a changed question. The default goes, and the rows already
+written that way are set back to NULL — guarded on `manifest IS NOT NULL`,
+which names exactly the captures written since 0027 and cannot touch a pre-0027
+capture that genuinely held an empty object. And `_rebuild_capture` now decides
+the form from the *manifest*, because the manifest is the thing that is present
+in one form and absent in the other. A column with a default cannot answer "did
+anybody write this", and the general lesson is that a nullable column is only a
+reliable "unset" signal once its default is gone too.
+
 ---
 
 ## 55. A payload is stored as compressed bytes, not as JSONB

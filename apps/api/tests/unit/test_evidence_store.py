@@ -14,13 +14,19 @@ back up to the capture exactly -- so it is checked now, while both exist.
 
 import hashlib
 import zlib
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 
 from app.connectors.azure.evidence import AzureEvidence
 from app.connectors.azure.plan import STORAGE_ENDPOINT
 from app.connectors.collection import CoverageReport, TaskResult
 from app.connectors.evidence import EvidenceCategory
 from app.core.enums import TaskOutcome
+from app.core.errors import SnapshotUnavailable
 from app.core.payloads import compress, decompress, digest
+from app.services.scanner import _rebuild_capture
 
 
 def result(key: AzureEvidence, outcome: TaskOutcome = TaskOutcome.COMPLETE) -> TaskResult:
@@ -214,3 +220,85 @@ def test_the_payloads_stay_out_of_the_serialized_coverage() -> None:
         "permissions",
         "endpoints",
     }
+
+
+class StubBlob:
+    """The stored row as ``_rebuild_capture`` uses it: a hash and its bytes."""
+
+    def __init__(self, content_hash: str, payload: dict) -> None:
+        self.content_hash = content_hash
+        self.payload_compressed = compress(payload)
+
+    @property
+    def content(self) -> dict:
+        return decompress(self.payload_compressed)
+
+
+class StubSession:
+    def __init__(self, blobs: list) -> None:
+        self._blobs = blobs
+
+    async def execute(self, _statement: object) -> "StubSession":
+        return self
+
+    def scalars(self) -> "StubSession":
+        return self
+
+    def all(self) -> list:
+        return self._blobs
+
+
+# --------------------------------------------------- which form a capture is in
+async def test_a_capture_with_a_manifest_is_never_read_as_inline_data() -> None:
+    """The bug that failed every scan for a release, held shut.
+
+    ``cloud_snapshots.data`` was created ``DEFAULT '{}'::jsonb`` and 0027
+    dropped only its NOT NULL, so a capture written as a manifest came back
+    carrying an empty object. A read path that chose the inline form on
+    "``data`` is not NULL" then rebuilt an estate with nothing in it -- and
+    nothing failed until ANALYZE, on a capture that had been stored perfectly.
+
+    So the manifest decides, because it is the thing that is present in one
+    form and absent in the other. ``session`` is never reached: a manifest
+    naming no readings resolves no blobs.
+    """
+    payload = {"virtual_machines": [{"id": "/v"}]}
+    content_hash = digest(payload)[0]
+    row = SimpleNamespace(
+        manifest={
+            "provider": "azure",
+            "tenant_id": "t",
+            "payload_hashes": {"virtual_machines": content_hash},
+        },
+        # What the default supplied, and what used to be taken for a capture.
+        data={},
+    )
+    session = StubSession([StubBlob(content_hash, payload)])
+
+    rebuilt = await _rebuild_capture(session, uuid4(), row)  # type: ignore[arg-type]
+
+    assert rebuilt["provider"] == "azure"
+    assert rebuilt["data"] == payload
+
+
+async def test_a_capture_with_neither_form_is_refused() -> None:
+    """Rather than returned as an estate with nothing in it.
+
+    A capture holding no readings at all cannot be replayed, and replaying it
+    as empty would resolve findings on the strength of a reading nobody made --
+    the same overclaim as a PASS nobody earned.
+    """
+    row = SimpleNamespace(manifest=None, data=None)
+
+    with pytest.raises(SnapshotUnavailable):
+        await _rebuild_capture(None, uuid4(), row)  # type: ignore[arg-type]
+
+
+async def test_a_capture_written_before_the_manifest_still_reads_inline() -> None:
+    """The fallback 0027 kept on purpose: an old capture carries its payloads
+    inline and must go on being replayable."""
+    row = SimpleNamespace(manifest=None, data={"provider": "azure", "data": {"vms": []}})
+
+    rebuilt = await _rebuild_capture(None, uuid4(), row)  # type: ignore[arg-type]
+
+    assert rebuilt["data"] == {"vms": []}
