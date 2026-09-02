@@ -52,7 +52,9 @@ OWNER/ADMIN. Covered by `test_cannot_add_self_to_another_organization`.
 
 ## 3. Azure is reached over REST with MSAL, not the `azure-mgmt-*` SDKs
 
-**Spec:** "Azure SDK for Python" (`ARCHITECTURE.md` §1).
+**Spec:** the original build spec named "Azure SDK for Python" in
+`ARCHITECTURE.md` §1. That table now records the REST decision instead, so this
+entry is the reason it changed rather than a live disagreement.
 
 Requirement 9 says every scan stores a snapshot, and the value of that snapshot
 is that it holds the provider's *own* JSON, so a scan can be re-evaluated later
@@ -1732,6 +1734,53 @@ frequently corresponds to no finding at all — the shared role assignment may b
 perfectly ordinary in isolation. Turning one into a queue item would mean
 minting work with no finding behind it, which is a decision about what the queue
 *is*, not a detail of this analysis.
+
+---
+
+## 50. Every colour is lit for the surface it sits on
+
+The theme had two blocks, light and dark, and the dark one was not a re-lighting
+of the light one so much as a partial copy of it. Measuring every pair found
+three things wrong, and they are the same mistake in three places: a colour
+chosen against one background and then used against another.
+
+**The chart ramp was one greyscale in both blocks.** `--chart-1` through `-5`
+ran 0.87 → 0.269 in lightness, which is a ramp built to sit on white. On the
+light page the top of it measured 1.48:1 and was invisible; on the dark page the
+bottom measured 1.31:1 and was invisible. Each mode now runs from its own
+surface outward, every step clearing 3:1 against both the page and the card,
+because a chart lives inside a card.
+
+**`bg-ok text-white` measured 1.95:1 in dark.** `--sev-ok` is a light green
+there, as it has to be, and white on it is unreadable. The fix is
+`text-background` rather than a new token: it is white in light mode and near
+black in dark, it was already the idiom two lines away in the same component,
+and it cannot drift from the surface because it *is* the surface.
+
+**Two statuses were written in Tailwind palette classes.** `bg-stone-50` and
+`bg-white` in `format.ts` do not flip with the theme, so on a dark page the
+"not covered" cell — the quietest status in the product — rendered as the
+brightest block on the screen. They are separated by fill and a dashed border
+now, not by a hardcoded grey.
+
+The chrome moved as little as possible around those: `--muted-foreground` from
+4.73:1 to 5.51:1 (it is every secondary line in the product, and it sat close
+enough to the AA line that antialiasing decided it), `--ring` from 2.59:1 to
+4.28:1 (the focus indicator is `focus-visible:border-ring` at full opacity, so
+that value is what WCAG 1.4.11 measures — the `/50` ring beside it is a halo),
+and the two severities under 5:1 on their own tint nudged just past it with
+their hues untouched.
+
+One thing was removed rather than adjusted: `--sidebar-primary` in dark was
+shadcn's default indigo, the only saturated hue in the chrome of either theme.
+An accent that appears in one mode and not the other reads as a bug, and in this
+product a colour that means nothing sits badly beside a scale where every colour
+means something.
+
+**The rule this leaves.** A colour is not correct or incorrect on its own, only
+against a surface — so a token defined in one block is not done until it has
+been measured in the other, and a component that names a palette colour has
+opted out of the theme rather than styled itself.
 
 ---
 

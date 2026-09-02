@@ -7,10 +7,12 @@
 Every rule, tested against **fixture data**, not a live or mock connector:
 
 ```
-fixtures/
-├── secure/
-├── vulnerable/
-└── unknown/
+tests/fixtures/
+├── secure/            # the check passes
+├── vulnerable/        # the check fails
+├── unknown/           # the evidence did not arrive
+└── azure_raw/         # verbatim Azure JSON, for the normalizer and the
+                       # end-to-end pipeline test
 ```
 
 ```
@@ -54,19 +56,44 @@ Cover: authentication, authorization, tenant isolation, scan creation, finding r
 
 ---
 
-## 5. End-to-End (Playwright)
+## 5. End-to-End — not built, and the gap is deliberate
 
-```
-Signup → Login → Organization → Connect Azure → Scan
-  → Dashboard → Finding → Remediation → Rescan → Resolved
-```
+There is **no Playwright suite and no E2E runner in the repository.** An earlier
+draft of this file specified one, running the signup → connect → scan → remediate
+→ rescan journey against a real test Azure tenant. It was never written, and
+saying so is worth more than leaving the plan standing as though it described
+something.
 
-Runs against a **real (test) Azure tenant**, consistent with dropping MockAzureConnector (`AZURE_INTEGRATION.md` §1). CI should use recorded/fixture Azure API responses rather than live calls on every commit, to keep the suite fast and non-flaky — this is internal test plumbing, distinct from the product-facing mock connector that was ruled out.
+What covers that ground today, and where it stops:
+
+- `tests/integration/test_scan_pipeline.py` runs the whole backend journey —
+  snapshot → normalize → evaluate → score → persist → resolve — against real
+  PostgreSQL, from fixture Azure JSON. Everything except the browser and Azure
+  itself.
+- `apps/web` has 37 vitest files covering pages and components against a mocked
+  API, including the theme toggle and every severity rendering path.
+- Nothing exercises the two together, so a contract drift between the API
+  envelope and the client's types is caught by TypeScript and by `docs/API.md`
+  being right, not by a test.
+
+If E2E is picked up later, the fixture decision above still holds: record Azure
+responses rather than calling a live tenant on every commit.
 
 ---
 
-## 6. General
+## 6. What actually runs
 
-- `pytest` (backend), `vitest` (frontend unit), `playwright` (E2E)
-- `ruff` + `mypy` run alongside tests, not as a separate optional step
-- At every development phase (`PRODUCT_SPEC.md` §7): run tests, run lint/type checks, verify the app starts
+```
+apps/api    pytest -q                  # unit; no database needed
+            pytest -q -m integration   # needs live PostgreSQL (CI provisions it)
+            ruff check . && mypy app
+apps/web    npm test                   # vitest, 37 files
+            npm run typecheck && npm run lint && npm run build
+```
+
+- `@pytest.mark.integration` is the only marker; `asyncio_mode = "auto"`.
+- `ruff` + `mypy` run alongside tests, not as a separate optional step.
+- Locally, `pytest --collect-only tests/integration` still catches import and
+  syntax errors in the tests that cannot be run without PostgreSQL.
+- At every development phase (`PRODUCT_SPEC.md` §7): run tests, run lint/type
+  checks, verify the app starts.

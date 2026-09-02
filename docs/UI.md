@@ -127,6 +127,46 @@ knows where they are, not only where to leave.
 
 ---
 
-## 4. Onboarding
+## 4. Colour
+
+Two layers, and the separation is load-bearing. The **semantic tokens** —
+`background`, `card`, `muted`, `border`, `ring`, `primary`, `destructive` — are
+the product's chrome and may be re-themed. The **severity scale** —
+`critical`, `high`, `medium`, `low`, `unknown`, `ok`, each with a `-bg` tint and
+a `-border` — is what a colour *means* to somebody reading a security finding,
+and must not drift when an accent changes. `destructive` means "this button
+deletes something"; `critical` means "an attacker can reach your data".
+Collapsing the two would paint a cancel button and a public storage account the
+same colour.
+
+Both live in `apps/web/src/index.css` as Tailwind 4 `@theme inline` (there is no
+`tailwind.config.js`; `DECISIONS.md` §35 covers why v3 cannot be gone back to).
+Components use the tokens, never a raw hex or a Tailwind palette class — a
+`bg-stone-50` is a light-mode decision written into a component, and it does not
+flip when the theme does.
+
+**Every pair is contrast-checked in both modes.** Text clears 4.5:1 against the
+surface it sits on; chart series and the focus ring clear 3:1. The theme is a
+class on `<html>` set before React exists, so "system" is a real third choice
+rather than a synonym for light.
+
+Three things that follow from this and are easy to get wrong:
+
+- **Each mode is lit from its own surface.** The dark severity backgrounds are
+  tints of the dark surface, not of white — a light tint on a dark page glows,
+  and a glowing badge reads as more urgent than the one beside it, which is a
+  ranking the rules never made. The neutral chart ramp likewise runs light-to-
+  dark on the light page and dark-to-light on the dark one; it used to be one
+  ramp copied into both blocks, which left roughly half of it invisible in each.
+- **Hue is reserved for severity.** The chart ramp is deliberately neutral: a
+  chart that coloured its series would be making a claim the rules never made.
+  For the same reason there is no saturated accent anywhere in the chrome.
+- **UNKNOWN gets its own colour and a dashed border**, not a shade of LOW — a gap
+  in knowledge is not a mild problem, and the dash keeps it distinguishable
+  without relying on colour at all.
+
+---
+
+## 5. Onboarding
 
 See `AZURE_INTEGRATION.md` §3 for the full onboarding flow and the connection-screen copy.
