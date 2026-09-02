@@ -92,6 +92,12 @@ const PROVENANCE = {
       outcome: "COMPLETE",
       item_count: 41,
       permissions: ["Microsoft.Storage/storageAccounts/read"],
+      endpoints: [
+        {
+          path: "https://management.azure.com/subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts",
+          api_version: "2023-01-01",
+        },
+      ],
       content_hash: "abc123def4567890abc123def4567890abc123def4567890abc123def4567890",
       collected_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
       age_seconds: 10800,
@@ -243,6 +249,9 @@ describe("the provenance panel", () => {
       screen.getByText("Microsoft.Storage/storageAccounts/read"),
     ).toBeInTheDocument();
     expect(screen.getByText("41 items")).toBeInTheDocument();
+    // The contract, without which "the field was not there" cannot be told
+    // apart from "we asked a shape that does not carry it".
+    expect(screen.getByText(/api-version=2023-01-01/)).toBeInTheDocument();
   });
 
   it("says a capture is no longer stored rather than hiding the citation", async () => {

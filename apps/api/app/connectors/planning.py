@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.connectors.evidence import EvidenceKey
+from app.connectors.evidence import EvidenceKey, ProviderEndpoint
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,10 @@ class CarriedReading:
     collected_at: datetime
     item_count: int = 0
     permissions: tuple[str, ...] = ()
+    # The calls the *original* read made. A carried reading answers "what was
+    # this a reading of" with the contract it was actually taken under, which
+    # is not necessarily the one the collector would use today.
+    endpoints: tuple[ProviderEndpoint, ...] = ()
 
 
 @dataclass(frozen=True)

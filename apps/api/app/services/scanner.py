@@ -749,6 +749,10 @@ class ScanPipeline:
                     # then be carried for ever, each scan renewing it.
                     collected_at=carried_at.get(key, observed_at),
                     permissions=list(entry.get("permissions") or []),
+                    # `[]` for a reading taken before this was recorded, which
+                    # is a fact about CloudGuard's history rather than a claim
+                    # that the task called nothing.
+                    endpoints=list(entry.get("endpoints") or []),
                     # NULL where a task produced nothing, which a failed one
                     # did. A hash of an empty payload would claim there was
                     # something to point at.

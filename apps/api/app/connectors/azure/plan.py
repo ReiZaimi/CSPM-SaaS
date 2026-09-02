@@ -42,6 +42,7 @@ from app.connectors.azure.client import (
 )
 from app.connectors.azure.evidence import AzureEvidence
 from app.connectors.collection import CollectionTask, TaskData
+from app.connectors.evidence import ProviderEndpoint
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -51,6 +52,103 @@ log = get_logger(__name__)
 # per task rather than global, since the executor already limits how many tasks
 # are in flight.
 DETAIL_CONCURRENCY = 8
+
+
+# What each ARM listing calls, and the contract it calls under.
+#
+# Declared here beside the tasks rather than parsed out of ``client.py``: a
+# parser would make the record a function of how the URL happens to be spelled,
+# and the point is a statement that can be checked against the client rather
+# than derived from it. ``tests/unit/test_provider_endpoints.py`` asserts every
+# api-version below appears in the client, and that every ARM listing the client
+# offers is declared by some task -- the same discipline ``rbac.py`` applies to
+# actions, for the same reason: a declaration nothing verifies is a
+# plausible-looking string.
+ARM = "https://management.azure.com"
+
+NSG_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Network"
+    "/networkSecurityGroups",
+    "2023-09-01",
+)
+NIC_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Network"
+    "/networkInterfaces",
+    "2023-09-01",
+)
+PUBLIC_IP_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Network"
+    "/publicIPAddresses",
+    "2023-09-01",
+)
+VM_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Compute"
+    "/virtualMachines",
+    "2023-09-01",
+)
+STORAGE_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Storage"
+    "/storageAccounts",
+    "2023-01-01",
+)
+SQL_SERVERS_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Sql/servers",
+    "2021-11-01",
+)
+# The second call the SQL task makes, per server. Declared rather than folded
+# into the one above, because a reading of servers whose firewall rules failed
+# is a different reading from one where both succeeded.
+SQL_FIREWALL_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/{{serverId}}/firewallRules", "2021-11-01"
+)
+POSTGRES_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.DBforPostgreSQL"
+    "/flexibleServers",
+    "2023-03-01-preview",
+)
+ROLE_ASSIGNMENTS_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Authorization"
+    "/roleAssignments",
+    "2022-04-01",
+)
+ROLE_DEFINITIONS_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Authorization"
+    "/roleDefinitions",
+    "2022-04-01",
+)
+DIAGNOSTICS_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/{{resourceId}}/providers/Microsoft.Insights/diagnosticSettings",
+    "2021-05-01-preview",
+)
+RESOURCE_GRAPH_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/providers/Microsoft.ResourceGraph/resources", "2022-10-01"
+)
+
+# Microsoft Graph versions itself in the path rather than in a query parameter,
+# so "v1.0" is the api-version here in every sense that matters: it is the
+# contract the response shape is a function of, which is the whole reason this
+# is recorded. Writing it as a version rather than leaving it blank keeps the
+# question answerable in the same terms for both providers.
+GRAPH = "https://graph.microsoft.com/v1.0"
+GRAPH_VERSION = "v1.0"
+
+USERS_ENDPOINT = ProviderEndpoint(f"{GRAPH}/users", GRAPH_VERSION)
+DIRECTORY_ROLES_ENDPOINT = ProviderEndpoint(f"{GRAPH}/directoryRoles", GRAPH_VERSION)
+ROLE_MEMBERS_ENDPOINT = ProviderEndpoint(
+    f"{GRAPH}/directoryRoles/{{roleId}}/members", GRAPH_VERSION
+)
+AUTH_METHODS_ENDPOINT = ProviderEndpoint(
+    f"{GRAPH}/users/{{userId}}/authentication/methods", GRAPH_VERSION
+)
+SECURITY_DEFAULTS_ENDPOINT = ProviderEndpoint(
+    f"{GRAPH}/policies/identitySecurityDefaultsEnforcementPolicy", GRAPH_VERSION
+)
+CONDITIONAL_ACCESS_ENDPOINT = ProviderEndpoint(
+    f"{GRAPH}/identity/conditionalAccess/policies", GRAPH_VERSION
+)
+GROUP_MEMBERS_ENDPOINT = ProviderEndpoint(
+    f"{GRAPH}/groups/{{groupId}}/members", GRAPH_VERSION
+)
 
 
 class AzurePlanBuilder:
@@ -86,6 +184,7 @@ class AzurePlanBuilder:
         actions: tuple[str, ...],
         call: Callable[[ArmClient], Awaitable[dict[str, Any]]],
         depends_on: tuple[AzureEvidence, ...] = (),
+        endpoints: tuple[ProviderEndpoint, ...] = (),
     ) -> CollectionTask:
         """Wrap one ARM listing, turning truncation into a PARTIAL result.
 
@@ -109,7 +208,11 @@ class AzurePlanBuilder:
             return TaskData(data)
 
         return CollectionTask(
-            key=key, run=run, depends_on=depends_on, actions=actions
+            key=key,
+            run=run,
+            depends_on=depends_on,
+            actions=actions,
+            endpoints=endpoints,
         )
 
     async def _gather_limited(self, coros: list[Awaitable[Any]]) -> list[Any]:
@@ -199,26 +302,31 @@ class AzurePlanBuilder:
                 AzureEvidence.NETWORK_SECURITY_GROUPS,
                 ("Microsoft.Network/networkSecurityGroups/read",),
                 nsgs,
+                endpoints=(NSG_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.NETWORK_INTERFACES,
                 ("Microsoft.Network/networkInterfaces/read",),
                 nics,
+                endpoints=(NIC_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.PUBLIC_IP_ADDRESSES,
                 ("Microsoft.Network/publicIPAddresses/read",),
                 public_ips,
+                endpoints=(PUBLIC_IP_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.VIRTUAL_MACHINES,
                 ("Microsoft.Compute/virtualMachines/read",),
                 vms,
+                endpoints=(VM_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.STORAGE_ACCOUNTS,
                 ("Microsoft.Storage/storageAccounts/read",),
                 storage,
+                endpoints=(STORAGE_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.SQL_SERVERS,
@@ -227,21 +335,25 @@ class AzurePlanBuilder:
                     "Microsoft.Sql/servers/firewallRules/read",
                 ),
                 sql,
+                endpoints=(SQL_SERVERS_ENDPOINT, SQL_FIREWALL_ENDPOINT),
             ),
             self._arm_task(
                 AzureEvidence.POSTGRESQL_SERVERS,
                 ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
                 postgres,
+                endpoints=(POSTGRES_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.ROLE_ASSIGNMENTS,
                 ("Microsoft.Authorization/roleAssignments/read",),
                 role_assignments,
+                endpoints=(ROLE_ASSIGNMENTS_ENDPOINT,),
             ),
             self._arm_task(
                 AzureEvidence.ROLE_DEFINITIONS,
                 ("Microsoft.Authorization/roleDefinitions/read",),
                 role_definitions,
+                endpoints=(ROLE_DEFINITIONS_ENDPOINT,),
             ),
             self._inventory_task(),
             self._diagnostics_task(),
@@ -306,6 +418,7 @@ class AzurePlanBuilder:
                 "Microsoft.Resources/subscriptions/resources/read",
                 "Microsoft.ResourceGraph/resources/read",
             ),
+            endpoints=(RESOURCE_GRAPH_ENDPOINT,),
         )
 
     def _diagnostics_task(self) -> CollectionTask:
@@ -362,6 +475,7 @@ class AzurePlanBuilder:
             run=run,
             depends_on=sources,
             actions=("Microsoft.Insights/diagnosticSettings/read",),
+            endpoints=(DIAGNOSTICS_ENDPOINT,),
         )
 
     def _name_missing_permissions(self) -> str:
@@ -469,20 +583,37 @@ class AzurePlanBuilder:
             return TaskData(data)
 
         return [
-            CollectionTask(key=AzureEvidence.USERS, run=users),
-            CollectionTask(key=AzureEvidence.DIRECTORY_ROLES, run=roles),
+            CollectionTask(
+                key=AzureEvidence.USERS,
+                run=users,
+                endpoints=(USERS_ENDPOINT,),
+            ),
+            CollectionTask(
+                key=AzureEvidence.DIRECTORY_ROLES,
+                run=roles,
+                endpoints=(DIRECTORY_ROLES_ENDPOINT,),
+            ),
             CollectionTask(
                 key=AzureEvidence.USER_ROLE_MAP,
                 run=self._role_membership,
                 depends_on=(AzureEvidence.USERS, AzureEvidence.DIRECTORY_ROLES),
+                # Two calls per user it judges: who holds each role, and what
+                # each of those accounts can authenticate with.
+                endpoints=(ROLE_MEMBERS_ENDPOINT, AUTH_METHODS_ENDPOINT),
             ),
             # The two defences. Independent tasks rather than one, because they
             # are separate readings that fail separately -- and because a tenant
             # on security defaults has no Conditional Access at all, so one
             # returning nothing must not cost the other its verdict.
-            CollectionTask(key=AzureEvidence.SECURITY_DEFAULTS, run=security_defaults),
             CollectionTask(
-                key=AzureEvidence.CONDITIONAL_ACCESS_POLICIES, run=conditional_access
+                key=AzureEvidence.SECURITY_DEFAULTS,
+                run=security_defaults,
+                endpoints=(SECURITY_DEFAULTS_ENDPOINT,),
+            ),
+            CollectionTask(
+                key=AzureEvidence.CONDITIONAL_ACCESS_POLICIES,
+                run=conditional_access,
+                endpoints=(CONDITIONAL_ACCESS_ENDPOINT, GROUP_MEMBERS_ENDPOINT),
             ),
         ]
 

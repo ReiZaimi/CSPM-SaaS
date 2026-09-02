@@ -562,6 +562,18 @@ export interface AttackPath {
  * reader should do about it.
  */
 /**
+ * One provider call a reading was made with.
+ *
+ * The api-version is the half that settles arguments: a field absent from a
+ * capture is a setting nobody set, or a contract too old to return it, and only
+ * the second is CloudGuard's own staleness.
+ */
+export interface ProviderEndpoint {
+  path: string;
+  api_version: string;
+}
+
+/**
  * One reading a finding rests on.
  *
  * The citation, not the excerpt. `evidence` on the finding is what the rule
@@ -576,6 +588,8 @@ export interface EvidenceCitation {
   outcome: CollectionOutcome | null;
   item_count: number | null;
   permissions: string[];
+  /** Empty where the scan was pruned, or the reading predates this being recorded. */
+  endpoints: ProviderEndpoint[];
   content_hash: string | null;
   collected_at: string;
   /**
@@ -742,6 +756,7 @@ export interface CollectionReading {
    */
   finding_count: number;
   collected_at: string;
+  endpoints: ProviderEndpoint[];
 }
 
 export interface CollectionStatus {

@@ -128,10 +128,14 @@ def test_the_payloads_stay_out_of_the_serialized_coverage() -> None:
 
     serialized = report.to_json()["storage_accounts"]
     assert "payload" not in serialized
+    # Exhaustive on purpose: the guard is that a payload never appears here,
+    # and a set comparison catches a new key carrying one in far better than a
+    # membership check would.
     assert set(serialized) == {
         "category",
         "outcome",
         "detail",
         "item_count",
         "permissions",
+        "endpoints",
     }

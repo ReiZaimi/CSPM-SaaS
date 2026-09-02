@@ -24,6 +24,12 @@ const READING = {
   evidence_id: "ev-1",
   finding_count: 3,
   collected_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+  endpoints: [
+    {
+      path: "https://management.azure.com/subscriptions/{subscriptionId}/providers/Microsoft.Storage/storageAccounts",
+      api_version: "2023-01-01",
+    },
+  ],
 };
 
 function mount(tasks: object[]) {
@@ -104,6 +110,22 @@ describe("the collection panel", () => {
     // Nothing to go to. A failed reading's rules degraded to UNKNOWN and never
     // became findings, which is the engine working rather than a gap.
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("names the call and the contract it was made under", async () => {
+    mount([READING]);
+
+    expect(await screen.findByText(/2023-01-01/)).toBeInTheDocument();
+    expect(screen.getByText(/Microsoft.Storage\/storageAccounts/)).toBeInTheDocument();
+  });
+
+  it("says nothing about a contract for a reading taken before it was recorded", async () => {
+    // `[]` is CloudGuard's history, not a claim the task called nothing. The
+    // line is omitted rather than rendered empty.
+    mount([{ ...READING, endpoints: [] }]);
+
+    expect(await screen.findByText(/rest on this/)).toBeInTheDocument();
+    expect(screen.queryByText(/api-version/)).not.toBeInTheDocument();
   });
 
   it("says how long ago the provider was read", async () => {

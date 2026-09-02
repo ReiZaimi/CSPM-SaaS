@@ -26,8 +26,31 @@ The mapping between the two lives with the keys, so a task never declares its
 own category and the two can never disagree.
 """
 
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
+
+
+@dataclass(frozen=True)
+class ProviderEndpoint:
+    """One provider call a task makes, and the contract it makes it under.
+
+    Recorded because "the field was not there" is two different answers and
+    nothing could tell them apart: a storage account that does not set
+    ``allowBlobPublicAccess``, and an ``api-version`` old enough not to return
+    the field at all. The first is a finding; the second is CloudGuard reading
+    an out-of-date shape and drawing a conclusion from a gap it created.
+
+    The path is the template rather than a resolved URL. A resolved one names a
+    subscription and would differ per row while saying nothing more -- the
+    evidence row already records which subscription it is a reading of.
+    """
+
+    path: str
+    api_version: str
+
+    def describe(self) -> str:
+        return f"{self.path}?api-version={self.api_version}"
 
 
 class EvidenceCategory(StrEnum):

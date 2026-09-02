@@ -94,6 +94,13 @@ export function CollectionPanel({ scanId }: { scanId: string }) {
                       {reading.detail}
                     </p>
                   )}
+                  {reading.endpoints.length > 0 && (
+                    <p className="w-full font-mono text-[11px] text-muted-foreground">
+                      {reading.endpoints
+                        .map((e) => `${e.path.replace(/^https?:\/\/[^/]+/, "")} ${e.api_version}`)
+                        .join(" · ")}
+                    </p>
+                  )}
                   <p className="w-full text-xs text-muted-foreground">
                     <span title={reading.collected_at}>
                       {formatRelative(reading.collected_at)}

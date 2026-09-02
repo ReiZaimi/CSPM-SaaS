@@ -198,6 +198,13 @@ evidence                   -- per scan, per evidence key: did this listing
   id, organization_id, scan_id, cloud_account_id, connection_id    -- actually
   provider, evidence_key, category, outcome, detail                 -- arrive?
   item_count, collected_at
+  permissions JSONB          -- the actions the read was made under
+  endpoints JSONB            -- [{path, api_version}]: what it called, and the
+                             -- contract it called under. A response's shape is
+                             -- a function of its api-version, so a field absent
+                             -- from a capture is a setting nobody set *or* a
+                             -- contract too old to return it -- and only the
+                             -- second is CloudGuard's own staleness
   -- The row that makes UNKNOWN honest. A rule declares the keys it reads and
   -- degrades only when one of *those* failed -- not when a sibling listing in
   -- the same category did (RULE_ENGINE.md)

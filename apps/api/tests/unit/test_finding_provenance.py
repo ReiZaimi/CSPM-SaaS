@@ -109,6 +109,13 @@ def a_reading(evidence_id: uuid.UUID, key: str) -> Evidence:
         item_count=41,
         collected_at=NOW,
         permissions=["Microsoft.Storage/storageAccounts/read"],
+        endpoints=[
+            {
+                "path": "https://management.azure.com/subscriptions/{subscriptionId}"
+                "/providers/Microsoft.Storage/storageAccounts",
+                "api_version": "2023-01-01",
+            }
+        ],
         content_hash="a" * 64,
         byte_size=900,
     )
@@ -147,6 +154,10 @@ async def test_a_citation_carries_the_permission_the_read_was_made_under() -> No
     assert rows[0]["item_count"] == 41
     assert rows[0]["outcome"] is TaskOutcome.COMPLETE
     assert rows[0]["cloud_account_id"] == SUB
+    # The contract the read was made under. Without it "the field was not
+    # there" is a setting nobody set and a response shape too old to carry it,
+    # reported identically.
+    assert rows[0]["endpoints"][0]["api_version"] == "2023-01-01"
 
 
 async def test_age_is_computed_from_when_the_provider_was_read() -> None:
@@ -217,6 +228,7 @@ async def test_a_pruned_scan_leaves_the_citation_standing() -> None:
     assert rows[0]["item_count"] is None
     assert rows[0]["outcome"] is None
     assert rows[0]["permissions"] == []
+    assert rows[0]["endpoints"] == []
     # Still followable to the bytes, which is the point of copying the hash.
     assert rows[0]["payload_available"] is True
 

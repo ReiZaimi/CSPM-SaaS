@@ -522,6 +522,9 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
             # the honest answer there, not a gap.
             "finding_count": cited.get(row.id, 0),
             "collected_at": row.collected_at.isoformat(),
+            # `[]` on a reading taken before this was recorded, which is a fact
+            # about CloudGuard's history rather than a claim it called nothing.
+            "endpoints": list(row.endpoints or []),
         }
         for row, name in rows
     ]

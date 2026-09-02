@@ -774,6 +774,28 @@ function Citation({ citation }: { citation: EvidenceCitation }) {
         </p>
       )}
 
+      {citation.endpoints.length > 0 && (
+        // The call and the contract. Shown because an absent field in the
+        // capture above is two different answers -- a setting nobody set, and
+        // an api-version too old to return it -- and only this tells them
+        // apart. The path is a template, so the tail is the readable part.
+        <ul className="mt-2 space-y-0.5">
+          {citation.endpoints.map((endpoint) => (
+            <li
+              key={`${endpoint.path}-${endpoint.api_version}`}
+              className="font-mono text-[11px] text-muted-foreground"
+              title={endpoint.path}
+            >
+              {endpoint.path.replace(/^https?:\/\/[^/]+/, "")}
+              <span className="text-foreground">
+                {" "}
+                ?api-version={endpoint.api_version}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
       {citation.content_hash && (
         // Truncated because nobody reads sixty-four hex characters, and shown
         // at all because it is what makes the reading identifiable: two scans

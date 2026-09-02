@@ -329,6 +329,16 @@ class Evidence(UUIDPrimaryKey, TenantOwned, Base):
     # storage, and this is the action your role is missing" without anyone
     # correlating two files by hand.
     permissions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # The provider calls this reading was made with: ``[{"path", "api_version"}]``.
+    #
+    # The api-version is the load-bearing half. Azure's response shape is a
+    # function of it, so a field missing from a stored capture is ambiguous
+    # between "the customer did not set it" and "we asked a contract that does
+    # not return it" -- and a rule reading the second as the first raises a
+    # finding out of CloudGuard's own staleness. Recorded per reading rather
+    # than looked up from today's collector, because the collector moves and
+    # the reading does not.
+    endpoints: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # SHA-256 of the payload, or NULL where there is no payload: a task that
     # failed outright collected nothing, and a hash of nothing would say
     # otherwise.

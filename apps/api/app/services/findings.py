@@ -455,6 +455,11 @@ async def load_provenance(
                 "outcome": reading.outcome if reading else None,
                 "item_count": reading.item_count if reading else None,
                 "permissions": list(reading.permissions or []) if reading else [],
+                # What was called, and under which contract. The api-version is
+                # the half that settles an argument: a field absent from the
+                # capture is a setting nobody set, or a contract too old to
+                # return it, and only the second is CloudGuard's doing.
+                "endpoints": list(reading.endpoints or []) if reading else [],
                 "content_hash": link.content_hash,
                 "collected_at": link.collected_at,
                 # Computed here rather than left to the client, because the

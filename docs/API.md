@@ -244,6 +244,14 @@ Its own endpoint rather than a field on the finding, like `/attack-paths`: the
 page answering "what is wrong" must not wait on a question most readers never
 ask.
 
+Each citation also carries `endpoints` — `[{path, api_version}]`, what the
+reading actually called. The api-version is the half that settles an argument: a
+field absent from a stored capture is a setting nobody set, or a contract too
+old to return it, and a rule reading the second as the first raises a finding
+out of CloudGuard's own staleness. Empty where the scan has been pruned, or
+where the reading predates this being recorded — never a claim the task called
+nothing. `/scans/{id}/collection` carries the same field per reading.
+
 `/findings/{id}/attack-paths` answers whether this finding's asset stands on a
 route from an internet-facing asset to a sensitive one, and where on it —
 `asset_role` is `ENTRY`, `STEP` or `TARGET`, which is what decides the action:

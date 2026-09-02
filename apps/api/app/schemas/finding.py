@@ -185,6 +185,9 @@ class EvidenceCitationOut(BaseModel):
     # The actions the read was made under, so a customer asking "how did you
     # even see this" gets the permission rather than a shrug.
     permissions: list[str] = []
+    #: ``[{"path", "api_version"}]``. Empty where the scan has been pruned, or
+    #: where the reading predates CloudGuard recording it.
+    endpoints: list[dict[str, str]] = []
     content_hash: str | None = None
     # When the *provider* was read. For a carried reading this is older than the
     # scan that raised the finding, which is the question the age answers.

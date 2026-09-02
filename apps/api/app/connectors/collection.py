@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.connectors.evidence import EvidenceCategory, EvidenceKey
+from app.connectors.evidence import EvidenceCategory, EvidenceKey, ProviderEndpoint
 from app.connectors.planning import CollectionPlan
 from app.core.enums import TaskOutcome
 from app.core.logging import get_logger
@@ -58,6 +58,10 @@ class CollectionTask:
     # collector and the rules can be checked against one definition instead of
     # agreeing by hand across three files.
     actions: tuple[str, ...] = ()
+    # The provider calls this task makes. Declared beside ``actions`` and for
+    # the same reason: the alternative is reading the collector to find out what
+    # a stored reading was a reading *of*, months after the fact.
+    endpoints: tuple[ProviderEndpoint, ...] = ()
 
     @property
     def category(self) -> EvidenceCategory:
@@ -82,6 +86,10 @@ class TaskResult:
     # redeployed between the scan and the question: what matters is what the
     # read actually needed at the moment it was made.
     permissions: tuple[str, ...] = ()
+    # Which provider calls produced it, copied from the task's declaration for
+    # the same reason ``permissions`` is: the answer must describe the read that
+    # was made, not the collector as it stands whenever somebody asks.
+    endpoints: tuple[ProviderEndpoint, ...] = ()
     # Set only on a reading this run did not make: when the provider was
     # actually read, on the earlier scan the plan carried this forward from.
     # Absent means the obvious thing -- this run read it, just now.
@@ -174,6 +182,14 @@ class CoverageReport:
                 "detail": r.detail,
                 "item_count": r.item_count,
                 "permissions": list(r.permissions),
+                # What was actually called, and under which contract. Two
+                # answers a stored capture could not previously give: an absent
+                # field is a setting nobody set *or* an api-version too old to
+                # return it, and only the second is CloudGuard's fault.
+                "endpoints": [
+                    {"path": e.path, "api_version": e.api_version}
+                    for e in r.endpoints
+                ],
             }
             # Written only where it applies, so a capture taken entirely by
             # this run looks exactly as it always did. It is provenance for
@@ -331,6 +347,7 @@ class CollectionRun:
                         key=task.key,
                         category=task.category,
                         permissions=task.actions,
+                        endpoints=task.endpoints,
                         outcome=TaskOutcome.SKIPPED,
                         detail=f"needs {blocker}, which did not produce usable data",
                     )
@@ -375,6 +392,7 @@ class CollectionRun:
                     detail="carried forward from an earlier scan",
                     item_count=reading.item_count,
                     permissions=reading.permissions,
+                    endpoints=reading.endpoints,
                     carried_from=reading.collected_at,
                 ),
                 reading.payload,
@@ -413,6 +431,7 @@ class CollectionRun:
                     key=task.key,
                     category=task.category,
                     permissions=task.actions,
+                        endpoints=task.endpoints,
                     outcome=TaskOutcome.FAILED,
                     detail=message,
                 ),
@@ -434,6 +453,7 @@ class CollectionRun:
                     key=task.key,
                     category=task.category,
                     permissions=task.actions,
+                        endpoints=task.endpoints,
                     outcome=TaskOutcome.PARTIAL,
                     detail=partial_reason,
                     item_count=count,
@@ -446,6 +466,7 @@ class CollectionRun:
                 key=task.key,
                 category=task.category,
                 permissions=task.actions,
+                        endpoints=task.endpoints,
                 outcome=TaskOutcome.COMPLETE,
                 item_count=count,
             ),
