@@ -75,6 +75,14 @@ celery_app.conf.beat_schedule = {
         "task": "cloudguard.derive_notifications",
         "schedule": 300.0,
     },
+    # Daily, and the only thing here measured in hours. Retention is a decision
+    # about months; running it often would spend a full table scan per tenant to
+    # reclaim what a day's scans added, and there is nothing waiting on the
+    # space.
+    "prune-evidence": {
+        "task": "cloudguard.prune_evidence",
+        "schedule": 24 * 60 * 60.0,
+    },
 }
 
 celery_app.conf.update(

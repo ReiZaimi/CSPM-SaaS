@@ -1784,6 +1784,53 @@ opted out of the theme rather than styled itself.
 
 ---
 
+## 51. Retention keeps the present, whatever the window says
+
+Two things grew without bound and neither had ever been pruned: the raw captures
+in `cloud_snapshots`, and the content-addressed payloads in `evidence_blobs`.
+Both are the largest rows in the schema and both are kept for real reasons — a
+capture is what lets a scan be re-evaluated against improved rules, a payload is
+what a citation points at — and neither reason survives indefinitely.
+
+**The newest capture of each scope is never pruned, whatever the window says.**
+It is what an *applied* replay reads: replaying the newest snapshots may resolve
+findings, while every older one is `evaluation_only` and may not. Pruning it
+raises nothing — it turns "did the fix work" into an advisory answer, months
+later, on the path the north-star metric runs through. So it is excluded by
+construction rather than by choosing a window long enough that it probably will
+not happen.
+
+Two scopes, not one. A subscription's resources and the tenant directory read
+through a connection are different things, and a tenant-wide replay restores the
+directory beside each subscription — pruned out from under it, the identity
+rules read nothing while the subscription rules carry on, which is a replay that
+half worked.
+
+**Payloads are measured from `last_seen_at`, not `first_stored_at`,** which is
+the whole reason that column exists. An estate that has not changed in six
+months stores one copy and touches it on every scan; measuring from first
+storage would delete the payload behind every current reading, which is
+deduplication working against itself.
+
+**And pruning a payload invalidates nothing that cited it.** `finding_evidence`
+copies the hash rather than holding a foreign key, so a finding raised last year
+still says truthfully what was read, when, and under which permission — the API
+reports the payload as unavailable rather than offering a link that fails. That
+was designed in §50's neighbourhood before there was anything to prune; this is
+the entry that makes use of it.
+
+Evidence *rows* are deliberately not pruned. They are one row per key per
+subscription per scan against a payload that is the listing itself, and deleting
+the record of what was read to save the size of the record of what was read is
+the wrong trade — it is also the trade that makes an old finding unanswerable.
+
+Windows are settings (`snapshot_retention_days` 30, `evidence_retention_days`
+90) with defaults rather than required values: a missing one costs disk, not
+correctness, which is not the kind of misconfiguration the rest of `config.py`
+refuses to boot on.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

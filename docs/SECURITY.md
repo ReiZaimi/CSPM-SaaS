@@ -105,6 +105,9 @@ AZURE_REDIRECT_URI=
 AZURE_CONSENT_STATE_SECRET=     -- signs the consent state parameter, so a
                                 -- callback cannot be replayed or forged
 
+SNAPSHOT_RETENTION_DAYS=         -- default 30. The newest capture per scope is
+EVIDENCE_RETENTION_DAYS=         -- kept regardless; default 90 for payloads
+
 SENTRY_DSN=
 ```
 

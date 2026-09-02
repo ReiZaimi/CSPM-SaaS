@@ -68,6 +68,23 @@ class Settings(BaseSettings):
     database_worker_url: str = ""
     db_echo: bool = False
 
+    # --- retention ---------------------------------------------------------
+    # How long a raw capture is kept. Defaulted rather than required, because a
+    # deployment that has not thought about retention should still keep enough
+    # to replay a month of rules against, and because a missing value here is
+    # not the kind of misconfiguration the rest of this file refuses to boot on:
+    # it costs disk, not correctness.
+    #
+    # The newest capture per subscription is never pruned whatever this says --
+    # it is what an applied replay reads, and losing it would quietly turn every
+    # "did the fix work" into an advisory answer.
+    snapshot_retention_days: int = 30
+    # Payloads are content-addressed and shared, so this is measured from when a
+    # payload was last *seen* rather than first stored: an estate that has not
+    # changed in six months keeps one copy alive by re-reading it, which is the
+    # behaviour that makes deduplication worth having.
+    evidence_retention_days: int = 90
+
     @property
     def worker_is_constrained(self) -> bool:
         """Whether the worker's tenancy is enforced by the database."""

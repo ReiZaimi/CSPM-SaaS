@@ -30,6 +30,7 @@ from app.models.scan import Scan
 from app.services import change_events as change_service
 from app.services import notifications as notifications_service
 from app.services import orchestrator
+from app.services import retention as retention_service
 from app.services import scans as scans_service
 from app.services import verification as verification_service
 from app.services.scanner import ScanPipeline
@@ -207,6 +208,30 @@ def verify_due_remediations(self: object) -> dict:
     for scan_id in started:
         run_scan.delay(str(scan_id))
     return {"started": len(started)}
+
+
+@celery_app.task(name="cloudguard.prune_evidence", bind=True, max_retries=0)
+def prune_evidence(self: object) -> dict:
+    """Let go of captures and payloads nobody can still need.
+
+    The two largest things in the schema and the only two that grew without
+    bound. Kept for real reasons -- a capture is what lets a scan be
+    re-evaluated against improved rules, a payload is what a citation points at
+    -- and neither reason survives indefinitely.
+
+    Never the newest capture of a scope, whatever the window says: that one is
+    what an applied replay reads, and losing it would turn "did the fix work"
+    into an answer nobody can act on, silently.
+    """
+    configure_logging()
+    totals = asyncio.run(_prune_all_evidence())
+    if totals["snapshots"] or totals["blobs"]:
+        log.info(
+            "retention.pruned",
+            snapshots=totals["snapshots"],
+            blobs=totals["blobs"],
+        )
+    return totals
 
 
 @celery_app.task(name="cloudguard.derive_notifications", bind=True, max_retries=0)
@@ -554,3 +579,33 @@ async def _derive_all_notifications() -> int:
         except Exception:  # pragma: no cover - one tenant must not stop the rest
             log.exception("notifications.derive_failed", organization_id=str(org_id))
     return total
+
+
+async def _prune_all_evidence() -> dict[str, int]:
+    """Every organization, each in its own transaction.
+
+    Committed per organization rather than once at the end, matching the
+    notification sweep: a run that failed halfway would otherwise give back the
+    space it had correctly reclaimed for everybody before the one that broke.
+    """
+    totals = {"snapshots": 0, "blobs": 0}
+    async with service_session() as session:
+        org_ids = list(
+            (await session.execute(select(Organization.id))).scalars().all()
+        )
+
+    for org_id in org_ids:
+        try:
+            async with scan_session(org_id) as session:
+                result = await retention_service.prune(
+                    session,
+                    org_id,
+                    snapshot_days=settings.snapshot_retention_days,
+                    evidence_days=settings.evidence_retention_days,
+                )
+                await session.commit()
+            totals["snapshots"] += result["snapshots"]
+            totals["blobs"] += result["blobs"]
+        except Exception:  # pragma: no cover - one tenant must not stop the rest
+            log.exception("retention.prune_failed", organization_id=str(org_id))
+    return totals

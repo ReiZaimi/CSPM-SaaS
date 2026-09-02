@@ -212,6 +212,12 @@ evidence                   -- per scan, per evidence key: did this listing
 evidence_blobs             -- the verbatim JSON, deduplicated by content hash
   id, organization_id, content_hash, payload, byte_size
   first_stored_at, last_seen_at
+  -- Retention measures from last_seen_at, not first_stored_at: an estate that
+  -- has not changed in six months keeps one copy alive by re-reading it, and
+  -- pruning on first storage would delete the payload behind every current
+  -- reading. Pruning one invalidates no citation -- finding_evidence copies the
+  -- hash rather than holding a key, so the record of what was read outlives the
+  -- bytes (DECISIONS.md §51)
   -- Content-addressed because an estate that did not change between two scans
   -- stores one copy, not two, and re-evaluation needs the bytes intact
 

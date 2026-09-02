@@ -3571,3 +3571,233 @@ class TestFindingProvenance:
         for cited, stored in rows:
             assert cited is not None, "the hash is what keeps the citation checkable"
             assert stored is None, "the payload should be gone; the citation should not"
+
+
+class TestRetention:
+    """Letting go of evidence without letting go of what it proved.
+
+    Written against a real database rather than a fake because the whole feature
+    is a set of DELETEs with exceptions, and the interesting failures are the
+    rows that should have survived one. A fake would return whatever it was
+    told.
+    """
+
+    async def test_the_newest_capture_of_a_subscription_is_never_pruned(
+        self, replay, connected_account
+    ) -> None:
+        """The invariant, and the one that fails silently.
+
+        The newest capture is what an *applied* replay reads: replaying it may
+        resolve findings, while every older one is advisory and may not. Pruning
+        it raises nothing -- it turns "did the fix work" into an answer nobody
+        can act on, on the path the product's north-star metric runs through.
+        """
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        # Every capture is now far outside any window somebody might configure.
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE cloud_snapshots SET created_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+
+        newest = await fetch(
+            "SELECT id FROM cloud_snapshots WHERE organization_id = :o "
+            "AND cloud_account_id IS NOT NULL "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            {"o": org_id},
+        )
+
+        async with service_session() as session:
+            pruned = await retention.prune_snapshots(session, org_id, keep_days=30)
+            await session.commit()
+
+        survivors = await fetch(
+            "SELECT id FROM cloud_snapshots WHERE organization_id = :o "
+            "AND cloud_account_id IS NOT NULL",
+            {"o": org_id},
+        )
+
+        assert pruned > 0, "nothing was pruned; the test proves nothing"
+        assert [row[0] for row in survivors] == [newest[0][0]]
+
+    async def test_the_newest_directory_capture_survives_too(
+        self, replay, connected_tenant
+    ) -> None:
+        """A replay restores the directory beside each subscription.
+
+        Pruned out from under one, the identity rules would read nothing while
+        the subscription rules carried on -- a replay that half worked, which is
+        worse than one that refused.
+        """
+        from app.services import retention
+
+        org_id, connection_id = connected_tenant
+        await run_connection_scan(org_id, connection_id)
+        await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE cloud_snapshots SET created_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            await retention.prune_snapshots(session, org_id, keep_days=30)
+            await session.commit()
+
+        directories = await fetch(
+            "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o "
+            "AND cloud_account_id IS NULL",
+            {"o": org_id},
+        )
+        assert directories[0][0] == 1, "the directory a replay needs was pruned"
+
+    async def test_a_capture_inside_the_window_is_kept(
+        self, replay, connected_account
+    ) -> None:
+        """Retention is a window, not a "keep one" policy.
+
+        Drift between two scans is a diff rather than an inference, and a
+        history one capture deep cannot be diffed against anything.
+        """
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        async with service_session() as session:
+            pruned = await retention.prune_snapshots(session, org_id, keep_days=30)
+            await session.commit()
+
+        after = await fetch(
+            "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert pruned == 0
+        assert after[0][0] == before[0][0]
+
+    async def test_a_payload_still_being_re_read_is_not_pruned(
+        self, replay, connected_account
+    ) -> None:
+        """Why the column is ``last_seen_at`` and not ``first_stored_at``.
+
+        An estate that has not changed in six months stores one copy and touches
+        it on every scan. Measuring from when it was first stored would delete
+        the payload behind every current reading, which is the deduplication
+        working against itself.
+        """
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            # Stored long ago, seen just now: exactly the unchanged estate.
+            await session.execute(
+                text(
+                    "UPDATE evidence_blobs SET first_stored_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            pruned = await retention.prune_blobs(session, org_id, keep_days=90)
+            await session.commit()
+
+        remaining = await fetch(
+            "SELECT count(*) FROM evidence_blobs WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert pruned == 0
+        assert remaining[0][0] > 0
+
+    async def test_a_pruned_payload_leaves_its_citations_standing(
+        self, replay, connected_account
+    ) -> None:
+        """The reason a citation copies the hash instead of holding a key.
+
+        A finding raised last year is still answerable after its bytes are gone:
+        the citation says truthfully what was read, when, and under which
+        permission, and the API reports the payload as unavailable rather than
+        offering a link that fails.
+        """
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        citations_before = await fetch(
+            "SELECT count(*) FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert citations_before[0][0] > 0
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE evidence_blobs SET last_seen_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            pruned = await retention.prune_blobs(session, org_id, keep_days=90)
+            await session.commit()
+
+        citations_after = await fetch(
+            "SELECT count(*), count(content_hash) FROM finding_evidence "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert pruned > 0
+        assert citations_after[0][0] == citations_before[0][0]
+        # And still followable in principle: the hash is what identifies the
+        # bytes, whether or not they are still held.
+        assert citations_after[0][1] == citations_before[0][0]
+
+    async def test_pruning_twice_is_safe(self, replay, connected_account) -> None:
+        """It runs on a timer and may overlap itself after a slow night."""
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE cloud_snapshots SET created_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            first = await retention.prune(
+                session, org_id, snapshot_days=30, evidence_days=90
+            )
+            await session.commit()
+            second = await retention.prune(
+                session, org_id, snapshot_days=30, evidence_days=90
+            )
+            await session.commit()
+
+        assert first["snapshots"] > 0
+        assert second["snapshots"] == 0
