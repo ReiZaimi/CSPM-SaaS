@@ -2346,6 +2346,99 @@ class TestAssetGraph:
         )
 
 
+class TestCaptureReconstruction:
+    """Whether the readings add back up to the capture, on real scans.
+
+    ``tests/unit/test_evidence_store.py`` states the precondition: replay reads
+    ``cloud_snapshots`` and must keep doing so until reconstruction holds
+    against real scans. This is that check, and it is the gate on a change worth
+    naming, because the same bytes are currently stored twice.
+
+    ``cloud_snapshots.data`` is a whole capture per scan and is **not**
+    deduplicated: a daily scan of an estate that has not changed writes a fresh
+    full copy every night. The per-key payloads beside it are content-addressed
+    and store one. If the second reconstructs the first, the first is a copy
+    the schema is paying for nightly.
+
+    Not a flip, deliberately. The claim is checkable only here, against
+    PostgreSQL and a real pipeline run, so the check ships first and the change
+    follows it.
+    """
+
+    async def test_the_stored_readings_rebuild_the_capture_exactly(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        captures = await fetch(
+            "SELECT cloud_account_id, data FROM cloud_snapshots WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert captures, "the scan stored no capture"
+
+        for cloud_account_id, capture in captures:
+            # The payloads this scope actually read, joined back through the
+            # hash the evidence row recorded. A directory capture files under a
+            # NULL account, which is how Evidence records it too.
+            rows = await fetch(
+                "SELECT e.evidence_key, b.payload "
+                "FROM evidence e JOIN evidence_blobs b "
+                "  ON b.content_hash = e.content_hash "
+                "WHERE e.scan_id = :s AND e.organization_id = :o "
+                "  AND e.cloud_account_id IS NOT DISTINCT FROM :a",
+                {"s": scan_id, "o": org_id, "a": cloud_account_id},
+            )
+            assert rows, "a capture whose readings stored nothing"
+
+            # Merged by payload rather than keyed by task, and that is the
+            # case a careless flip gets wrong: one task can produce several
+            # payload keys. ``authentication_methods`` has no task of its own --
+            # the directory's role-map task reads it -- so a reconstruction that
+            # assumed one key per task would drop it silently, and the MFA rule
+            # would then find nothing to judge.
+            rebuilt: dict = {}
+            for _key, payload in rows:
+                rebuilt.update(payload)
+
+            assert rebuilt == capture["data"], (
+                "the readings do not add back up to the capture, so evidence "
+                "cannot replace it: whatever differs would be silently dropped"
+            )
+
+    async def test_an_unchanged_estate_stores_one_payload_set_and_many_captures(
+        self, replay, connected_account
+    ) -> None:
+        """The cost this measures, stated as a test rather than as an estimate.
+
+        Scanning the same recording twice must add no payloads at all --
+        content addressing already sees to that -- while adding a second whole
+        capture. That gap is the duplication, and it grows once per scan for as
+        long as retention keeps the captures.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        blobs_after_one = await fetch(
+            "SELECT count(*), coalesce(sum(byte_size), 0) FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        await run_scan(org_id, account_id)
+        blobs_after_two = await fetch(
+            "SELECT count(*), coalesce(sum(byte_size), 0) FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        captures = await fetch(
+            "SELECT count(*) FROM cloud_snapshots WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert blobs_after_two == blobs_after_one, "payloads were stored twice"
+        assert captures[0][0] > 1, "captures are not deduplicated, and are not here"
+
+
 class TestGraphCaching:
     """The cache is keyed on a version, so the version has to actually move.
 

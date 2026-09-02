@@ -1869,6 +1869,40 @@ one behind.
 
 ---
 
+## 53. The capture is stored twice, and the gate on stopping
+
+`cloud_snapshots.data` holds a whole capture per scan. The per-key payloads in
+`evidence_blobs` hold the same bytes, split by reading and content-addressed.
+The difference is that the second is deduplicated and the first is not: a daily
+scan of an estate that has not changed writes one payload set and a **fresh full
+capture every night**, for as long as retention keeps it.
+
+That is worth fixing by making `cloud_snapshots` a manifest — the keys and
+hashes of its readings — and rebuilding the capture from blobs on replay. It is
+not worth doing on an assumption, which is why `test_evidence_store.py` has
+carried the precondition since evidence was per-key: *replay reads
+`cloud_snapshots` and must keep doing so until reconstruction holds against real
+scans.*
+
+So the gate ships before the change. `TestCaptureReconstruction` asserts, on a
+real pipeline run, that the stored readings rebuild the capture exactly, and
+that a second scan of an unchanged estate adds no payloads while adding a whole
+capture.
+
+**The case a careless flip gets wrong,** and the reason a unit test was not
+enough: a task can produce more than one payload key. `authentication_methods`
+has no task of its own — the directory's role-map task reads it — so a
+reconstruction keyed by task rather than merged by payload drops it, and the MFA
+rule then finds nothing to judge while reporting no error at all.
+
+**Two lifetimes to reconcile before flipping.** Captures are pruned at 30 days
+and payloads at 90, and the two are independent today because neither depends on
+the other. A manifest makes captures depend on payloads, so `prune_blobs` would
+have to refuse any hash a retained manifest still names — otherwise retention
+would quietly destroy a capture that is inside its own window.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
