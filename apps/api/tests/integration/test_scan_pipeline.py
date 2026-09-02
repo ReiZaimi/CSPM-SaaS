@@ -3307,3 +3307,222 @@ class TestEvidenceFreshness:
             summary = await build_dashboard(session, org_id)
 
         assert summary["evidence_freshness"]["stale_hours"] > 200
+
+
+class TestFindingProvenance:
+    """Which readings a finding rests on, against a real database.
+
+    The unit tests hold the write path against fakes. These hold the two things
+    a fake cannot: that the foreign keys behave as the migration declares when
+    rows are actually deleted, and that a replay -- which runs a different code
+    path with a different scan id -- leaves the citations standing.
+
+    Both failures would be silent. A finding whose citations were quietly
+    removed looks exactly like one raised before CloudGuard recorded them.
+    """
+
+    async def test_a_finding_cites_the_readings_its_rule_declared(
+        self, replay, connected_account
+    ) -> None:
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT fe.evidence_key, fe.content_hash, fe.collected_at, "
+            "       fe.source_scan_id, fe.evidence_id "
+            "FROM finding_evidence fe "
+            "JOIN findings f ON f.id = fe.finding_id "
+            "WHERE f.organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert rows, "a scan that raised findings recorded no provenance for any"
+        for key, content_hash, collected_at, source_scan_id, evidence_id in rows:
+            assert key, "a citation must name the reading it cites"
+            assert collected_at is not None
+            assert source_scan_id == scan_id
+            assert evidence_id is not None
+            # The hash is NULL only where the reading produced nothing. These
+            # findings came from readings that succeeded, so a NULL here means
+            # the citation was written from the wrong row.
+            assert content_hash is not None and len(content_hash) == 64
+
+    async def test_every_citation_points_at_a_reading_of_the_same_key(
+        self, replay, connected_account
+    ) -> None:
+        """The join is the claim. A citation naming ``storage_accounts`` while
+        pointing at the virtual machine listing would be worse than none: it
+        would answer "how do you know" with the wrong evidence, confidently."""
+        org_id, _account_id = connected_account
+        await run_scan(org_id, _account_id)
+
+        mismatched = await fetch(
+            "SELECT fe.evidence_key, e.evidence_key "
+            "FROM finding_evidence fe "
+            "JOIN evidence e ON e.id = fe.evidence_id "
+            "WHERE fe.organization_id = :o AND fe.evidence_key <> e.evidence_key",
+            {"o": org_id},
+        )
+
+        assert mismatched == []
+
+    async def test_a_rescan_replaces_citations_rather_than_accumulating(
+        self, replay, connected_account
+    ) -> None:
+        """A citation says what a finding rests on now.
+
+        Without the delete the table grows a row per scan per key for the life
+        of a finding, and the primary key would refuse the second scan outright.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        first = await fetch(
+            "SELECT count(*) FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        second_scan = await run_scan(org_id, account_id)
+        after = await fetch(
+            "SELECT count(*) FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        sources = await fetch(
+            "SELECT DISTINCT source_scan_id FROM finding_evidence "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert after[0][0] == first[0][0], "citations accumulated across scans"
+        assert [row[0] for row in sources] == [second_scan], (
+            "a rescan must leave its findings citing the reading it just took"
+        )
+
+    async def test_an_applied_replay_keeps_citing_the_scan_that_read(
+        self, replay, connected_account
+    ) -> None:
+        """The regression the write path is shaped around.
+
+        A replay collects nothing, so it owns no evidence rows. Resolving
+        citations against its own id finds none -- and because they are rewritten
+        each evaluation, it deletes the ones the original scan left. On the path
+        whose entire purpose is confirming a fix held.
+        """
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+        before = await fetch(
+            "SELECT count(*) FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert before[0][0] > 0, "nothing to preserve; the test proves nothing"
+
+        replayed_id = await run_replay(org_id, account_id, original_id)
+
+        async with service_session() as session:
+            replayed = await session.get(Scan, replayed_id)
+        # The precondition, asserted here rather than assumed from a
+        # neighbouring test: an *advisory* replay never reaches
+        # ``_persist_findings`` at all, so it would leave the citations alone
+        # whether the write path resolved them correctly or not, and this test
+        # would pass against the bug it exists to catch.
+        assert replayed.evaluation_only is False, (
+            "replaying the newest capture must be applied, or this proves nothing"
+        )
+
+        after = await fetch(
+            "SELECT count(*), count(DISTINCT source_scan_id) "
+            "FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        sources = await fetch(
+            "SELECT DISTINCT source_scan_id FROM finding_evidence "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert after[0][0] == before[0][0], "a replay removed the citations"
+        assert [row[0] for row in sources] == [original_id], (
+            "a replay must cite the scan that read the provider, not itself"
+        )
+
+    async def test_deleting_the_scan_leaves_the_citation_standing(
+        self, replay, connected_account
+    ) -> None:
+        """``ON DELETE SET NULL``, and the reason the facts are copied.
+
+        Findings outlive scans. A citation that cascaded away with its scan
+        would leave the finding claiming nothing rather than claiming something
+        no longer inspectable -- and the hash is what keeps it followable to the
+        payload, which is stored against the blob rather than the scan.
+        """
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT count(*) FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert before[0][0] > 0
+
+        async with service_session() as session:
+            await session.execute(
+                text("DELETE FROM scans WHERE id = :s"), {"s": scan_id}
+            )
+            await session.commit()
+
+        rows = await fetch(
+            "SELECT evidence_id, evidence_key, content_hash, collected_at, "
+            "       source_scan_id "
+            "FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert len(rows) == before[0][0], "citations were deleted with the scan"
+        for evidence_id, key, content_hash, collected_at, source_scan_id in rows:
+            # The reading is gone with its scan; the citation is not.
+            assert evidence_id is None
+            assert key
+            assert collected_at is not None
+            # No foreign key on this column, deliberately: it is what survives.
+            assert source_scan_id == scan_id
+            assert content_hash is not None
+
+    async def test_a_pruned_payload_leaves_the_citation_intact(
+        self, replay, connected_account
+    ) -> None:
+        """The citation stays true after the bytes are gone.
+
+        Retention prunes blobs on their own schedule, and the hash on a citation
+        is not a foreign key into them for exactly that reason. What the
+        endpoint then reports -- ``payload_available: false`` rather than a
+        dropped row or a dead link -- is held by
+        ``tests/unit/test_finding_provenance.py``; what this holds is that the
+        row is still here to report on.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        before = await fetch(
+            "SELECT count(*) FROM finding_evidence WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert before[0][0] > 0
+
+        async with service_session() as session:
+            await session.execute(
+                text("DELETE FROM evidence_blobs WHERE organization_id = :o"),
+                {"o": org_id},
+            )
+            await session.commit()
+
+        rows = await fetch(
+            "SELECT fe.content_hash, b.content_hash "
+            "FROM finding_evidence fe "
+            "LEFT JOIN evidence_blobs b ON b.content_hash = fe.content_hash "
+            "WHERE fe.organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert len(rows) == before[0][0], "citations were pruned with the payloads"
+        for cited, stored in rows:
+            assert cited is not None, "the hash is what keeps the citation checkable"
+            assert stored is None, "the payload should be gone; the citation should not"
