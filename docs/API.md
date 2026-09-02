@@ -2,51 +2,75 @@
 
 ## 1. Endpoints
 
+Every path below is prefixed `/api/v1`. This list is generated from the routers
+under `app/api/routes/` — if it disagrees with them, they are right.
+
 ```
-POST   /api/v1/organizations              GET  /api/v1/organizations
-GET    /api/v1/organizations/{id}          PATCH /api/v1/organizations
-DELETE /api/v1/organizations/{id}
+POST   /organizations                      GET    /organizations
+GET    /organizations/{id}                 PATCH  /organizations
+DELETE /organizations/{id}
 
-POST   /api/v1/cloud-connections           GET  /api/v1/cloud-connections
-GET    /api/v1/cloud-connections/options   GET  /api/v1/cloud-connections/{id}
-POST   /api/v1/cloud-connections/{id}/consent-url
-GET    /api/v1/cloud-connections/{id}/artifacts
-POST   /api/v1/cloud-connections/{id}/validate
-POST   /api/v1/cloud-connections/{id}/discover
-GET    /api/v1/cloud-connections/{id}/change-events
-PATCH  /api/v1/cloud-connections/{id}/change-events
-GET    /api/v1/cloud-connections/{id}/subscriptions
-PATCH  /api/v1/cloud-connections/{id}/subscriptions
-DELETE /api/v1/cloud-connections/{id}
+POST   /cloud-connections                  GET    /cloud-connections
+GET    /cloud-connections/{id}             DELETE /cloud-connections/{id}
+POST   /cloud-connections/{id}/discover
+PATCH  /cloud-connections/{id}/subscriptions
+PATCH  /cloud-connections/{id}/schedule
+GET    /cloud-connections/{id}/change-events
+PATCH  /cloud-connections/{id}/change-events
+POST   /cloud-connections/{id}/cancel      POST   /cloud-connections/{id}/resume
+GET    /cloud-connections/{id}/revocation
+POST   /cloud-connections/{id}/check-revoked
+GET    /cloud-connections/azure/app-registration
+GET    /cloud-connections/{id}/template            (unauthenticated, CORS-open)
+GET    /cloud-connections/azure/consent/callback   (unauthenticated, signed state)
 
-GET    /api/v1/cloud-accounts              GET  /api/v1/cloud-accounts/{id}
-GET    /api/v1/cloud-accounts/{id}/context
-PUT    /api/v1/cloud-accounts/{id}/context
-DELETE /api/v1/cloud-accounts/{id}/context
+POST   /events/azure/{connection_id}               (unauthenticated, signed token)
 
-POST   /api/v1/scans                       GET  /api/v1/scans
-GET    /api/v1/scans/{id}
+GET    /cloud-accounts                     GET    /cloud-accounts/{id}
+GET    /cloud-accounts/azure/permissions
+GET    /cloud-accounts/{id}/context
+PUT    /cloud-accounts/{id}/context
+DELETE /cloud-accounts/{id}/context
 
-GET    /api/v1/assets                      GET  /api/v1/assets/{id}
-GET    /api/v1/assets/hierarchy
-GET    /api/v1/changes
-GET    /api/v1/findings                    GET  /api/v1/findings/{id}
-GET    /api/v1/risks                       GET  /api/v1/risks/{id}
+POST   /scans                              GET    /scans
+GET    /scans/{id}                         DELETE /scans/{id}
+GET    /scans/{id}/detail                  GET    /scans/{id}/coverage
+GET    /scans/{id}/collection
+POST   /scans/{id}/replay                  POST   /scans/{id}/cancel
+GET    /scans/worker-status
 
-POST   /api/v1/remediation                 PATCH /api/v1/remediation/{id}
-POST   /api/v1/findings/{id}/accept-risk
-POST   /api/v1/findings/{id}/rescan
-GET    /api/v1/findings/{id}/attack-paths
+GET    /assets                             GET    /assets/{id}
+GET    /assets/hierarchy
+GET    /changes
+GET    /findings                           GET    /findings/{id}
+GET    /risks                              GET    /risks/{id}
 
-GET    /api/v1/attack-paths                GET  /api/v1/attack-paths/blast-radius/{id}
-GET    /api/v1/attack-paths/choke-points
+POST   /remediation                        GET    /remediation
+PATCH  /remediation/{id}
+POST   /findings/{id}/accept-risk          POST   /findings/{id}/status
+POST   /findings/{id}/rescan
+GET    /findings/{id}/attack-paths
 
-GET    /api/v1/rules                       GET  /api/v1/rules/{rule_id}
-GET    /api/v1/compliance                  GET  /api/v1/compliance/{framework_id}
+GET    /attack-paths                       GET    /attack-paths/choke-points
+GET    /attack-paths/blast-radius/{resource_id}
 
-GET    /api/v1/dashboard
-GET    /api/v1/reports/{kind}?format=pdf|html&days=30&sections=a,b
+GET    /rules                              GET    /rules/{rule_id}
+GET    /compliance                         GET    /compliance/{framework_id}
+
+GET    /dashboard
+GET    /reports/{kind}?format=pdf|html&days=30&sections=a,b
 ```
+
+Three of the scan endpoints exist because a scan is resumable work rather than
+one call. `/detail` is the run's steps; `/coverage` is what each rule reached a
+verdict on and what it could not; `/collection` is which evidence key arrived and
+which did not, which is the row that makes an UNKNOWN answerable rather than
+merely reported. `/replay` re-runs today's rules against a capture already
+stored — no Azure call — and `/worker-status` pings the broker, because "scans
+stay queued" is otherwise indistinguishable from "the product is broken".
+
+`POST /findings/{id}/status` is the general transition; `accept-risk` is its own
+endpoint rather than a status value because it takes a reason and an approver.
 
 `/cloud-accounts` is **read-only** except for `/context`: an account is a
 subscription discovered beneath a connection, so there is nothing to create,
@@ -75,9 +99,13 @@ each value's source and confidence alongside it.
 Three endpoints are unauthenticated by necessity, all protected by an
 HMAC-signed token rather than a session: `/cloud-connections/azure/consent/callback`,
 which Entra's redirect reaches from the customer's browser;
-`/cloud-connections/artifact`, which their Cloud Shell or Terraform run fetches;
-and `/events/azure/{connection_id}`, which Azure Event Grid delivers to when
-their environment changes. The last is separated from the template token by the
+`/cloud-connections/{id}/template`, which Azure Portal fetches *from the
+customer's browser* for the Deploy to Azure button — the reason it is also the
+one endpoint answering `Access-Control-Allow-Origin: *`; and
+`/events/azure/{connection_id}`, which Azure Event Grid delivers to when their
+environment changes. All three are `include_in_schema=False`: they are reached
+by Azure and by browsers following a link, never by this product's client, and
+listing them in the OpenAPI document would invite a consumer to call them. The last is separated from the template token by the
 `purpose` claim, not by the signature — both are signed with the same secret, so
 the webhook checks the claim rather than treating a valid signature as proof of
 intent.
