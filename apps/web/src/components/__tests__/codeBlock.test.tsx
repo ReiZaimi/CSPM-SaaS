@@ -45,6 +45,24 @@ describe("a block of code", () => {
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
+  it("keeps the button beside the code rather than on top of it", () => {
+    // The reported bug: in the narrow connection panels a long command scrolled
+    // underneath a transparent icon button, so the button sat over characters
+    // it did not hide and the line read as corrupted rather than scrollable.
+    withClipboard(() => Promise.resolve());
+    const { container } = render(
+      <CodeBlock code="az eventgrid event-subscription create --name cloudguard-change-events --source-resource-id /subscriptions/34a5438c" />,
+    );
+
+    const code = container.querySelector("pre")!;
+    const button = screen.getByRole("button", { name: /copy/i });
+
+    expect(code.contains(button)).toBe(false);
+    // Scrolls inside its own column instead of widening the panel around it.
+    expect(code.className).toContain("overflow-x-auto");
+    expect(code.className).toContain("min-w-0");
+  });
+
   it("survives a browser that refuses the clipboard", async () => {
     // An insecure origin, or a policy that blocks it. Previously this threw
     // inside the handler; what matters is that the block stays usable and the
