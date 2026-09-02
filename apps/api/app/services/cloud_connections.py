@@ -1119,7 +1119,18 @@ async def set_change_events(
         resource_id=connection.id,
         metadata={"enabled": enabled},
     )
-    await session.commit()
+    # Not ``session.commit()``. A request session is ``rls_session``, which owns
+    # its transaction -- and ``SET LOCAL ROLE authenticated`` and the JWT claims
+    # are transaction-scoped, so committing here tears them down. Every other
+    # write in this file already goes through the helper; this one did not, and
+    # it is the only one with a statement still to run afterwards: the route
+    # calls ``change_event_setup`` next, which reads the subscriptions to build
+    # the wiring commands. That read then ran as the bare ``cloudguard_app``
+    # role with no claims, and the request died where nothing had gone wrong.
+    #
+    # Turning the feature *off* hid it, because the commands are not built in
+    # that direction and no statement followed the commit.
+    await commit_unless_externally_managed(session)
     return connection
 
 

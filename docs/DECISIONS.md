@@ -1982,6 +1982,44 @@ from the coverage ratio; no resources plus a failed listing is nobody having
 looked. The gap carries no `resource_id`, because there is no asset to
 attribute it to — that absence *is* the finding about the scan.
 
+**A request must not commit the transaction it was handed.**
+`rls_session` wraps a whole request in `session.begin()` and declares who is
+asking with `SET LOCAL ROLE authenticated` and `request.jwt.claims`. Both are
+transaction-scoped — which is what stops them leaking to the next checkout of a
+pooled connection, and equally means a commit inside a request tears down the
+settings every RLS policy reads. `commit_unless_externally_managed` exists for
+exactly this, and is a no-op under a session that owns its transaction.
+
+`set_change_events` called `session.commit()` directly, the only one of eleven
+writes in that file that did. Turning change detection *off* worked, because
+nothing ran afterwards. Turning it *on* did not: the route goes on to build the
+Event Grid wiring commands, which reads the connection's subscriptions, and
+that read ran as the bare `cloudguard_app` role with no claims.
+
+The guard is now a test over `app/services/`, not over the one function that
+had it, with per-function exemptions for the code that opens its own session —
+per function rather than per module, because `scans.py` holds both the worker's
+reaper and endpoints a request reaches, and exempting the file would exempt
+those too.
+
+**And the failure was invisible from the browser, which is the worse half.**
+The API registered handlers for `AppError`, `HTTPException` and
+`RequestValidationError`, and nothing else. Anything unanticipated escaped to
+Starlette's `ServerErrorMiddleware`, which sits *outside* `CORSMiddleware`, so
+its 500 carried no `Access-Control-Allow-Origin` and the browser refused to
+read it. `fetch` then rejected with `TypeError: Failed to fetch` — what a
+browser says when a request never arrived at all. So a server-side bug was
+indistinguishable from the API being unreachable, and the connections page
+reported a network failure for a request that had arrived, run, and raised.
+
+Registering a handler for bare `Exception` does not fix this: Starlette
+special-cases that one and hands it to the same outermost layer.
+`UnhandledErrorMiddleware` sits inside CORS instead — `main.py` adds it first,
+and `add_middleware` inserts at the front, so the last one added is outermost.
+The response carries the envelope and a sentence; the stack trace goes to the
+log, because rendering one into a browser is a disclosure and this is a
+security product.
+
 ---
 
 ## 55. A payload is stored as compressed bytes, not as JSONB
