@@ -1,12 +1,12 @@
 # CloudGuard — Azure Integration
 
-Covers how CloudGuard connects to a customer's Azure environment: auth model, consent flow, onboarding, and the collection pipeline. Schema detail: `DATABASE.md` §2 (`cloud_accounts`). Generic connector interface: `ARCHITECTURE.md` §6.
+Covers how CloudGuard connects to a customer's Azure environment: auth model, consent flow, onboarding, and the collection pipeline. Schema detail: `DATABASE.md` §6 (`cloud_connections`, which superseded `cloud_accounts` as the unit a scan runs against). Generic connector interface: `ARCHITECTURE.md` §6.
 
 ---
 
 ## 1. Decision: Real Azure Only
 
-There is **no product-facing MockAzureConnector** in the MVP. Rule unit tests use fixture data (`fixtures/secure/`, `fixtures/vulnerable/`, `fixtures/unknown/` — see `TESTING.md`), not a mock connector component. Real Azure integration is built in **Phase 2** (see `PRODUCT_SPEC.md` §7), not deferred to the end.
+There is **no product-facing MockAzureConnector** in the MVP. Rule unit tests use fixture data (`tests/fixtures/secure/`, `vulnerable/`, `unknown/` — see `TESTING.md` §1), not a mock connector component. Real Azure integration is built in **Phase 2** (see `PRODUCT_SPEC.md` §7), not deferred to the end.
 
 ---
 
@@ -16,7 +16,7 @@ There is **no product-facing MockAzureConnector** in the MVP. Rule unit tests us
 
 This is **two separate consent steps**, not one:
 
-1. **Entra admin consent** — CloudGuard's multi-tenant app requests Microsoft Graph application permissions (e.g. `Directory.Read.All`, `UserAuthenticationMethod.Read.All` for MFA checks). The customer's Entra admin clicks one consent link and grants tenant-wide.
+1. **Entra admin consent** — CloudGuard's multi-tenant app requests nine Microsoft Graph *application* permissions, listed in `REQUIRED_GRAPH_PERMISSIONS` (`app/connectors/azure/auth.py`): `Directory.Read.All`, `User.Read.All`, `RoleManagement.Read.Directory`, `UserAuthenticationMethod.Read.All`, `Policy.Read.All`, `Application.Read.All`, `Group.Read.All`, `IdentityRiskyUser.Read.All`, `AuditLog.Read.All`. Every one is a read scope. The customer's Entra admin clicks one consent link and grants tenant-wide.
 2. **Azure RBAC Reader role** — a separate grant not covered by Graph consent. The customer assigns CloudGuard's app the **Reader** role on the subscription(s)/resource group(s) to scan, via Portal, Azure CLI, or an ARM/Bicep template CloudGuard provides.
 
 Access is **read-only** for the MVP. No write permissions are ever requested. Credentials/secrets never reach the frontend.
@@ -78,12 +78,17 @@ it character for character and refuses the round-trip otherwise. The path
 changed when connections replaced per-subscription accounts, so a value ending
 `/cloud-accounts/azure/consent/callback` is out of date and will fail.
 
-Confirm with `GET /api/v1/cloud-connections/options`: `azure_configured` turns
-`true`, and the wizard's notice disappears.
+Confirm with `GET /api/v1/cloud-connections/azure/app-registration`. It returns
+the manifest fragment this registration must declare plus the `az` command that
+applies it, so the deployed registration can be **diffed** against what the code
+requires rather than inspected by eye in a portal — which is how a registration
+missing seven of its nine permissions still produced a consent screen that
+looked entirely normal. The wizard's "cannot start a consent flow" notice
+disappears once `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` are both set.
 
 ### Why this replaces the earlier "Tenant ID / Client ID / Credential" flow
 
-An earlier draft of the build spec described the connection screen asking for Tenant ID, Client ID, and a Credential — that's the manual service-principal flow, and it's superseded by the model above. The `cloud_accounts` table reflects this: no `client_id`/`credential_reference` columns, just `tenant_id`, `subscription_id`, and consent-tracking fields. See `DATABASE.md` §2.
+An earlier draft of the build spec described the connection screen asking for Tenant ID, Client ID, and a Credential — that's the manual service-principal flow, and it's superseded by the model above. The schema reflects it: no `client_id`/`credential_reference` column anywhere. `cloud_connections` carries `tenant_id`, the service principal's object id, and consent-tracking fields, and nothing that is a secret. See `DATABASE.md` §6.
 
 ---
 

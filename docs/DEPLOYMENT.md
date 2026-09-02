@@ -227,11 +227,16 @@ Node installed on your machine.
    SUPABASE_JWT_SECRET=<jwt secret>
    JWT_AUDIENCE=authenticated
 
-   DATABASE_URL=postgresql+asyncpg://cloudguard_app:<password>@db.<ref>.supabase.co:5432/postgres
-   DATABASE_OWNER_URL=postgresql+asyncpg://postgres:<db-password>@db.<ref>.supabase.co:5432/postgres
+   # Session pooler form, exactly as built in step 1.3 — host
+   # aws-0-<region>.pooler.supabase.com, port 5432, username <user>.<project-ref>.
+   # NOT db.<ref>.supabase.co: that is the direct connection, it is IPv6-only on
+   # current projects, and Railway cannot route to it. See the "Network is
+   # unreachable" entry in §4.
+   DATABASE_URL=postgresql+asyncpg://cloudguard_app.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+   DATABASE_OWNER_URL=postgresql+asyncpg://postgres.<project-ref>:<db-password>@aws-0-<region>.pooler.supabase.com:5432/postgres
 
    # Worker service only, and optional — see step 1.3.
-   DATABASE_WORKER_URL=postgresql+asyncpg://cloudguard_worker:<password>@db.<ref>.supabase.co:5432/postgres
+   DATABASE_WORKER_URL=postgresql+asyncpg://cloudguard_worker.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
 
    REDIS_URL=${{Redis.REDIS_URL}}
 

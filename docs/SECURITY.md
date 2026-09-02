@@ -43,8 +43,15 @@ three logins, and which one a process uses *is* the security control:
 The worker connection is separate rather than shared because a scan writes on
 behalf of one organization across many tables, which is exactly the code path
 where an application-layer mistake would be invisible; running it constrained
-moves that guarantee out of our code and into PostgreSQL. It falls back to the
-app connection when unset, and `Settings.worker_is_constrained` reports which.
+moves that guarantee out of our code and into PostgreSQL.
+
+**It is optional, and the fallback is the owner** — `scan_database_url` returns
+`DATABASE_WORKER_URL or DATABASE_OWNER_URL`, so leaving it unset puts the whole
+scan pipeline on the RLS-exempt connection and the pipeline's own
+`organization_id` filters become the entire tenant boundary. Those filters are
+correct; they are code rather than a mechanism, which is the distinction this
+section exists to draw. `Settings.worker_is_constrained` reports which of the
+two is in force, and the worker logs it on its first task.
 
 `infrastructure/supabase/roles.sql` creates both. **CI checks that the file still
 carries its placeholder password** — a real credential must never be committed
@@ -61,10 +68,10 @@ Automated RLS tests must confirm Organization A can never read Organization B's 
 
   | Grant | What it reads |
   |---|---|
-  | Microsoft Graph, application scopes | `Directory.Read.All`, `User.Read.All`, `UserAuthenticationMethod.Read.All`, `Policy.Read.All`, `Application.Read.All`, `Group.Read.All`, `IdentityRiskyUser.Read.All`, `AuditLog.Read.All` |
+  | Microsoft Graph, application scopes | `Directory.Read.All`, `User.Read.All`, `RoleManagement.Read.Directory`, `UserAuthenticationMethod.Read.All`, `Policy.Read.All`, `Application.Read.All`, `Group.Read.All`, `IdentityRiskyUser.Read.All`, `AuditLog.Read.All` |
   | Azure RBAC | `Reader`, per subscription |
 
-  Every scope ends in `.Read.All`, and the RBAC role is `Reader`. There is no
+  All nine are read scopes and the RBAC role is `Reader`. There is no
   code path that writes to a customer tenant, which is why enabling change
   events hands the customer an `az eventgrid` command to run themselves rather
   than creating the subscription for them — CloudGuard could not create it.
@@ -87,7 +94,8 @@ JWT_AUDIENCE=                   -- lets anyone mint a token for any user
 
 DATABASE_URL=                   -- cloudguard_app: RLS enforced. The API's login
 DATABASE_OWNER_URL=             -- owner: migrations only, RLS-exempt
-DATABASE_WORKER_URL=            -- cloudguard_worker; falls back to DATABASE_URL
+DATABASE_WORKER_URL=            -- cloudguard_worker. Optional; unset falls back
+                                -- to DATABASE_OWNER_URL, which RLS does not bind
 REDIS_URL=
 
 AZURE_CLIENT_ID=                -- CloudGuard's own app identity, not a customer's
