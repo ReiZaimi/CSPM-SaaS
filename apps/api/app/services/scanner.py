@@ -66,7 +66,7 @@ from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.context import ContextDeclarationRecord
-from app.models.finding import Finding
+from app.models.finding import Finding, FindingEvidence
 from app.models.history import AssetChangeEvent, FindingEventRecord
 from app.models.resource import ResourceRecord, ResourceRelationship
 from app.models.risk import Risk, RiskFinding, RiskHistory
@@ -1203,6 +1203,17 @@ class ScanPipeline:
         # it read rather than how large the customer has grown.
         account_ids = [account.id for account, _ in account_state]
         connection_id = directory[0].id if directory is not None else None
+        # Which subscription each asset came from, taken before the merge --
+        # after it, a tenant-wide scan's resources are one list and the
+        # subscription that produced each is no longer recoverable from them.
+        # A finding cites the readings of *its* asset's subscription, so this is
+        # what keeps subscription B's storage listing from being offered as the
+        # provenance of a finding in subscription A.
+        account_of = {
+            resource.provider_resource_id: account.id
+            for account, state in account_state
+            for resource in state.resources
+        }
 
         # --- normalize ------------------------------------------------------
         await self._set_status(session, scan, ScanStatus.NORMALIZING)
@@ -1259,6 +1270,7 @@ class ScanPipeline:
                 observed_at,
                 account_ids=account_ids,
                 connection_id=connection_id,
+                account_of=account_of,
             )
             await self._verify_remediations(
                 session,
@@ -1988,6 +2000,7 @@ class ScanPipeline:
         *,
         account_ids: list[UUID],
         connection_id: UUID | None,
+        account_of: dict[str, UUID],
     ) -> int:
         """Write this scan's failures as findings, and score each one.
 
@@ -2119,6 +2132,8 @@ class ScanPipeline:
 
         # One flush for every new finding, rather than one per finding.
         await session.flush()
+
+        await self._link_evidence(session, org_id, scan, pending, account_of)
 
         for finding, event, previous, detail in events:
             session.add(
@@ -2308,6 +2323,109 @@ class ScanPipeline:
             for finding, *_ in members
             if risk.id is None or risk_by_finding.get(finding.id) != risk.id
         ]
+
+    async def _link_evidence(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        scan: Scan,
+        pending: dict[tuple[str, UUID | None], PendingFinding],
+        account_of: dict[str, UUID],
+    ) -> None:
+        """Cite the readings each finding rests on.
+
+        The finding already carries an excerpt of its evidence. This records
+        where that came from: which listing, taken when, under which
+        permissions, and the hash of the payload. An excerpt cannot be
+        re-verified; a citation can.
+
+        **Read from the scan that collected, not the scan that concluded.** A
+        replay evaluates a capture some earlier scan took and writes no evidence
+        rows of its own, so resolving against ``scan.id`` would find nothing and
+        delete every link it touched -- silently, on the path that exists to
+        verify fixes. ``replay_of_scan_id`` is the scan that did the reading.
+
+        Rewritten rather than accumulated. A citation describes what a finding
+        rests on *now*; what it used to rest on is ``finding_events``' job.
+        """
+        if not pending:
+            return
+
+        source_scan_id = scan.replay_of_scan_id or scan.id
+        wanted = {
+            key.value
+            for _finding, rule, *_rest in pending.values()
+            for key in rule.requires_evidence
+        }
+        if not wanted:
+            # Every rule that failed reads nothing it declared. Nothing to cite,
+            # and no rows to clear -- a finding cannot have acquired a citation
+            # for a key its rule never asked for.
+            return
+
+        rows = (
+            (
+                await session.execute(
+                    select(Evidence).where(
+                        Evidence.organization_id == org_id,
+                        Evidence.scan_id == source_scan_id,
+                        Evidence.evidence_key.in_(wanted),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # (account, key) -> reading. The directory's readings are filed under
+        # None, which is how ``Evidence`` records them: a tenant-wide read did
+        # not happen *in* a subscription, and naming one would attribute it to a
+        # scope that is fine.
+        by_scope: dict[tuple[UUID | None, str], Evidence] = {
+            (row.cloud_account_id, row.evidence_key): row for row in rows
+        }
+
+        finding_ids = [finding.id for finding, *_ in pending.values()]
+        await session.execute(
+            delete(FindingEvidence).where(
+                FindingEvidence.organization_id == org_id,
+                FindingEvidence.finding_id.in_(finding_ids),
+            )
+        )
+
+        for finding, rule, resource, *_rest in pending.values():
+            account_id = (
+                account_of.get(resource.provider_resource_id) if resource else None
+            )
+            for key in rule.requires_evidence:
+                # The asset's own subscription first, then the directory. Both
+                # arms are needed rather than one: an aggregate rule reads only
+                # tenant-wide listings, while a per-resource rule may read a
+                # directory listing beside its subscription's.
+                row = by_scope.get((account_id, key.value)) or by_scope.get(
+                    (None, key.value)
+                )
+                if row is None:
+                    # No reading of this key reached this scope. That is not an
+                    # error and not a gap to record here -- the rule degrades to
+                    # UNKNOWN through ``collection_errors`` and never becomes a
+                    # finding, so a FAIL citing a key with no reading means the
+                    # rule read something it did not declare, which the evidence
+                    # tests catch at their own layer.
+                    continue
+                session.add(
+                    FindingEvidence(
+                        organization_id=org_id,
+                        finding_id=finding.id,
+                        evidence_key=row.evidence_key,
+                        evidence_id=row.id,
+                        content_hash=row.content_hash,
+                        # The provider's read time, which for a carried reading
+                        # is older than this scan. Copied rather than joined so
+                        # the age survives the reading's deletion.
+                        collected_at=row.collected_at,
+                        source_scan_id=row.scan_id,
+                    )
+                )
 
     @staticmethod
     def _evidence_with_controls(result: RuleResult) -> dict:

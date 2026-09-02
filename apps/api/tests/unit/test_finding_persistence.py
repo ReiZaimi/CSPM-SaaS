@@ -118,6 +118,7 @@ async def persist(times: int) -> tuple[FakeSession, int]:
         # requires it, and because a real scan always has one.
         account_ids=[uuid.uuid4()],
         connection_id=None,
+        account_of={},
     )
     return session, count
 
@@ -184,6 +185,7 @@ async def test_nothing_is_written_when_nothing_failed() -> None:
         datetime.now(UTC),
         account_ids=[uuid.uuid4()],
         connection_id=None,
+        account_of={},
     )
 
     assert count == 0
@@ -244,6 +246,7 @@ async def persist_mfa(count: int) -> FakeSession:
         datetime.now(UTC),
         account_ids=[uuid.uuid4()],
         connection_id=None,
+        account_of={},
     )
     return session
 
@@ -339,6 +342,7 @@ async def test_a_stepped_down_exploitability_reaches_the_score() -> None:
         datetime.now(UTC),
         account_ids=[uuid.uuid4()],
         connection_id=None,
+        account_of={},
     )
 
     risk = session.of_type(Risk)[0]
@@ -387,6 +391,7 @@ async def test_a_compensating_control_is_recorded_on_the_finding() -> None:
         datetime.now(UTC),
         account_ids=[uuid.uuid4()],
         connection_id=None,
+        account_of={},
     )
 
     finding = session.of_type(Finding)[0]
