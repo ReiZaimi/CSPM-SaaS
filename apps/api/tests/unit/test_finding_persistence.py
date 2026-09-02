@@ -26,6 +26,7 @@ from app.models.scan import Scan
 from app.rules.azure.compute.exposure import AzureExposedComputeRule
 from app.rules.azure.identity.mfa import AzureMfaRule
 from app.rules.base import RuleResult
+from app.rules.controls import Control
 from app.rules.engine import EvaluatedResult, EvaluationReport
 from app.rules.registry import RULE_REGISTRY
 from app.services.scanner import ScanPipeline
@@ -345,3 +346,58 @@ async def test_a_stepped_down_exploitability_reaches_the_score() -> None:
     assert rule.exploitability > 1, "the class tag is the ceiling it stepped down from"
     # And the arithmetic on the detail page is the arithmetic that ran.
     assert risk.score_breakdown["components"]["exploitability"]["value"] == 1.0
+
+
+async def test_a_compensating_control_is_recorded_on_the_finding() -> None:
+    """A customer asking why an administrator without MFA is not scored as a
+    Critical must find the answer on the finding, not in a scoring formula they
+    cannot see."""
+    target = resource()
+    session = FakeSession()
+    pipeline = ScanPipeline(uuid.uuid4())
+    org_id = uuid.uuid4()
+    scan = Scan(organization_id=org_id, status="QUEUED")  # type: ignore[arg-type]
+    scan.id = uuid.uuid4()
+
+    await pipeline._persist_findings(
+        session,  # type: ignore[arg-type]
+        org_id,
+        scan,
+        EvaluationReport(
+            failures=[
+                EvaluatedResult(
+                    rule=AzureExposedComputeRule(),
+                    result=RuleResult.failed(
+                        evidence={"has_public_ip": True},
+                        controls=(
+                            Control(
+                                id="entra.security_defaults",
+                                name="Security defaults",
+                                detail="Every account is challenged.",
+                                exploitability=3,
+                            ),
+                        ),
+                    ),
+                    resource=target,
+                )
+            ],
+            rules_run=1,
+        ),
+        {target.provider_resource_id: uuid.uuid4()},
+        datetime.now(UTC),
+        account_ids=[uuid.uuid4()],
+        connection_id=None,
+    )
+
+    finding = session.of_type(Finding)[0]
+    # The rule's own evidence is untouched; the control is added beside it.
+    assert finding.evidence["has_public_ip"] is True
+    assert finding.evidence["compensating_controls"] == [
+        {
+            "id": "entra.security_defaults",
+            "name": "Security defaults",
+            "detail": "Every account is challenged.",
+            "exploitability": 3,
+        }
+    ]
+    assert int(session.of_type(Risk)[0].exploitability) == 3

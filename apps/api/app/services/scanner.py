@@ -81,7 +81,7 @@ from app.models.scan import (
 )
 from app.models.verification import RemediationVerification
 from app.risk.scorer import RiskInputs, ScoredRisk, default_scorer
-from app.rules.base import RuleContext, SecurityRule
+from app.rules.base import RuleContext, RuleResult, SecurityRule
 from app.rules.engine import EvaluatedResult, EvaluationReport, RuleEngine
 from app.services import orchestrator
 from app.services import verification as verification_service
@@ -1016,6 +1016,10 @@ class ScanPipeline:
                 state.merged.collection_errors.update(
                     state.directory[1].collection_errors
                 )
+                # Tenant defences. They come from the directory reading and are
+                # about the whole tenant, so they merge once rather than per
+                # subscription -- the same reason the directory is read once.
+                state.merged.controls.update(state.directory[1].controls)
                 state.errors.update(snapshot.errors)
                 continue
 
@@ -1236,6 +1240,7 @@ class ScanPipeline:
             resources=merged.resources,
             relationships=self._group_edges(merged),
             collection_errors=merged.collection_errors,
+            controls=merged.controls,
         )
         report = self.engine.evaluate(context)
         scan.rule_count = report.rules_run
@@ -2086,7 +2091,7 @@ class ScanPipeline:
             finding.severity = rule.severity
             finding.title = title
             finding.description = description
-            finding.evidence = failure.result.evidence or {}
+            finding.evidence = self._evidence_with_controls(failure.result)
             # Snapshot-copied so later edits to the rule's guidance do not
             # rewrite the history of findings already raised.
             finding.remediation = rule.remediation
@@ -2303,6 +2308,22 @@ class ScanPipeline:
             for finding, *_ in members
             if risk.id is None or risk_by_finding.get(finding.id) != risk.id
         ]
+
+    @staticmethod
+    def _evidence_with_controls(result: RuleResult) -> dict:
+        """The rule's evidence, plus why its score was lowered.
+
+        Merged here rather than left to each rule, so the key cannot be spelled
+        two ways by two authors -- and so a customer asking why an
+        administrator without MFA is not scored as a Critical has the answer on
+        the finding rather than in a scoring formula they cannot see.
+        """
+        evidence = dict(result.evidence or {})
+        if result.controls:
+            evidence["compensating_controls"] = [
+                control.as_evidence() for control in result.controls
+            ]
+        return evidence
 
     def _upsert_risk(
         self,

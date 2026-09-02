@@ -46,7 +46,7 @@ They are identical for any finding whose asset is fully classified — the secon
 
 `known_risk_level` is NULL for scenario risks. A route is a statement about how an environment is wired rather than about one asset's context, and it never reaches the org score anyway — the findings it groups are already counted there.
 
-- **`exploitability`** — 0–5, required on every rule, scaled by what the attacker must already have (`RULE_ENGINE.md` §5). The rule's value is a **ceiling** describing its worst instance; a rule that can establish one instance is less exploitable than that — an NSG rule attached to nothing, a storage account reachable from every network but not anonymously — returns a lower value for that finding, and the score uses it.
+- **`exploitability`** — 0–5, required on every rule, scaled by what the attacker must already have (`RULE_ENGINE.md` §5). The rule's value is a **ceiling** describing its worst instance; a rule that can establish one instance is less exploitable than that — an NSG rule attached to nothing, a storage account reachable from every network but not anonymously — returns a lower value for that finding, and the score uses it. Observed **compensating controls** apply the same way: a Conditional Access policy demanding a second factor of an account that has none does not fix it and does not close the finding, but it does change what an attacker holding the password can do today.
 - **`business_impact`** — not manually set; **computed** as the average of `asset_criticality` and `data_sensitivity` scores.
 
 All weights and the level-to-score mapping live in a configurable risk-engine config object, not hardcoded into rule logic — tune after testing against real environments.

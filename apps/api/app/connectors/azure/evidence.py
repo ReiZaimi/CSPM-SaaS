@@ -51,6 +51,17 @@ class AzureEvidence(EvidenceKey):
     DIRECTORY_ROLES = "directory_roles"
     USER_ROLE_MAP = "user_role_map"
 
+    # Defences rather than faults. Neither produces a finding of its own; both
+    # are read so a rule can tell whether something already stands between an
+    # attacker and the misconfiguration it found (``rules/controls.py``).
+    #
+    # Both come from Graph under ``Policy.Read.All``, which is already in
+    # ``REQUIRED_GRAPH_PERMISSIONS`` and already consented by every connected
+    # tenant -- so this costs no customer a second trip to a Global
+    # Administrator.
+    SECURITY_DEFAULTS = "security_defaults"
+    CONDITIONAL_ACCESS_POLICIES = "conditional_access_policies"
+
     @property
     def category(self) -> EvidenceCategory:
         return _CATEGORIES[self]
@@ -75,6 +86,8 @@ _CATEGORIES: dict[AzureEvidence, EvidenceCategory] = {
     AzureEvidence.USERS: EvidenceCategory.IDENTITY,
     AzureEvidence.DIRECTORY_ROLES: EvidenceCategory.IDENTITY,
     AzureEvidence.USER_ROLE_MAP: EvidenceCategory.IDENTITY,
+    AzureEvidence.SECURITY_DEFAULTS: EvidenceCategory.IDENTITY,
+    AzureEvidence.CONDITIONAL_ACCESS_POLICIES: EvidenceCategory.IDENTITY,
 }
 
 # Enumerated rather than compared at call time: a key added without a category
@@ -108,6 +121,13 @@ BASELINE_EVIDENCE: frozenset[AzureEvidence] = frozenset(
         AzureEvidence.RESOURCES,
         AzureEvidence.ROLE_ASSIGNMENTS,
         AzureEvidence.ROLE_DEFINITIONS,
+        # The two control readings. No rule *requires* them -- a rule that did
+        # would report UNKNOWN when a defence could not be read, which is
+        # backwards: an unreadable control is an absent one, and the finding
+        # keeps its full score. They are collected because the score is worse
+        # without them, not because a verdict depends on them.
+        AzureEvidence.SECURITY_DEFAULTS,
+        AzureEvidence.CONDITIONAL_ACCESS_POLICIES,
     }
 )
 

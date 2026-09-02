@@ -63,6 +63,14 @@ class FakeGraph:
         self._check("list_authentication_methods")
         return []
 
+    async def get_security_defaults(self) -> dict:
+        self._check("get_security_defaults")
+        return {"isEnabled": False}
+
+    async def list_conditional_access_policies(self) -> list[dict]:
+        self._check("list_conditional_access_policies")
+        return []
+
 
 async def run_identity(monkeypatch: pytest.MonkeyPatch, denied: set[str]):
     """Execute just the identity tasks, with Graph faked out."""

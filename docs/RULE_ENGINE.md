@@ -129,6 +129,27 @@ What the attacker must **already have**:
 
 Never up. The class value is the tuned number, and a rule able to raise it per finding would be retuning itself one finding at a time. The clamp enforces `0 ≤ value ≤ tag`, so a mistaken override can only understate.
 
+### Compensating controls
+
+A rule may also return `controls` on a `RuleResult` — defences observed in the *same capture* that make the finding harder to exploit. Each is a ceiling on the same scale, so `effective_exploitability` is the minimum of the tag, the instance step-down, and every control. Several controls therefore compose to the strongest of them without any of them knowing the others exist.
+
+Three rules, in `app/rules/controls.py`:
+
+- **A control never turns FAIL into PASS.** The misconfiguration is still there, and the control can be disabled, rescoped, or have the affected principal excluded in a change nobody reviews.
+- **Only prevention counts.** Detection is not compensation — Defender watching a storage account changes who finds out, not what an attacker must have, and this scale is written in terms of the second.
+- **The control must be observed.** One CloudGuard could not fully read is absent, and the finding keeps its full score.
+
+Implemented for AZ-ID-001, from evidence read under `Policy.Read.All` and `Group.Read.All` — both already consented, so no customer grants anything new:
+
+| Control | Applies when | Leaves |
+|---|---|---|
+| Entra security defaults | `isEnabled` is true — every account is challenged | 3 |
+| A Conditional Access policy | enabled (not report-only), grants MFA unambiguously, covers **all** applications, covers this account by `All`, by user id or by a directory role, and does not exclude it | 3 |
+
+A policy is discarded rather than weakened whenever any part of it is unresolved: `MFA or compliantDevice` under `OR` is not multi-factor; a policy scoped to particular applications makes no claim, since CloudGuard cannot know which one an attacker would use; and a policy excluding a group whose membership never arrived is dropped outright, because that group could be the one holding the account being judged. Directory role template ids are resolved from the tenant's own `directoryRoles` rather than from a table of GUIDs — the discipline `rbac.py` applies to ARM action strings.
+
+**Not yet modelled, and why.** Just-in-time VM access would be the obvious control for AZ-NET-001/002, and adding it needs `Microsoft.Security/locations/jitNetworkAccessPolicies/read` in the scanner role. `rbac.py` requires every action string to be verified against `az provider operation show` first — an unverified one fails the customer's whole role deployment atomically, as `autoProvisioningSettings/read` did — and it would cost every existing customer a role redeploy. It goes in when the string has been checked against a real tenant, not before.
+
 Registry:
 
 ```python

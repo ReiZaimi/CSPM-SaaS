@@ -156,7 +156,20 @@ export interface Finding {
   status: FindingStatus;
   title: string;
   description: string;
-  evidence: Record<string, unknown>;
+  /**
+   * What the rule saw. `compensating_controls` is added by the pipeline rather
+   * than by any rule: defences observed in the same capture that make this
+   * finding harder to exploit without making it right, so they lower what it is
+   * scored at and never resolve it.
+   */
+  evidence: Record<string, unknown> & {
+    compensating_controls?: {
+      id: string;
+      name: string;
+      detail: string;
+      exploitability: number;
+    }[];
+  };
   remediation: string;
   rule_version: string;
   risk_score: number | null;

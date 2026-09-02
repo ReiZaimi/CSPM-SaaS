@@ -413,6 +413,10 @@ export const en = {
     empty: "No findings match these filters.",
     whyItMatters: "Why this matters",
     evidence: "Evidence",
+    controlsTitle: "What is standing in the way",
+    controlsHelp:
+      "Defences CloudGuard observed in the same reading. They make this harder to exploit without making it right, so this finding is ranked lower than it otherwise would be \u2014 and it is still open, because every one of them can be switched off, rescoped or have this account excluded in a change nobody reviews.",
+    controlsStillNeeded: "An attacker still needs",
     howToFix: "How to fix it",
     riskScore: "Risk score",
     effort: "Estimated effort",

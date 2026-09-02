@@ -1,6 +1,6 @@
 """Identity rules. These read Microsoft Graph data, not ARM data."""
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, RuleScope, Severity
@@ -8,6 +8,7 @@ from app.domain.resource import CloudResource
 from app.remediation import Comparison, ExpectedState, RemediationSpec
 from app.risk.grouping import RiskGrouping
 from app.rules.base import RuleContext, RuleResult, SecurityRule
+from app.rules.controls import Control
 
 # Entra directory roles that carry enough power that a missing second factor is
 # a critical problem rather than a hygiene note.
@@ -34,6 +35,77 @@ PRIVILEGED_ROLES = {
 def _is_privileged(resource: CloudResource) -> bool:
     roles = resource.get("directory_roles", []) or []
     return any(str(r).strip().lower() in PRIVILEGED_ROLES for r in roles)
+
+
+# What an attacker still needs once a second factor is demanded at sign-in: not
+# the password, which they have, but the phone. Three on the scale in
+# RULE_ENGINE.md section 5 -- a valid credential is no longer enough, and this
+# is not a fix, so it does not fall further.
+_MFA_ENFORCED = 3
+
+
+def _enforced_on(
+    resource: CloudResource, roles: list[Any], controls: dict[str, Any]
+) -> tuple[Control, ...]:
+    """Whether something already demands a second factor of this account.
+
+    Security defaults first, because they are unconditional: switched on, every
+    account in the tenant is challenged, with no scope to reason about.
+
+    Then Conditional Access, matched on what the normalizer could establish --
+    a policy is only offered here if it is enabled, grants multi-factor
+    unambiguously, covers every application, and had every group it names read
+    back. Anything less was dropped before it reached this function, because the
+    single use of these is lowering a score.
+    """
+    found: list[Control] = []
+
+    if controls.get("security_defaults_enabled") is True:
+        found.append(
+            Control(
+                id="entra.security_defaults",
+                name="Security defaults",
+                detail=(
+                    "Entra security defaults are enabled for this tenant, so every "
+                    "account is challenged for a second factor at sign-in."
+                ),
+                exploitability=_MFA_ENFORCED,
+            )
+        )
+
+    user_id = str(resource.provider_resource_id).rsplit("/", 1)[-1]
+    held = {str(r).strip().lower() for r in roles}
+
+    for policy in controls.get("mfa_policies", []) or []:
+        if user_id in set(policy.get("excluded_user_ids") or []):
+            continue
+        if held & {str(r).strip().lower() for r in policy.get("excluded_role_names") or []}:
+            continue
+
+        covered = (
+            policy.get("all_users")
+            or user_id in set(policy.get("user_ids") or [])
+            or bool(
+                held & {str(r).strip().lower() for r in policy.get("role_names") or []}
+            )
+        )
+        if not covered:
+            continue
+
+        found.append(
+            Control(
+                id=f"entra.conditional_access.{policy.get('id')}",
+                name=str(policy.get("name")),
+                detail=(
+                    "This Conditional Access policy is enabled, applies to this "
+                    "account and requires multi-factor authentication for every "
+                    "application."
+                ),
+                exploitability=_MFA_ENFORCED,
+            )
+        )
+
+    return tuple(found)
 
 
 class AzureMfaRule(SecurityRule):
@@ -153,6 +225,7 @@ class AzureMfaRule(SecurityRule):
                 {"mfa_registered": True, "methods": strong, "privileged_roles": roles}
             )
 
+        enforced = _enforced_on(resource, roles, context.controls)
         return RuleResult.failed(
             evidence={
                 "mfa_registered": False,
@@ -160,8 +233,21 @@ class AzureMfaRule(SecurityRule):
                 "privileged_roles": roles,
                 "user_principal_name": resource.get("user_principal_name"),
             },
+            # Still a failure, and deliberately. A policy demanding a second
+            # factor of an account that has never registered one locks that
+            # account out of its own tenant the first time it is challenged --
+            # which is a real operational problem, not a fixed one -- and the
+            # policy can be disabled, rescoped or have this account excluded in
+            # a change nobody reviews. What it does change is what an attacker
+            # holding the password can do with it today.
+            controls=enforced,
             message=(
                 f"{resource.name} holds privileged role(s) "
                 f"{', '.join(str(r) for r in roles)} with no MFA method registered"
+                + (
+                    f", though {enforced[0].name} still requires one at sign-in"
+                    if enforced
+                    else ""
+                )
             ),
         )

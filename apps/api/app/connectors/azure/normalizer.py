@@ -176,6 +176,13 @@ class AzureNormalizer:
         )
         state.resources.extend(principals)
         state.relationships.extend(identity_edges)
+
+        # Defences, which are not assets and are not findings. Kept out of
+        # ``resources`` deliberately: a Conditional Access policy is not a thing
+        # anybody secures, has no exposure and no data sensitivity, and putting
+        # it in the asset list would inflate every inventory count with rows a
+        # customer never asked to own (``rules/controls.py``).
+        state.controls = self._normalize_controls(data)
         return state
 
     # ------------------------------------------------------------ containment
@@ -730,6 +737,137 @@ class AzureNormalizer:
                 )
             )
         return resources
+
+    # ------------------------------------------------------ compensating controls
+    def _normalize_controls(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Tenant defences, reduced to what a rule can actually reason about.
+
+        Only what is *established* survives this. A policy CloudGuard cannot
+        fully resolve -- scoped to an application rather than to all of them,
+        granting something other than multi-factor, excluding a group whose
+        membership never arrived -- is dropped rather than reported weakly,
+        because the one thing these are used for is lowering a finding's score
+        and a half-understood policy is not grounds for that.
+        """
+        controls: dict[str, Any] = {}
+
+        defaults = data.get("security_defaults")
+        if isinstance(defaults, dict) and defaults.get("isEnabled") is not None:
+            controls["security_defaults_enabled"] = bool(defaults.get("isEnabled"))
+
+        policies = data.get("conditional_access_policies")
+        if policies is not None:
+            controls["mfa_policies"] = self._mfa_policies(
+                policies, data.get("directory_roles") or [], data.get("group_members")
+            )
+        return controls
+
+    @staticmethod
+    def _requires_mfa(policy: dict[str, Any]) -> bool:
+        """Whether satisfying this policy necessarily means a second factor.
+
+        ``OR`` across several controls does not: a policy granting "MFA or a
+        compliant device" lets a stolen password through on a machine the
+        attacker has enrolled, and reading it as multi-factor would be
+        CloudGuard vouching for a requirement the tenant did not make.
+
+        ``authenticationStrength`` is not read as MFA either. Most strengths are
+        multi-factor and a custom one need not be, and the difference is not
+        established from the policy object alone.
+        """
+        grant = policy.get("grantControls") or {}
+        built_in = [str(c).lower() for c in (grant.get("builtInControls") or [])]
+        if "mfa" not in built_in:
+            return False
+        if len(built_in) == 1:
+            return True
+        return str(grant.get("operator", "")).upper() == "AND"
+
+    def _mfa_policies(
+        self,
+        policies: list[dict[str, Any]],
+        directory_roles: list[dict[str, Any]],
+        group_members: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Enforced policies that require a second factor of everyone they cover.
+
+        Directory roles are matched by name rather than by id, because that is
+        what the role map holds -- and the template id each name corresponds to
+        is read from this tenant's own directory rather than from a table of
+        GUIDs written from memory. The same discipline ``rbac.py`` applies to
+        ARM action strings: an identifier that looks right and is not is
+        indistinguishable from one that is, until a customer is affected.
+        """
+        by_template = {
+            str(role.get("roleTemplateId")): str(role.get("displayName", ""))
+            for role in directory_roles
+            if role.get("roleTemplateId") and role.get("displayName")
+        }
+        members = group_members or {}
+
+        resolved: list[dict[str, Any]] = []
+        for policy in policies:
+            if str(policy.get("state", "")).lower() != "enabled":
+                continue
+            if not self._requires_mfa(policy):
+                continue
+
+            conditions = policy.get("conditions") or {}
+            applications = conditions.get("applications") or {}
+            included_apps = [
+                str(a).lower() for a in (applications.get("includeApplications") or [])
+            ]
+            if "all" not in included_apps:
+                # Scoped to particular applications. It may well protect the
+                # thing that matters and CloudGuard cannot tell which
+                # applications an attacker would use, so it makes no claim.
+                continue
+
+            users = conditions.get("users") or {}
+            included = [str(u).lower() for u in (users.get("includeUsers") or [])]
+            include_groups = [str(g) for g in (users.get("includeGroups") or [])]
+            exclude_groups = [str(g) for g in (users.get("excludeGroups") or [])]
+
+            # A group whose membership never arrived leaves the policy's reach
+            # unknown in the direction that matters: an unread *exclusion* could
+            # contain the very account being judged.
+            if any(group not in members for group in exclude_groups):
+                continue
+
+            excluded_users = {
+                str(u) for u in (users.get("excludeUsers") or []) if u
+            }
+            for group in exclude_groups:
+                excluded_users.update(str(m) for m in members.get(group, []))
+
+            included_users = {str(u) for u in (users.get("includeUsers") or []) if u}
+            for group in include_groups:
+                included_users.update(str(m) for m in members.get(group, []))
+
+            resolved.append(
+                {
+                    "id": policy.get("id"),
+                    "name": policy.get("displayName") or "Conditional Access policy",
+                    "all_users": "all" in included,
+                    "role_names": sorted(
+                        {
+                            by_template[str(r)]
+                            for r in (users.get("includeRoles") or [])
+                            if str(r) in by_template
+                        }
+                    ),
+                    "user_ids": sorted(included_users),
+                    "excluded_role_names": sorted(
+                        {
+                            by_template[str(r)]
+                            for r in (users.get("excludeRoles") or [])
+                            if str(r) in by_template
+                        }
+                    ),
+                    "excluded_user_ids": sorted(excluded_users),
+                }
+            )
+        return resolved
 
     def _method_name(self, method: dict[str, Any]) -> str:
         """Graph returns the method type in @odata.type, e.g.

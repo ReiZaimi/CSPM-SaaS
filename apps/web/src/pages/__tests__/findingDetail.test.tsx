@@ -8,7 +8,7 @@
  * all-clear — what counts as sensitive is something the customer declares.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -82,12 +82,12 @@ const PATH = {
   asset_role: "TARGET",
 };
 
-function mount(paths: unknown[]) {
+function mount(paths: unknown[], finding: object = FINDING) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      const data = url.includes("/attack-paths") ? paths : FINDING;
+      const data = url.includes("/attack-paths") ? paths : finding;
       return {
         ok: true,
         status: 200,
@@ -137,5 +137,50 @@ describe("the finding detail page", () => {
     expect(
       await screen.findByText(/declared per subscription in Settings/),
     ).toBeInTheDocument();
+  });
+
+  it("says what is already standing in the way, without calling it fixed", async () => {
+    // A score arrived at through a rule nobody can see is the kind a customer
+    // stops trusting: an administrator with no second factor ranked below a
+    // logging gap needs to say why on the page, not in a formula.
+    mount([], {
+      ...FINDING,
+      evidence: {
+        ...FINDING.evidence,
+        compensating_controls: [
+          {
+            id: "entra.security_defaults",
+            name: "Security defaults",
+            detail: "Every account is challenged for a second factor.",
+            exploitability: 3,
+          },
+        ],
+      },
+    });
+
+    const panel = (
+      await screen.findByText("What is standing in the way")
+    ).closest("[data-slot='card']")!;
+
+    // Scoped to the panel: the raw evidence block below it carries the same
+    // words, because a control is part of what the pipeline recorded.
+    expect(within(panel as HTMLElement).getByText("Security defaults")).toBeInTheDocument();
+    expect(
+      within(panel as HTMLElement).getByText(
+        /Every account is challenged for a second factor/,
+      ),
+    ).toBeInTheDocument();
+    // Not reassuring. The misconfiguration underneath is untouched.
+    expect(
+      within(panel as HTMLElement).getByText(/without making it right/),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing when nothing stands in the way", async () => {
+    mount([]);
+
+    expect(
+      screen.queryByText("What is standing in the way"),
+    ).not.toBeInTheDocument();
   });
 });

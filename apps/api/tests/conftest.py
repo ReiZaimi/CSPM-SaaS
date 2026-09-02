@@ -62,10 +62,12 @@ def make_context(
     *resources: CloudResource,
     relationships: dict[tuple[str, str], list[str]] | None = None,
     collection_errors: dict[str, str] | None = None,
+    controls: dict | None = None,
 ) -> RuleContext:
     return RuleContext(
         resources=list(resources),
         relationships=relationships or {},
+        controls=controls or {},
         # Keyed by evidence key, as the pipeline keys them.
         collection_errors={
             str(key): reason for key, reason in (collection_errors or {}).items()

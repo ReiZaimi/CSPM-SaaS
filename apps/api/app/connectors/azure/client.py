@@ -616,6 +616,40 @@ class GraphClient(_BaseClient):
     async def get_organization(self) -> list[dict[str, Any]]:
         return await self.get_all("/organization")
 
+    async def get_security_defaults(self) -> dict[str, Any]:
+        """Whether Entra's own baseline is switched on.
+
+        A singleton rather than a collection, so it is fetched directly rather
+        than through ``get_all``. Enabling it requires MFA of every account in
+        the tenant, which is how most small tenants have multi-factor at all --
+        and it is the fallback the MFA rule's own remediation names for Entra ID
+        Free.
+        """
+        return await self.get("/policies/identitySecurityDefaultsEnforcementPolicy")
+
+    async def list_conditional_access_policies(self) -> list[dict[str, Any]]:
+        """Every Conditional Access policy, enforced or not.
+
+        Not filtered to the enabled ones here. ``state`` is part of what the
+        rules have to reason about -- a policy in report-only mode grants
+        nothing and looks identical in every other field -- and a collector that
+        dropped the others would leave a rule unable to tell "no policy" from
+        "a policy nobody turned on".
+        """
+        return await self.get_all("/identity/conditionalAccess/policies")
+
+    async def list_group_members(self, group_id: str) -> list[dict[str, Any]]:
+        """Who is in one group, by id.
+
+        Read only for the groups a Conditional Access policy actually names, so
+        the cost is a handful of calls rather than one per group in the tenant.
+        Without it a policy that excludes a break-glass group -- which is how
+        essentially every real tenant is configured -- could not be reasoned
+        about at all, because CloudGuard would be unable to rule out that the
+        account it is judging is the excluded one.
+        """
+        return await self.get_all(f"/groups/{group_id}/members?$select=id&$top=999")
+
     async def find_service_principal(self, app_id: str) -> dict[str, Any] | None:
         """CloudGuard's own service principal, as it exists in this tenant.
 

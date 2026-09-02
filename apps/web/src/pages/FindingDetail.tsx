@@ -206,6 +206,9 @@ export function FindingDetailPage() {
             </Card>
           )}
 
+          {/* WHAT IS ALREADY IN THE WAY */}
+          <ControlsPanel controls={data.evidence.compensating_controls} />
+
           {/* EVIDENCE */}
           <EvidencePanel evidence={data.evidence} />
 
@@ -495,6 +498,52 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
  * with the rest one click away, and it can be copied whole into a ticket, which
  * is what most people were selecting it by hand to do.
  */
+/**
+ * Defences that lowered this finding's score without closing it.
+ *
+ * Shown above the raw evidence rather than inside it, because it answers a
+ * question a reader asks before they read anything: why is an administrator
+ * with no second factor not at the top of the list? A score arrived at through
+ * a rule nobody can see is the kind a customer stops trusting.
+ *
+ * The panel is deliberately not reassuring. Each of these can be switched off,
+ * rescoped, or have the affected account excluded in a change nobody reviews,
+ * and the misconfiguration underneath it is untouched — so the finding is still
+ * open and the copy says why.
+ */
+function ControlsPanel({
+  controls,
+}: {
+  controls?: FindingDetail["evidence"]["compensating_controls"];
+}) {
+  const t = useT();
+  if (!controls?.length) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t.findings.controlsTitle}</CardTitle>
+        <CardDescription>{t.findings.controlsHelp}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="flex flex-col gap-3">
+          {controls.map((control) => (
+            <li
+              key={control.id}
+              className="rounded-lg border border-ok-border bg-ok-bg/40 px-4 py-3"
+            >
+              <p className="text-sm font-medium text-foreground">{control.name}</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {control.detail}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
 function EvidencePanel({ evidence }: { evidence: unknown }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);

@@ -419,6 +419,55 @@ class AzurePlanBuilder:
             found = await self._graph_call(graph.list_directory_roles())
             return TaskData({"directory_roles": found})
 
+        async def security_defaults(collected: dict[str, Any]) -> TaskData:
+            graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
+            policy = await self._graph_call(graph.get_security_defaults())
+            return TaskData({"security_defaults": policy})
+
+        async def conditional_access(collected: dict[str, Any]) -> TaskData:
+            graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
+            found = await self._graph_call(graph.list_conditional_access_policies())
+
+            # The groups those policies name, and only those. A policy that
+            # excludes a break-glass group -- which is how essentially every
+            # real tenant is configured -- cannot be reasoned about without
+            # knowing who is in it: CloudGuard would be unable to rule out that
+            # the account it is judging is the excluded one, and would have to
+            # discard the policy. Reading every group in the tenant to answer
+            # that would be a directory dump for a handful of ids.
+            wanted: set[str] = set()
+            for policy in found:
+                users = (policy.get("conditions") or {}).get("users") or {}
+                for key in ("includeGroups", "excludeGroups"):
+                    wanted.update(str(g) for g in (users.get(key) or []) if g)
+
+            async def members_of(group_id: str) -> tuple[str, list[str] | None]:
+                try:
+                    people = await graph.list_group_members(group_id)
+                except Exception as exc:
+                    # None, not [], and the normalizer drops any policy whose
+                    # exclusions it could not read. An empty list would read as
+                    # "nobody is excluded", which is the one wrong answer here.
+                    log.warning("azure.group_members_failed", error=str(exc))
+                    return group_id, None
+                return group_id, [str(m["id"]) for m in people if m.get("id")]
+
+            pairs = await self._gather_limited([members_of(g) for g in sorted(wanted)])
+            data = {
+                "conditional_access_policies": found,
+                "group_members": {g: m for g, m in pairs if m is not None},
+            }
+            if graph.truncated:
+                return TaskData(
+                    data,
+                    partial_reason=(
+                        "there are more Conditional Access policies than one scan "
+                        "reads, so a policy that would lower a finding's score may "
+                        "be missing from this list"
+                    ),
+                )
+            return TaskData(data)
+
         return [
             CollectionTask(key=AzureEvidence.USERS, run=users),
             CollectionTask(key=AzureEvidence.DIRECTORY_ROLES, run=roles),
@@ -426,6 +475,14 @@ class AzurePlanBuilder:
                 key=AzureEvidence.USER_ROLE_MAP,
                 run=self._role_membership,
                 depends_on=(AzureEvidence.USERS, AzureEvidence.DIRECTORY_ROLES),
+            ),
+            # The two defences. Independent tasks rather than one, because they
+            # are separate readings that fail separately -- and because a tenant
+            # on security defaults has no Conditional Access at all, so one
+            # returning nothing must not cost the other its verdict.
+            CollectionTask(key=AzureEvidence.SECURITY_DEFAULTS, run=security_defaults),
+            CollectionTask(
+                key=AzureEvidence.CONDITIONAL_ACCESS_POLICIES, run=conditional_access
             ),
         ]
 

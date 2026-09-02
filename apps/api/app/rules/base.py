@@ -24,6 +24,7 @@ from app.core.enums import Provider, ResourceType, RuleScope, RuleState, Severit
 from app.domain.resource import CloudResource
 from app.remediation import RemediationSpec
 from app.risk.grouping import RiskGrouping
+from app.rules.controls import Control
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,11 @@ class RuleResult:
     # tag stands. A value is only ever a step down: see
     # :attr:`SecurityRule.exploitability`.
     exploitability: int | None = None
+    # Defences observed in this same capture that stand between an attacker and
+    # this finding. They lower what the finding is scored at and never resolve
+    # it -- see ``rules/controls.py`` for why that distinction is the whole
+    # point.
+    controls: tuple[Control, ...] = ()
 
     @classmethod
     def passed(cls, evidence: dict[str, Any] | None = None, **kw: Any) -> "RuleResult":
@@ -72,6 +78,15 @@ class RuleContext:
     resources: list[CloudResource] = field(default_factory=list)
     # (source_id, relationship_type) -> [target_id]
     relationships: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    # Tenant- and subscription-level state that is not an asset: whether
+    # security defaults are on, which Conditional Access policies are enforced.
+    #
+    # Deliberately not normalized into ``resources``. A Conditional Access
+    # policy is not a thing anybody secures, has no exposure and no data
+    # sensitivity, and putting it in the asset list would inflate every
+    # inventory count with rows a customer never asked to own. Rules read it to
+    # find compensating controls (``rules/controls.py``).
+    controls: dict[str, Any] = field(default_factory=dict)
     # Evidence keys that could not be relied on this scan, e.g.
     # {"storage_accounts": "timeout"}. Rules whose evidence is missing degrade
     # to UNKNOWN instead of guessing.
@@ -162,6 +177,11 @@ class RuleContext:
                 if source in ids
             },
             collection_errors=self.collection_errors,
+            # Not filtered by provider. These are facts about the tenant that
+            # a rule of any provider may read, and the one thing narrowing them
+            # here could do is silently lose a control while keeping the finding
+            # it moderates.
+            controls=self.controls,
         )
 
 
@@ -242,10 +262,19 @@ class SecurityRule(ABC):
         outside 0..tag -- so a mistaken override can only ever understate, which
         is the direction that costs a customer nothing they were not already
         told about by the severity.
+
+        Compensating controls apply the same way and afterwards, each as its own
+        ceiling. Taking the minimum means several controls compose to the
+        strongest of them without any one of them knowing the others exist, and
+        that a control can never raise a finding's exploitability -- a defence
+        that made a problem worse would be a contradiction in terms.
         """
-        if result.exploitability is None:
-            return self.exploitability
-        return max(0, min(self.exploitability, result.exploitability))
+        value = self.exploitability
+        if result.exploitability is not None:
+            value = min(value, result.exploitability)
+        for control in result.controls:
+            value = min(value, control.exploitability)
+        return max(0, value)
 
     @abstractmethod
     def evaluate(

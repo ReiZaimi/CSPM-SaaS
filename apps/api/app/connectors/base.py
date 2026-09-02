@@ -165,6 +165,11 @@ class NormalizedState:
     # Evidence key -> why it cannot be relied on. Carried through to
     # ``RuleContext``, which is where it decides between UNKNOWN and a verdict.
     collection_errors: dict[str, str] = field(default_factory=dict)
+    # Tenant- and subscription-level state that is not an asset: security
+    # defaults, Conditional Access policies. Rules read it to find compensating
+    # controls; it is deliberately not in ``resources``, because none of it is
+    # a thing anybody secures (``rules/controls.py``).
+    controls: dict[str, Any] = field(default_factory=dict)
 
 
 class CloudConnector(ABC):

@@ -1613,6 +1613,80 @@ used.
 
 ---
 
+## 48. Compensating controls lower a finding's score and never close it
+
+Every path CloudGuard scored was scored as though nothing in the environment
+defended it. An administrator with no registered second factor ranked identically
+in a tenant where security defaults challenge every sign-in and in one where
+nothing does — which is the same flattening the risk engine exists to refuse,
+pointed at defences instead of at assets.
+
+A `Control` (`app/rules/controls.py`) is one observed defence and what it leaves
+an attacker needing. A rule returns them on its `RuleResult`, and
+`effective_exploitability` takes the minimum of the class tag, any instance
+step-down and every control — so several compose to the strongest without any of
+them knowing the others exist, and none can ever raise a finding.
+
+Three rules, and each is the product refusing a temptation the category is full
+of:
+
+**A control never turns FAIL into PASS.** A policy demanding a second factor of
+an account that has never registered one locks that account out of its own
+tenant at the first challenge — a real operational problem, not a fixed one —
+and the policy can be disabled, rescoped or have that account excluded in a
+change nobody reviews. Reporting a pass would be CloudGuard vouching for a state
+of affairs it is not observing.
+
+**Only prevention counts.** Detection is not compensation. Defender watching a
+storage account changes whether somebody finds out, not what an attacker must
+have to get in, and the exploitability scale is written in terms of the second
+(§47). A control that only shortens time-to-discovery belongs in a report.
+
+**The control must be observed.** Every one is built from the same capture the
+finding came from, and one CloudGuard could not fully read is simply absent.
+Absence of evidence lowers nothing.
+
+Implemented for AZ-ID-001 from two Graph readings, both under permissions
+already in `REQUIRED_GRAPH_PERMISSIONS` and already consented by every connected
+tenant — so this costs nobody a second trip to a Global Administrator.
+Security defaults are unconditional. Conditional Access is only accepted when
+every part of it resolves: enabled rather than report-only; granting MFA
+unambiguously, so `MFA or compliantDevice` under `OR` is discarded because a
+stolen password still works on an enrolled machine; covering all applications,
+since CloudGuard cannot know which one an attacker would use; and with every
+group it names read back, because an unread exclusion group could be the one
+holding the account being judged. That last case is why the collector reads the
+members of exactly the groups a policy mentions — essentially every real tenant
+excludes a break-glass group, and without resolving it the feature would be
+theatre.
+
+Role template ids are matched through the tenant's own `directoryRoles` rather
+than a table of GUIDs written from memory, for the reason `rbac.py` records
+about ARM action strings: a wrong identifier is indistinguishable from a right
+one by inspection.
+
+Controls are **not** normalized into `resources`. A Conditional Access policy is
+not a thing anybody secures, has no exposure and no data sensitivity, and would
+inflate every inventory count with rows a customer never asked to own. They ride
+on `NormalizedState.controls` and reach rules through `RuleContext.controls`.
+
+The pipeline writes them onto the finding's evidence under
+`compensating_controls`, and the detail page renders them above the raw evidence
+under "What is standing in the way" — because a score arrived at through a rule
+nobody can see is the kind a customer stops trusting. The copy is deliberately
+not reassuring.
+
+**Just-in-time VM access is the obvious next one and is deliberately absent.**
+It would need `Microsoft.Security/locations/jitNetworkAccessPolicies/read` in
+the scanner role, and `rbac.py` requires every action string to be verified with
+`az provider operation show` before it ships — an unverified one fails the
+customer's entire role deployment atomically, which is exactly how
+`autoProvisioningSettings/read` was caught. It would also cost every existing
+customer a role redeploy and a `ROLE_VERSION` bump. It goes in when the string
+has been checked against a real tenant.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
