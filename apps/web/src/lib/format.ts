@@ -82,13 +82,20 @@ export const STATUS_LABELS: Record<string, string> = {
  * grey, for the same reason UNKNOWN does: a control CloudGuard could not
  * evaluate must never look like one it cleared. NOT_COVERED is quieter still —
  * it is a statement about this product, not about the user's environment.
+ *
+ * The last two are separated by fill rather than by text colour: NOT_ASSESSED
+ * is filled, NOT_COVERED is bare and dashed. They used to be `bg-stone-50` and
+ * `bg-white`, which is a light-mode palette written into a component — on a
+ * dark page NOT_COVERED rendered as a white block, the brightest thing on the
+ * screen, for the status that is meant to be the quietest. Tokens flip; the
+ * stone scale does not.
  */
 const CONTROL_STATUS_STYLES: Record<ControlStatus, string> = {
   PASSING: "bg-ok-bg text-ok border-ok-border",
   FAILING: "bg-critical-bg text-critical border-critical-border",
   INCONCLUSIVE: "bg-unknown-bg text-unknown border-unknown-border border-dashed",
-  NOT_ASSESSED: "bg-stone-50 text-stone-500 border-stone-200",
-  NOT_COVERED: "bg-white text-stone-400 border-stone-200 border-dashed",
+  NOT_ASSESSED: "bg-muted text-muted-foreground border-border",
+  NOT_COVERED: "bg-background text-muted-foreground border-border border-dashed",
 };
 
 export const controlStatusStyle = (status: string) =>

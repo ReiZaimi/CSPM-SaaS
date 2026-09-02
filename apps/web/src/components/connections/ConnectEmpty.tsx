@@ -143,7 +143,7 @@ export function ConnectEmpty() {
                     className={cn(
                       "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium",
                       payoff
-                        ? "bg-ok text-white"
+                        ? "bg-ok text-background"
                         : "border border-border text-muted-foreground",
                     )}
                   >

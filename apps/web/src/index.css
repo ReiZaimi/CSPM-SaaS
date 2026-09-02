@@ -146,18 +146,32 @@
     --secondary: oklch(0.97 0 0);
     --secondary-foreground: oklch(0.205 0 0);
     --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
+    /* 5.5:1 on the page rather than 4.73:1. This is the colour of every
+       secondary line in the product -- table meta, empty states, the sentence
+       under a heading -- and shadcn's default sat close enough to the AA line
+       that antialiasing decided it. */
+    --muted-foreground: oklch(0.52 0 0);
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
+    --border: oklch(0.89 0 0);
+    --input: oklch(0.89 0 0);
+    /* The focus indicator is `focus-visible:border-ring` -- solid, full
+       opacity -- with `ring-ring/50` as a halo around it. So this value is the
+       thing WCAG 1.4.11 measures, and at 0.708 it was 2.59:1 against the page.
+       0.58 puts it at 4.3:1 without making the halo heavy. */
+    --ring: oklch(0.58 0 0);
+    /* Neutral on purpose: hue in this product means severity, so a chart that
+       coloured its series would be making a claim the rules never made. But
+       the ramp has to be lit for the surface it sits on, and this one was the
+       light ramp copied into both blocks -- chart-1 was 1.48:1 on white here,
+       and chart-5 was 1.31:1 on the dark page. Each mode now runs from its own
+       surface outward, every step clearing 3:1 against it. */
+    --chart-1: oklch(0.655 0 0);
+    --chart-2: oklch(0.575 0 0);
+    --chart-3: oklch(0.495 0 0);
+    --chart-4: oklch(0.405 0 0);
+    --chart-5: oklch(0.27 0 0);
     --radius: 0.625rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
@@ -176,7 +190,11 @@
     --sev-critical: oklch(0.505 0.213 27.4);
     --sev-critical-bg: oklch(0.971 0.013 17.4);
     --sev-critical-border: oklch(0.885 0.062 18.3);
-    --sev-high: oklch(0.553 0.169 45.1);
+    /* HIGH and OK were the two sitting closest to the AA line on their own
+       tint (4.84 and 4.72). Nudged down far enough to clear it with headroom
+       and no further -- the hues are unchanged, so a badge that read as amber
+       or green still does. */
+    --sev-high: oklch(0.535 0.169 45.1);
     --sev-high-bg: oklch(0.98 0.016 73.7);
     --sev-high-border: oklch(0.901 0.076 70.7);
     --sev-medium: oklch(0.518 0.128 84.4);
@@ -188,7 +206,7 @@
     --sev-unknown: oklch(0.444 0.011 73.6);
     --sev-unknown-bg: oklch(0.985 0.001 106.4);
     --sev-unknown-border: oklch(0.923 0.003 48.7);
-    --sev-ok: oklch(0.527 0.154 150.1);
+    --sev-ok: oklch(0.505 0.154 150.1);
     --sev-ok-bg: oklch(0.982 0.018 155.8);
     --sev-ok-border: oklch(0.907 0.089 164.2);
   }
@@ -211,15 +229,23 @@
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
+    /* The same ramp re-lit, running from the light end down rather than from
+       the dark end up. Measured against the card as well as the page, because
+       a chart lives inside one. */
+    --chart-1: oklch(0.93 0 0);
+    --chart-2: oklch(0.83 0 0);
+    --chart-3: oklch(0.73 0 0);
+    --chart-4: oklch(0.63 0 0);
+    --chart-5: oklch(0.53 0 0);
     --sidebar: oklch(0.205 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
+    /* Neutral, matching the light block and `--primary` beside it. This was
+       shadcn's default indigo, and it was the only saturated hue in the chrome
+       of either theme -- an accent that appears in one mode and not the other
+       reads as a bug, and a blue that means nothing sits awkwardly next to a
+       severity scale where every colour means something. */
+    --sidebar-primary: oklch(0.922 0 0);
+    --sidebar-primary-foreground: oklch(0.205 0 0);
     --sidebar-accent: oklch(0.269 0 0);
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);

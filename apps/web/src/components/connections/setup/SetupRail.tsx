@@ -30,7 +30,9 @@ export function SetupRail({ stage }: { stage: SetupStage }) {
               <span
                 className={cn(
                   "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium",
-                  done && "bg-ok text-white",
+                  // `text-background`, not `text-white`: in dark mode `--sev-ok`
+                  // is a light green, and white on it measured 1.95:1.
+                  done && "bg-ok text-background",
                   active && "bg-foreground text-background",
                   !done && !active && "border border-border text-muted-foreground",
                 )}
