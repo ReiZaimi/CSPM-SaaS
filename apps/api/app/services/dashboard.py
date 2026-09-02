@@ -39,9 +39,14 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
     # with four members would deduct four times, and even once would charge the
     # customer twice for one problem. A scenario re-ranks and explains; it does
     # not add a fault to the tally.
+    #
+    # Distinct for the same reason one layer down: the join fans a risk out
+    # across its findings, and a rule that groups its findings has one risk with
+    # forty. Counting join rows would take the score to zero over the single
+    # unwritten policy that grouping exists to state once.
     band_rows = (
         await session.execute(
-            select(Risk.risk_level, func.count())
+            select(Risk.risk_level, func.count(func.distinct(Risk.id)))
             .join(RiskFinding, RiskFinding.risk_id == Risk.id)
             .join(Finding, Finding.id == RiskFinding.finding_id)
             .where(
@@ -154,7 +159,9 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
         "findings_by_severity": severity_counts,
         "findings_by_status": status_counts,
         "risk_bands": {level.value: count for level, count in band_counts.items()},
-        "open_finding_count": sum(band_counts.values()),
+        # Findings, from the findings. The band query counts risks, and those
+        # stopped being the same number the moment a risk could group several.
+        "open_finding_count": sum(severity_counts.values()),
         "asset_count": int(asset_count),
         "verified_resolved_last_30_days": int(resolved_recently),
         "remediation_rate": _remediation_rate(status_counts),

@@ -90,6 +90,12 @@ from app.services.evidence_planner import plan_collection, required_evidence
 
 log = get_logger(__name__)
 
+# One failing check, everything the risk layer needs to write it down:
+# the finding row, the rule that raised it, the asset it is about, the score,
+# and the sentence. Named because two things now consume it -- a risk per
+# finding, and a risk per group of them.
+PendingFinding = tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str]
+
 
 def _digest(payload: dict) -> tuple[str, int]:
     """A payload's content hash and serialized size.
@@ -2031,10 +2037,7 @@ class ScanPipeline:
         # VM is guarded by the same NSG through two NICs -- and findings are
         # unique on (organization, rule, resource). Two entries for one row
         # meant two INSERTs of the same key.
-        pending: dict[
-            tuple[str, UUID | None],
-            tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str],
-        ] = {}
+        pending: dict[tuple[str, UUID | None], PendingFinding] = {}
         # (finding, what happened, the status it left, the sentence). Held
         # until the flush, because a finding raised by this scan has no primary
         # key for an event to point at until then.
@@ -2141,11 +2144,43 @@ class ScanPipeline:
             else {}
         )
 
+        # Failures from a rule that groups them: one risk for the rule, with
+        # every failing asset as a member.
+        grouped: dict[str, list[PendingFinding]] = {}
+        for entry in pending.values():
+            if entry[1].risk_grouping is not None:
+                grouped.setdefault(entry[1].rule_id, []).append(entry)
+
+        # Looked up by key rather than reached through the junction. A group
+        # risk outlives every one of its members closing, so the scan that
+        # reopens one has to find the existing row -- and inserting a second
+        # for a key the unique index already holds would fail the whole scan.
+        group_risks: dict[str, Risk] = {}
+        if grouped:
+            group_risks = {
+                risk.scenario_key: risk
+                for risk in (
+                    await session.execute(
+                        select(Risk).where(
+                            Risk.organization_id == org_id,
+                            Risk.scenario_key.in_(
+                                [self._group_key(rule_id) for rule_id in grouped]
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+                if risk.scenario_key
+            }
+
         # Risks whose junction row does not exist yet. The link needs both ids,
         # so it is written after the risks are flushed rather than inside the
         # loop -- ``RiskFinding`` has no ORM relationships, only the two columns.
         unlinked: list[tuple[Risk, Finding]] = []
         for finding, rule, resource, scored, title in pending.values():
+            if rule.risk_grouping is not None:
+                continue
             linked = risk_by_finding.get(finding.id)
             risk = self._upsert_risk(
                 session,
@@ -2160,6 +2195,18 @@ class ScanPipeline:
             if linked is None:
                 unlinked.append((risk, finding))
 
+        for rule_id, members in grouped.items():
+            unlinked.extend(
+                await self._upsert_group_risk(
+                    session,
+                    org_id,
+                    members,
+                    existing=group_risks.get(self._group_key(rule_id)),
+                    linked_risks=risks,
+                    risk_by_finding=risk_by_finding,
+                )
+            )
+
         if unlinked:
             await session.flush()
             for risk, finding in unlinked:
@@ -2173,6 +2220,88 @@ class ScanPipeline:
 
         await session.commit()
         return open_count
+
+    @staticmethod
+    def _group_key(rule_id: str) -> str:
+        """What makes a rule's group risk the same risk between scans.
+
+        Reuses ``scenario_key`` -- the column that already answers "what
+        identifies a risk that is not identified by a single finding" -- and
+        namespaces itself for the same reason the escalation template does: the
+        unique index covers (organization, key) across every kind.
+        """
+        return f"group:{rule_id}"
+
+    async def _upsert_group_risk(
+        self,
+        session: AsyncSession,
+        org_id: UUID,
+        members: list[PendingFinding],
+        *,
+        existing: Risk | None,
+        linked_risks: dict[UUID, Risk],
+        risk_by_finding: dict[UUID, UUID],
+    ) -> list[tuple[Risk, Finding]]:
+        """One risk for a rule that groups, with every failing asset in it.
+
+        Scored as the worst member, exactly as a scenario is: a group cannot be
+        less serious than the most serious thing in it, and it must not be more
+        serious either -- forty accounts missing MFA is one policy that was
+        never written, not forty times the problem. Summing them would be the
+        arithmetic that pins a security score at zero over a single mistake,
+        which is the reason this exists.
+
+        The breakdown is the worst member's, so "why is this 84?" still names
+        real components measured on a real asset rather than an average of
+        forty. What the group adds is the count, which is in the title.
+
+        Returns the (risk, finding) pairs still needing a junction row.
+        """
+        rule = members[0][1]
+        grouping = rule.risk_grouping
+        assert grouping is not None  # only rules that declare one reach here
+
+        worst_finding, _, worst_resource, worst_scored, _ = max(
+            members, key=lambda entry: entry[3].score
+        )
+
+        # Risks each member used to have to itself, from before this rule
+        # grouped -- or from before the declaration was added. Deleted rather
+        # than resolved, which is the opposite of what happens to a route that
+        # closes, and for the opposite reason: nothing here ended. The same
+        # accounts are still failing the same check, and a resolved duplicate
+        # would show a customer a fixed MFA risk sitting beside an open one for
+        # the same people. The findings keep every event they ever had.
+        group_key = self._group_key(rule.rule_id)
+        for finding, *_ in members:
+            superseded = risk_by_finding.get(finding.id)
+            if superseded is None:
+                continue
+            risk = linked_risks.get(superseded)
+            if risk is not None and risk.scenario_key != group_key:
+                await session.delete(risk)
+                linked_risks.pop(superseded, None)
+                risk_by_finding.pop(finding.id, None)
+
+        risk = self._upsert_risk(
+            session,
+            org_id,
+            worst_finding,
+            rule,
+            worst_resource,
+            worst_scored,
+            grouping.title(len(members)),
+            existing,
+        )
+        risk.scenario_key = group_key
+
+        # A risk being inserted has no id yet, so every member needs a link.
+        # An existing one keeps the links it already has.
+        return [
+            (risk, finding)
+            for finding, *_ in members
+            if risk.id is None or risk_by_finding.get(finding.id) != risk.id
+        ]
 
     def _upsert_risk(
         self,
@@ -2286,9 +2415,14 @@ class ScanPipeline:
         # Finding risks only, exactly as the security score counts them: a
         # scenario groups findings already counted here, and including it would
         # charge the customer twice for one problem.
+        #
+        # Counted distinctly, because the join fans a risk out across its
+        # members. A rule that groups its findings has one risk with forty of
+        # them, and counting join rows would deduct forty times for the one
+        # problem grouping exists to state once.
         band_rows = (
             await session.execute(
-                select(Risk.risk_level, func.count())
+                select(Risk.risk_level, func.count(func.distinct(Risk.id)))
                 .join(RiskFinding, RiskFinding.risk_id == Risk.id)
                 .join(Finding, Finding.id == RiskFinding.finding_id)
                 .where(
@@ -2319,7 +2453,10 @@ class ScanPipeline:
 
         return {
             "security_score": default_scorer.security_score(open_levels),
-            "open_finding_count": sum(bands.values()),
+            # Findings, from the findings. It used to be the width of the band
+            # query, which was the same number only while every risk had
+            # exactly one member.
+            "open_finding_count": sum(int(count) for _, count in severity_rows),
             "findings_by_severity": {
                 str(severity): int(count) for severity, count in severity_rows
             },
@@ -2736,9 +2873,40 @@ class ScanPipeline:
                 verified_by_scan=str(scan.id),
             )
 
-        for link in links:
-            risk = risks.get(link.risk_id)
-            if risk is not None:
+        # A risk closes when nothing it groups is still open, which for a risk
+        # with one finding is the same sentence as before. For a grouped one it
+        # is the difference between "the policy is written" and "one of the
+        # forty administrators registered an authenticator app": closing on the
+        # first member would report the whole problem fixed while thirty-nine
+        # accounts still had no second factor.
+        #
+        # The findings resolved above are excluded by id rather than by status.
+        # They are mutated in the session and not yet flushed, so the database
+        # still reports them open and would keep every risk alive.
+        resolved_ids = [finding.id for finding in resolved]
+        risk_ids = {link.risk_id for link in links}
+        still_open = set(
+            (
+                await session.execute(
+                    select(RiskFinding.risk_id)
+                    .join(Finding, Finding.id == RiskFinding.finding_id)
+                    .where(
+                        RiskFinding.organization_id == org_id,
+                        RiskFinding.risk_id.in_(risk_ids),
+                        Finding.status.in_(
+                            [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
+                        ),
+                        Finding.id.notin_(resolved_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        for risk_id in risk_ids:
+            risk = risks.get(risk_id)
+            if risk is not None and risk_id not in still_open:
                 risk.status = RiskStatus.RESOLVED
                 risk.resolved_at = now
 

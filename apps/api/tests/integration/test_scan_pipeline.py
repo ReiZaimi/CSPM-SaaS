@@ -2265,6 +2265,41 @@ class TestAssetGraph:
 
         assert graph.attack_paths() == []
 
+    async def test_an_absent_resource_is_not_on_any_route(
+        self, replay, connected_account
+    ) -> None:
+        """The reported bug. An asset a scan looked for and did not find keeps
+        its row -- so its findings stay history, and so an asset that vanishes
+        for a week and returns is one asset rather than two -- and the loader
+        was reading every row the organization had. The attack-paths page
+        therefore served routes through resources that were gone, while the
+        scanner's own graph, built from one scan's state, never contained them.
+        """
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            assert await graph_service.load_graph(session, org_id) is not None
+            # Not deleted: absent, which is what a scan that covered the scope
+            # and did not find it records.
+            await session.execute(
+                text(
+                    "UPDATE cloud_resources SET absent_since = now() "
+                    "WHERE organization_id = :o AND resource_type = 'service_principal'"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            graph = await graph_service.load_graph(session, org_id)
+
+        assert graph.attack_paths() == []
+        assert not any(
+            node.resource_type.value == "service_principal"
+            for node in graph.nodes.values()
+        )
+
 
 class TestScenarioRisk:
     """A route through the environment, as a risk rather than a page.

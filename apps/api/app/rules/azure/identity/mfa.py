@@ -6,6 +6,7 @@ from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import ResourceType, RuleScope, Severity
 from app.domain.resource import CloudResource
 from app.remediation import Comparison, ExpectedState, RemediationSpec
+from app.risk.grouping import RiskGrouping
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 
 # Entra directory roles that carry enough power that a missing second factor is
@@ -57,6 +58,15 @@ class AzureMfaRule(SecurityRule):
         AzureEvidence.USER_ROLE_MAP,
     )
     estimated_effort_minutes = 30
+    # One risk, however many accounts. The fix named in ``remediation`` below is
+    # a single Conditional Access policy covering every privileged role at once,
+    # so a tenant with forty exposed administrators has one thing to do and not
+    # forty -- and forty Critical risks would take the org security score to
+    # zero over one policy that was never written.
+    risk_grouping: ClassVar[RiskGrouping | None] = RiskGrouping(
+        singular="A privileged account has no multi-factor authentication",
+        plural="{count} privileged accounts have no multi-factor authentication",
+    )
     rationale = (
         "Privileged accounts are the highest-value target in any tenant. Without a second "
         "factor, credential phishing or password reuse converts directly into administrative "

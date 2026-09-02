@@ -49,7 +49,13 @@ All weights and the level-to-score mapping live in a configurable risk-engine co
 
 ## 2. Findings → Risks
 
-**1:1 for MVP.** Each finding generates its own risk. The `risk_findings` junction table (see `DATABASE.md`) stays in the schema exactly as designed, so grouping multiple related findings into one risk later (e.g. combining "public network access" + "no encryption" into one "database exposed" risk) is a service-layer change, not a schema migration.
+**1:1 by default.** Each finding generates its own risk, joined through the `risk_findings` junction table (see `DATABASE.md`).
+
+**Unless the rule groups them.** A rule that fails once per member of a set may declare a `RiskGrouping` (`app/risk/grouping.py`), and its findings become one risk with many members. The findings stay per resource — each is separately fixed and separately verified — while the risk layer stops repeating one sentence and stops deducting once per repetition. `AZ-ID-001` is the first: forty privileged accounts without MFA is one unwritten Conditional Access policy, and as forty Critical risks it takes the Security Score in §3 to zero on the strength of it.
+
+Grouping is declared, not inferred from the count. Two storage accounts left public are two mistakes; two administrators without MFA are one policy nobody wrote.
+
+A group is scored as its **worst member**, never their sum, and closes only when nothing in it is still open. The band queries in §3 count distinct risks accordingly. Identity across scans is `scenario_key = group:<rule_id>` — the same column scenario risks use, so grouping was a service-layer change and not a migration, exactly as designed.
 
 ---
 
@@ -66,7 +72,7 @@ security_score = max(0, 100 - Σ deductions)
   Low open finding:       - 1
 ```
 
-Deductions key off each finding's **risk band** (asset-context-aware, §1 above), not the rule's raw severity — the same misconfiguration scores differently on a dev VM vs. a production database. Two open Criticals alone drop the score from 100 to 60.
+Deductions key off each **risk's** band (asset-context-aware, §1 above), not the rule's raw severity: the same misconfiguration scores differently on a dev VM vs. a production database. One deduction per risk, so a grouped risk (§2) is charged once however many findings it holds. Two open Criticals alone drop the score from 100 to 60.
 
 **Coverage/completeness** (how many rules/assets were actually evaluated vs. `UNKNOWN`, see `RULE_ENGINE.md` §2) is a **separate indicator**, not folded into the score — keeps "why is my score X?" answerable without also explaining coverage math. Whether this indicator gets a visible badge in the MVP dashboard is still open — see `PRODUCT_SPEC.md` §8.
 

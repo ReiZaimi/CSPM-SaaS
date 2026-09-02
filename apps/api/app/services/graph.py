@@ -10,6 +10,15 @@ What is genuinely lost is history: "did a new attack path appear this week" is
 a question about change over time, and this cannot answer it. That wants an
 ``attack_paths`` table written per scan, which is worth building once paths are
 being acted on rather than looked at (ARCHITECTURE_REVIEW.md section 8).
+
+**Assets that are still there.** An asset a scan looked for and did not find
+keeps its row -- deliberately, so its findings stay history and so an asset that
+vanishes for a week and returns is one asset rather than two -- and the graph
+must not keep it. A route through something that no longer exists is not a
+weaker claim than a real one, it is a false one, and it was being served on the
+attack-paths page while the scanner's own graph, built from one scan's state,
+never contained it. Two views of one tenant disagreeing, with the wrong one
+facing the customer.
 """
 
 from uuid import UUID
@@ -35,7 +44,9 @@ async def load_graph(session: AsyncSession, organization_id: UUID) -> AssetGraph
         (
             await session.execute(
                 select(ResourceRecord).where(
-                    ResourceRecord.organization_id == organization_id
+                    ResourceRecord.organization_id == organization_id,
+                    # Present, as of the last scan that covered it.
+                    ResourceRecord.absent_since.is_(None),
                 )
             )
         )
@@ -79,8 +90,9 @@ async def load_graph(session: AsyncSession, organization_id: UUID) -> AssetGraph
             by_id[edge.target_resource_id],
         )
         for edge in edges
-        # An edge whose endpoints are not both still present. The resource was
-        # deleted and the edge outlived it; following one would describe a route
+        # An edge whose endpoints are not both still present -- because the
+        # resource was deleted outright and the edge outlived it, or because it
+        # is absent and was filtered above. Following one would describe a route
         # through something that is gone.
         if edge.source_resource_id in by_id and edge.target_resource_id in by_id
     ]

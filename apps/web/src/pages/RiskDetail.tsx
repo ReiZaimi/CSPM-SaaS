@@ -157,7 +157,11 @@ export function RiskDetailPage() {
             <CardHeader>
               <CardTitle>{t.risks.builtFrom}</CardTitle>
               <CardDescription>
-                {scenario ? t.risks.builtFromScenario : t.risks.builtFromFinding}
+                {scenario
+                  ? t.risks.builtFromScenario
+                  : data.findings.length > 1
+                    ? t.risks.builtFromGroup
+                    : t.risks.builtFromFinding}
               </CardDescription>
             </CardHeader>
             <CardContent>

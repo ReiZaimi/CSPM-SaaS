@@ -1412,6 +1412,66 @@ previews.
 
 ---
 
+## 44. The graph holds present assets, and a rule may group its findings into one risk
+
+Two separate corrections to the same habit of counting rows instead of problems.
+
+**`load_graph` reads assets that are still there.** An asset a scan looked for
+and did not find keeps its row — `absent_since` is set rather than the row
+deleted, so its findings stay history and so an asset that vanishes for a week
+and returns is one asset rather than two. The loader was reading every row the
+organization had, so `/attack-paths`, the asset detail page and the PDF report
+served routes through resources that no longer existed, while the scanner's own
+graph, built from one scan's normalized state, never contained them. Two views
+of one tenant disagreeing, with the wrong one facing the customer. Edges are
+already dropped when either endpoint is missing from the node set, so filtering
+the nodes is the whole fix.
+
+Still unfiltered, deliberately: a subscription the customer excludes stops being
+scanned, so its assets never become absent and stay in the graph indefinitely.
+That wants scope on the query and is a change to what "the organization's graph"
+means, not a bug in this one.
+
+**A rule may declare that its findings are one risk.** `AZ-ID-001` fails once
+per privileged account without a second factor, and each of those is separately
+fixed and separately verified, so the *findings* stay per resource. As forty
+risks it was forty rows saying one sentence, and forty Critical deductions —
+which pins the org security score at zero over a single Conditional Access
+policy that was never written. The remediation the rule itself prints is one
+policy covering every privileged role at once.
+
+So `SecurityRule.risk_grouping` declares it, as a `RiskGrouping` carrying the
+singular and plural sentences. Declared rather than inferred from the count:
+whether repeated failures are one problem or many is a judgement about the
+rule's subject. Two storage accounts left public are two mistakes; two
+administrators without MFA are one policy nobody wrote.
+
+The group is **scored as its worst member**, exactly as a scenario is — it
+cannot be less serious than the worst thing in it, and must not be more serious
+either. Its breakdown is that member's, so "why is this 84?" still names
+components measured on a real asset rather than an average of forty. What the
+group adds is the count, and the count is in the title.
+
+Identity across scans reuses `scenario_key` (`group:<rule_id>`), the column that
+already answers "what identifies a risk that is not identified by a single
+finding" — so no migration, and the existing unique index on (organization, key)
+covers it. Per-finding risks from before a rule grouped are **deleted** when
+absorbed, which is the opposite of what happens to a closed route and for the
+opposite reason: nothing ended. The same accounts still fail the same check, and
+a resolved duplicate would show a customer a fixed MFA risk beside an open one
+for the same people. The findings keep every event they ever had.
+
+Two counting rules follow. A group closes only when nothing in it is still open,
+or the first administrator to register an authenticator app would close a risk
+covering thirty-nine who had not. And the band queries behind the security score
+count `distinct` risks, because the junction fans a risk out across its members
+— counting join rows would reinstate the forty deductions the grouping exists to
+collapse. `open_finding_count` is now taken from the findings, having been the
+width of that band query, which was the same number only while every risk had
+exactly one member.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

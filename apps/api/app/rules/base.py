@@ -23,6 +23,7 @@ from app.connectors.evidence import EvidenceKey
 from app.core.enums import Provider, ResourceType, RuleScope, RuleState, Severity
 from app.domain.resource import CloudResource
 from app.remediation import RemediationSpec
+from app.risk.grouping import RiskGrouping
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,14 @@ class SecurityRule(ABC):
     # administrator has MFA is a directory setting, and no ``policyRule`` can
     # express it.
     remediation_spec: ClassVar[RemediationSpec | None] = None
+    # How this rule's findings read once several of them are open at once.
+    #
+    # ``None`` -- the default -- is one risk per finding. A declaration means
+    # they are one risk with many members: the findings stay per resource,
+    # because each is separately fixed and separately verified, while the risk
+    # layer stops repeating one sentence and stops charging the security score
+    # once per repetition.
+    risk_grouping: ClassVar[RiskGrouping | None] = None
 
     @abstractmethod
     def evaluate(

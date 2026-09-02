@@ -36,6 +36,7 @@ class SecurityRule(ABC):
     exploitability: int              # 0-5, static -- feeds the risk formula
     scope: RuleScope = RuleScope.PER_RESOURCE
     applies_to: list[str] = []       # resource types this rule targets (PER_RESOURCE only)
+    risk_grouping: RiskGrouping | None = None   # several findings, one risk (RISK_ENGINE.md section 2)
 
     def evaluate(
         self, resource: CloudResource | None, context: RuleContext

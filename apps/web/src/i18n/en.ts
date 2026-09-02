@@ -462,6 +462,8 @@ export const en = {
       "The findings on this route. Fixing any one of them breaks the route \u2014 the cheapest is usually the identity or the role, never the containment.",
     builtFromFinding:
       "The observation this risk scores. A finding is what CloudGuard saw; the risk is what it means for this asset, with this data, at this level of exposure.",
+    builtFromGroup:
+      "Every asset failing this check. They are one risk because they are one mistake and one fix \u2014 scored as the worst of them, not as the sum, and each still tracked and verified on its own.",
     noMembers: "No findings are linked to this risk.",
     noMembersDetail:
       "The findings it was built from have been deleted, most likely with the scan that raised them. The score is kept as history rather than recomputed from nothing.",
