@@ -1959,6 +1959,29 @@ in one form and absent in the other. A column with a default cannot answer "did
 anybody write this", and the general lesson is that a nullable column is only a
 reliable "unset" signal once its default is gone too.
 
+**A failed listing that returned nothing used to cost no verdict at all.**
+A rule reports UNKNOWN from inside `evaluate`, and `evaluate` runs once per
+matching resource. So a rule whose evidence failed to collect had nothing to
+iterate over and produced nothing: no verdict, no gap row, and a coverage ratio
+computed over the rules that happened to have something to look at. Failing to
+look cost less than looking and finding a problem — the same overclaim as a
+PASS nobody earned, arrived at through silence rather than through a wrong
+answer.
+
+It survived this long because a fixture hid it. The recorded snapshot carried
+its storage listing even when the test marked storage as failed, so the rules
+had resources to iterate and degraded correctly. A real run has no such
+listing, and neither does a capture rebuilt from a manifest, which is why §54
+surfaced it.
+
+`RuleEngine._run_per_resource` now records one UNKNOWN when a rule matched
+nothing *and* its declared `requires_evidence` names a listing that failed. The
+two conditions together are the whole point: no resources plus no error is a
+customer who has none of them, which is NOT_APPLICABLE and correctly excluded
+from the coverage ratio; no resources plus a failed listing is nobody having
+looked. The gap carries no `resource_id`, because there is no asset to
+attribute it to — that absence *is* the finding about the scan.
+
 ---
 
 ## 55. A payload is stored as compressed bytes, not as JSONB

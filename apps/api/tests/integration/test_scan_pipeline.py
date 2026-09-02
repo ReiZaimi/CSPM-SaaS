@@ -4285,10 +4285,31 @@ class TestRetention:
         the citation says truthfully what was read, when, and under which
         permission, and the API reports the payload as unavailable rather than
         offering a link that fails.
+
+        Getting a payload pruned takes two scans of *different* estates now,
+        and that is 0027's interlock rather than an inconvenience. A payload a
+        surviving manifest still names is kept whatever its age says, so the
+        only bytes retention can let go of are those no live capture is made
+        of. Scanning twice over an unchanged estate produces one payload set
+        that both captures name -- nothing to prune, which is the sibling test
+        above. Changing the estate leaves the first scan's reading spoken for
+        by the first scan's capture alone, and that capture is prunable once it
+        is no longer the newest.
         """
         from app.services import retention
 
         org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        # A second scan of a changed estate: the network reading now hashes
+        # differently, so the first scan's copy of it is named by the first
+        # scan's capture and by nothing else.
+        fixed = load_raw()
+        for nsg in fixed["data"]["network_security_groups"]:
+            for rule in nsg["properties"]["securityRules"]:
+                if rule["name"] == "AllowRDP":
+                    rule["properties"]["sourceAddressPrefix"] = "10.10.0.0/16"
+        replay["payload"] = fixed
         await run_scan(org_id, account_id)
 
         citations_before = await fetch(
@@ -4298,6 +4319,8 @@ class TestRetention:
         assert citations_before[0][0] > 0
 
         async with service_session() as session:
+            # Everything is old. What survives is decided by whether a live
+            # capture still names it, not by any of these timestamps.
             await session.execute(
                 text(
                     "UPDATE evidence_blobs SET last_seen_at = now() - interval "
@@ -4305,6 +4328,17 @@ class TestRetention:
                 ),
                 {"o": org_id},
             )
+            await session.execute(
+                text(
+                    "UPDATE cloud_snapshots SET created_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+            # Captures first, then payloads -- the order retention.prune uses,
+            # and the order that makes this possible at all.
+            await retention.prune_snapshots(session, org_id, keep_days=90)
             await session.commit()
             pruned = await retention.prune_blobs(session, org_id, keep_days=90)
             await session.commit()
@@ -4315,7 +4349,7 @@ class TestRetention:
             {"o": org_id},
         )
 
-        assert pruned > 0
+        assert pruned > 0, "no payload was left unreferenced to prune"
         assert citations_after[0][0] == citations_before[0][0]
         # And still followable in principle: the hash is what identifies the
         # bytes, whether or not they are still held.

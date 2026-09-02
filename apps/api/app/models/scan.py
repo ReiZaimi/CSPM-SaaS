@@ -243,7 +243,10 @@ class ScanEvaluationGap(UUIDPrimaryKey, TenantOwned, Base):
         PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
     )
     rule_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    # NULL for AGGREGATE-scope rules, which are not about any single resource.
+    # NULL for AGGREGATE-scope rules, which are not about any single resource,
+    # and for a per-resource rule whose listing failed and so returned none --
+    # a verdict about the scan rather than about an asset, because there is no
+    # asset to attribute it to. That is the whole content of the gap.
     resource_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("cloud_resources.id", ondelete="CASCADE")
     )

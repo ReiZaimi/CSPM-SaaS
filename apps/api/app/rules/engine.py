@@ -106,11 +106,40 @@ class RuleEngine:
         report: EvaluationReport,
         coverage: RuleCoverage,
     ) -> None:
+        matched = False
         for resource in context.resources:
             if not rule.matches(resource):
                 continue
+            matched = True
             for result in self._safe_evaluate(rule, resource, context):
                 self._record(rule, result, resource, report, coverage)
+        if matched:
+            return
+
+        # No resources of this kind came back -- which is two different facts
+        # wearing the same face. Either the customer has none, and the rule
+        # genuinely does not apply; or the listing that would have shown them
+        # failed, and nobody looked.
+        #
+        # A rule reports UNKNOWN from inside ``evaluate``, which is per
+        # resource, so the second case used to produce nothing at all: no
+        # verdict, no gap, and a coverage ratio computed over the rules that
+        # happened to have something to iterate. Failing to look would then
+        # cost less than looking and finding a problem, which is the same
+        # overclaim as a PASS nobody earned, arrived at through silence.
+        unavailable = context.has_collection_error(*rule.requires_evidence)
+        if unavailable is None:
+            return
+        self._record(
+            rule,
+            RuleResult.unknown(
+                "Nothing this check reads could be listed for this scan, so "
+                f"{rule.rule_id} could not reach a verdict. ({unavailable})"
+            ),
+            None,
+            report,
+            coverage,
+        )
 
     def _run_aggregate(
         self,
