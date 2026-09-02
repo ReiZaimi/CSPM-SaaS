@@ -10,6 +10,7 @@ independently of it (SECURITY.md section 2).
 
 import uuid
 from contextlib import asynccontextmanager
+from typing import ClassVar
 
 import pytest
 from sqlalchemy import text
@@ -17,6 +18,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from app.core.config import settings
 from app.core.db import rls_session, scan_session, service_session
+from app.core.payloads import canonical, compress
 from tests.integration.conftest import create_org_as
 
 pytestmark = pytest.mark.integration
@@ -332,14 +334,24 @@ class TestEvidenceBlobIsolation:
     without naming whose it is.
     """
 
+    PAYLOAD: ClassVar[dict] = {"storage_accounts": []}
+
     async def _seed(self, session, org_id: uuid.UUID, digest: str) -> None:
+        stored = compress(self.PAYLOAD)
         await session.execute(
             text(
                 "INSERT INTO evidence_blobs "
-                "(organization_id, content_hash, payload, byte_size) "
-                "VALUES (:org, :hash, '{\"storage_accounts\": []}'::jsonb, 23)"
+                "(organization_id, content_hash, payload_compressed, byte_size, "
+                " stored_bytes) "
+                "VALUES (:org, :hash, :payload, :size, :stored)"
             ),
-            {"org": org_id, "hash": digest},
+            {
+                "org": org_id,
+                "hash": digest,
+                "payload": stored,
+                "size": len(canonical(self.PAYLOAD)),
+                "stored": len(stored),
+            },
         )
 
     async def test_identical_content_stays_two_rows_in_two_tenants(

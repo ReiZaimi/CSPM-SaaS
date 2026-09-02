@@ -25,15 +25,13 @@ owner connection and scopes every write by the ``organization_id`` taken from
 the scan record it was handed — never from client input.
 """
 
-import hashlib
-import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -62,6 +60,7 @@ from app.core.enums import (
 )
 from app.core.errors import SnapshotUnavailable
 from app.core.logging import get_logger, log_context
+from app.core.payloads import digest
 from app.domain.resource import CloudResource
 from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
@@ -113,7 +112,7 @@ def _manifest(snapshot: RawSnapshot) -> dict:
     stored = snapshot.to_json()
     stored.pop("data", None)
     stored["payload_hashes"] = {
-        key: _digest(payload)[0] for key, payload in snapshot.payloads.items()
+        key: digest(payload)[0] for key, payload in snapshot.payloads.items()
     }
     return stored
 
@@ -146,7 +145,7 @@ async def _rebuild_capture(
     manifest = dict(row.manifest or {})
     hashes = dict(manifest.pop("payload_hashes", {}) or {})
     payloads = {
-        blob.content_hash: blob.payload
+        blob.content_hash: blob.content
         for blob in (
             await session.execute(
                 select(EvidenceBlob).where(
@@ -172,18 +171,6 @@ async def _rebuild_capture(
 
     manifest["data"] = data
     return manifest
-
-
-def _digest(payload: dict) -> tuple[str, int]:
-    """A payload's content hash and serialized size.
-
-    ``sort_keys`` and the compact separators are what make it a *content*
-    hash rather than a hash of one particular serialization. Two runs that read
-    the same environment must produce the same digest, or the deduplication is
-    decorative -- and JSON dict ordering is not something a provider promises.
-    """
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
 class ScanVanished(Exception):
@@ -793,7 +780,7 @@ class ScanPipeline:
         )
         account_id = account.id if account is not None else None
         digests = {
-            key: _digest(payload) for key, payload in snapshot.payloads.items()
+            key: digest(payload) for key, payload in snapshot.payloads.items()
         }
         # Readings this run did not take, and when they were taken. Read off
         # the plan rather than off the capture: the capture carries the same
@@ -806,7 +793,7 @@ class ScanPipeline:
         await self._store_blobs(session, org_id, snapshot.payloads, digests, observed_at)
 
         for key, entry in snapshot.coverage.items():
-            digest = digests.get(key)
+            hashed = digests.get(key)
             session.add(
                 Evidence(
                     organization_id=org_id,
@@ -833,8 +820,8 @@ class ScanPipeline:
                     # NULL where a task produced nothing, which a failed one
                     # did. A hash of an empty payload would claim there was
                     # something to point at.
-                    content_hash=digest[0] if digest else None,
-                    byte_size=digest[1] if digest else 0,
+                    content_hash=hashed[0] if hashed else None,
+                    byte_size=hashed[1] if hashed else 0,
                 )
             )
 
@@ -852,16 +839,23 @@ class ScanPipeline:
         a dozen readings and a tenant-wide one produces a dozen per
         subscription, and the whole point of content addressing is that most of
         them are already here.
+
+        That query asks for the hashes alone. It used to load the rows, which
+        meant a scan of an unchanged estate -- the case content addressing
+        exists for, and the common one -- read every payload it already held
+        back out of PostgreSQL, decompressed nothing, used none of it, and set
+        a timestamp. The touch is a single UPDATE instead, guarded so it can
+        only move ``last_seen_at`` forward: a replay of a capture collected in
+        March must not make its payloads look freshly read.
         """
         if not digests:
             return
 
-        hashes = {digest for digest, _size in digests.values()}
-        existing = {
-            row.content_hash: row
-            for row in (
+        hashes = {content_hash for content_hash, _size in digests.values()}
+        held = set(
+            (
                 await session.execute(
-                    select(EvidenceBlob).where(
+                    select(EvidenceBlob.content_hash).where(
                         EvidenceBlob.organization_id == org_id,
                         EvidenceBlob.content_hash.in_(hashes),
                     )
@@ -869,30 +863,39 @@ class ScanPipeline:
             )
             .scalars()
             .all()
-        }
+        )
 
-        for key, (digest, size) in digests.items():
-            stored = existing.get(digest)
-            if stored is not None:
-                # Already held, byte for byte. Touched rather than rewritten,
-                # so retention can tell a payload still in use from one whose
-                # last reference was months ago.
-                stored.last_seen_at = max(stored.last_seen_at or observed_at, observed_at)
-                continue
-            blob = EvidenceBlob(
-                organization_id=org_id,
-                content_hash=digest,
-                payload=payloads[key],
-                byte_size=size,
-                first_stored_at=observed_at,
-                last_seen_at=observed_at,
+        if held:
+            # Already here, byte for byte. Touched rather than rewritten, so
+            # retention can tell a payload still in use from one whose last
+            # reference was months ago.
+            await session.execute(
+                update(EvidenceBlob)
+                .where(
+                    EvidenceBlob.organization_id == org_id,
+                    EvidenceBlob.content_hash.in_(held),
+                    EvidenceBlob.last_seen_at < observed_at,
+                )
+                .values(last_seen_at=observed_at)
             )
-            session.add(blob)
-            # Registered immediately: two readings in one scan can produce
+
+        for key, (content_hash, size) in digests.items():
+            if content_hash in held:
+                continue
+            session.add(
+                EvidenceBlob.of(
+                    organization_id=org_id,
+                    payload=payloads[key],
+                    content_hash=content_hash,
+                    byte_size=size,
+                    observed_at=observed_at,
+                )
+            )
+            # Recorded immediately: two readings in one scan can produce
             # identical bytes -- two subscriptions with no storage accounts do
             # -- and a second insert of the same key would break on the
             # primary key.
-            existing[digest] = blob
+            held.add(content_hash)
 
     # ------------------------------------------------------------------ scope
     async def _resolve_scope(

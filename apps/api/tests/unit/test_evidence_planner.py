@@ -20,6 +20,7 @@ from uuid import uuid4
 from app.connectors.azure.evidence import BASELINE_EVIDENCE, AzureEvidence
 from app.connectors.evidence import EvidenceCategory, EvidenceKey
 from app.core.enums import Provider, Severity, TaskOutcome
+from app.core.payloads import compress, decompress
 from app.rules.base import RuleContext, RuleResult, SecurityRule
 from app.services.evidence_planner import plan_collection, required_evidence
 
@@ -87,9 +88,20 @@ class Reading:
 
 
 class Blob:
+    """A stub of the stored row, compressed the way the real one is.
+
+    ``content`` rather than a plain attribute because the column holds bytes
+    now, and a stub that handed back a dict directly would keep passing if the
+    planner ever started reading the raw column again.
+    """
+
     def __init__(self, content_hash: str, payload: dict) -> None:
         self.content_hash = content_hash
-        self.payload = payload
+        self.payload_compressed = compress(payload)
+
+    @property
+    def content(self) -> dict:
+        return decompress(self.payload_compressed)
 
 
 class FakeResult:

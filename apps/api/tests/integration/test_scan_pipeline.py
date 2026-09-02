@@ -10,8 +10,10 @@ application, and CI should not make live Azure calls on every commit
 """
 
 import copy
+import hashlib
 import json
 import uuid
+import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -2635,6 +2637,186 @@ class TestCaptureReconstruction:
 
         assert blobs_after_two == blobs_after_one, "payloads were stored twice"
         assert captures[0][0] > 1, "captures are not deduplicated, and are not here"
+
+    async def test_re_reading_a_payload_marks_it_seen_without_rewriting_it(
+        self, replay, connected_account
+    ) -> None:
+        """The touch that keeps an unchanged estate's payloads alive.
+
+        Retention measures from ``last_seen_at``, so a scan that finds a payload
+        already stored has to say so. It does that with an UPDATE now rather
+        than by loading the row -- the previous version read every payload it
+        already held back out of PostgreSQL and used none of it -- and the
+        guard being checked is that the UPDATE only ever moves the timestamp
+        forward, and leaves ``first_stored_at`` alone.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE evidence_blobs SET last_seen_at = now() - interval "
+                    "'200 days', first_stored_at = now() - interval '400 days' "
+                    "WHERE organization_id = :o"
+                ),
+                {"o": org_id},
+            )
+            await session.commit()
+
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT count(*) FROM evidence_blobs WHERE organization_id = :o "
+            "AND last_seen_at > now() - interval '1 day' "
+            "AND first_stored_at < now() - interval '300 days'",
+            {"o": org_id},
+        )
+        stale = await fetch(
+            "SELECT count(*) FROM evidence_blobs WHERE organization_id = :o "
+            "AND last_seen_at < now() - interval '1 day'",
+            {"o": org_id},
+        )
+
+        assert rows[0][0] > 0, "a re-read payload was not marked seen"
+        assert stale[0][0] == 0, (
+            "a payload this scan read again still looks untouched, so retention "
+            "will delete the bytes behind a current reading"
+        )
+
+
+
+class TestPayloadCompression:
+    """What a stored reading costs, and that it is still exactly what was read.
+
+    Deduplication (0027) removed the copies. This removes the size of what is
+    left: a payload is a provider listing, which is the same twenty key names
+    and the same resource-group prefix repeated per row, and JSONB stores that
+    as a parsed tree with the keys held per value. The bytes go in compressed
+    instead.
+
+    The risk this carries is silent: a payload that inflates to something other
+    than what was collected replays as an estate that never existed, and
+    nothing would say so at the time. So these check the bytes against the hash
+    they are filed under rather than only that a scan finished.
+    """
+
+    async def test_a_scan_stores_its_payloads_compressed(
+        self, replay, connected_account
+    ) -> None:
+        """The change itself. No row keeps a second, uncompressed copy."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT payload, payload_compressed FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert rows, "the scan stored no payloads"
+        for payload, compressed in rows:
+            assert payload is None, "the payload is still stored as JSONB as well"
+            assert compressed, "the payload was stored with nothing in it"
+
+    async def test_a_stored_payload_still_hashes_to_the_hash_it_is_filed_under(
+        self, replay, connected_account
+    ) -> None:
+        """The check that makes compression safe rather than merely smaller.
+
+        Content addressing is only worth anything if the bytes under a hash are
+        the bytes that hash names. Inflate them and take the hash again: an
+        encoding that round-tripped to an equal dict through a different byte
+        string would fail here, and would otherwise be found by a replay months
+        later reporting on an estate nobody had.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT content_hash, payload_compressed, byte_size FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        assert rows
+        for content_hash, compressed, byte_size in rows:
+            inflated = zlib.decompress(compressed)
+            assert hashlib.sha256(inflated).hexdigest() == content_hash
+            assert len(inflated) == byte_size, (
+                "byte_size no longer describes the reading it was taken over"
+            )
+
+    async def test_the_stored_size_is_recorded_and_smaller_than_the_reading(
+        self, replay, connected_account
+    ) -> None:
+        """``byte_size`` goes on meaning what the reading was; ``stored_bytes``
+        is what keeping it costs. Two numbers because the answer to "how much
+        did this scan read" and "how much is this table" stopped being the same
+        one, and a customer's retention window is set against the first."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT sum(byte_size), sum(stored_bytes) FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+
+        read, stored = rows[0]
+        assert read > 0 and stored > 0
+        assert stored < read, "compression made the table no smaller"
+
+    async def test_a_payload_stored_before_compression_still_reads(
+        self, replay, connected_account
+    ) -> None:
+        """The fallback, which is the half a migration usually gets wrong.
+
+        No backfill runs: rewriting every historical payload is a long write on
+        the largest table in the schema, and retention retires those rows on its
+        own schedule anyway. So the read path has to take whichever form it
+        finds, and a replay of a capture written before this change must
+        reproduce the same scan rather than fail because the bytes are in the
+        older column.
+        """
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+
+        # Put every payload back the way 0027 left it: inline JSONB, no bytes.
+        # Inflated here rather than in SQL because PostgreSQL ships no zlib
+        # inflate -- which is also why migration 0028's downgrade is Python.
+        stored = await fetch(
+            "SELECT content_hash, payload_compressed FROM evidence_blobs "
+            "WHERE organization_id = :o",
+            {"o": org_id},
+        )
+        assert stored
+        async with service_session() as session:
+            for content_hash, compressed in stored:
+                await session.execute(
+                    text(
+                        "UPDATE evidence_blobs "
+                        "SET payload = CAST(:payload AS jsonb), "
+                        "    payload_compressed = NULL "
+                        "WHERE organization_id = :o AND content_hash = :h"
+                    ),
+                    {
+                        "payload": zlib.decompress(compressed).decode(),
+                        "o": org_id,
+                        "h": content_hash,
+                    },
+                )
+            await session.commit()
+
+        replayed_id = await run_replay(org_id, account_id, original_id)
+
+        async with service_session() as session:
+            original = await session.get(Scan, original_id)
+            replayed = await session.get(Scan, replayed_id)
+
+        assert replayed.status == original.status
+        assert replayed.resource_count == original.resource_count
+        assert replayed.finding_count == original.finding_count
 
 
 class TestGraphCaching:

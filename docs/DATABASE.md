@@ -224,8 +224,20 @@ evidence                   -- per scan, per evidence key: did this listing
   -- the same category did (RULE_ENGINE.md)
 
 evidence_blobs             -- the verbatim JSON, deduplicated by content hash
-  id, organization_id, content_hash, payload, byte_size
+  organization_id, content_hash        -- (both) the primary key
+  payload_compressed BYTEA   -- the canonical bytes the hash was taken over,
+                             -- zlib-compressed. Not JSONB: nothing ever queried
+                             -- into it, a payload is read whole or not at all,
+                             -- and JSONB stores a listing of 500 near-identical
+                             -- objects as a parsed tree holding the key names
+                             -- per value (DECISIONS.md §55)
+  payload JSONB              -- nullable. Payloads stored before compression;
+                             -- read as a fallback, no backfill
+  byte_size, stored_bytes    -- what the reading was, and what keeping it costs
   first_stored_at, last_seen_at
+  -- A CHECK requires one payload form or the other. "the bytes are gone" must
+  -- never be readable as "the reading was empty" -- a subscription with no
+  -- storage accounts produces a genuinely empty payload
   -- Retention measures from last_seen_at, not first_stored_at: an estate that
   -- has not changed in six months keeps one copy alive by re-reading it, and
   -- pruning on first storage would delete the payload behind every current

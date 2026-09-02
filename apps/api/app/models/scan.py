@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -26,6 +27,8 @@ from app.core.enums import (
     ScanTrigger,
     TaskOutcome,
 )
+from app.core.errors import SnapshotUnavailable
+from app.core.payloads import compress, decompress
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -371,6 +374,12 @@ class EvidenceBlob(Base):
     one -- and an unchanged environment costs almost nothing to keep looking at,
     which is what makes daily scanning affordable rather than merely possible.
 
+    Stored compressed rather than as JSONB, which was the wrong shape for a
+    provider listing: five hundred near-identical objects repeating the same
+    twenty key names, held as a parsed tree with the names per value. The bytes
+    written are the same canonical bytes the content hash was taken over, so a
+    stored payload is always checkable against the hash it is filed under.
+
     Scoped per organization, and that is a security decision rather than a
     modelling one. Content-addressed storage shared across tenants would
     deduplicate correctly and still be wrong: whether a write finds an existing
@@ -393,8 +402,27 @@ class EvidenceBlob(Base):
         primary_key=True,
     )
     content_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # The stored copy: the same canonical bytes the hash was taken over, run
+    # through zlib. Compressed here rather than left to PostgreSQL's own TOAST
+    # compression, which only engages above a couple of kilobytes and only
+    # after the row has already been stored as JSONB -- a parsed tree with its
+    # keys held per value, which is the expensive form for a listing of five
+    # hundred near-identical objects. Holding the bytes instead gives up JSONB
+    # querying that nothing ever used: a payload is read whole, by hash, or not
+    # at all.
+    payload_compressed: Mapped[bytes | None] = mapped_column(LargeBinary)
+    # Payloads written before compression. Nullable now and read as a fallback,
+    # for the same reason ``CloudSnapshot.data`` is: a column holding the only
+    # copy of anything is not one to drop in the change that stops writing it.
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    # What the reading was, uncompressed. The number a customer means by "how
+    # much did this scan read", and comparable across rows stored before
+    # compression and after it.
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # What it costs to keep. Recorded rather than derived, because the answer
+    # for a legacy row is not ``len(payload_compressed)`` and pretending it is
+    # would understate the table by however much has not been rewritten.
+    stored_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     first_stored_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -403,6 +431,56 @@ class EvidenceBlob(Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    @property
+    def content(self) -> dict:
+        """The payload, whichever way this row stores it.
+
+        One of the two forms is always present -- 0028's CHECK constraint says
+        so -- and a row that somehow held neither raises rather than returning
+        an empty payload. An empty payload is a real thing a reading produces
+        (a subscription with no storage accounts), so answering with one here
+        would make "the bytes are gone" indistinguishable from "there was
+        nothing there": the same overclaim as a PASS nobody earned, reached
+        from a direction the rule engine cannot see.
+        """
+        if self.payload_compressed is not None:
+            return decompress(self.payload_compressed)
+        if self.payload is None:
+            raise SnapshotUnavailable(
+                f"the stored reading {self.content_hash[:12]} holds neither a "
+                "compressed nor an inline payload, so there is nothing to "
+                "replay it from"
+            )
+        return dict(self.payload)
+
+    @classmethod
+    def of(
+        cls,
+        *,
+        organization_id: uuid.UUID,
+        payload: dict,
+        content_hash: str,
+        byte_size: int,
+        observed_at: datetime,
+    ) -> "EvidenceBlob":
+        """A row holding this payload, compressed.
+
+        The hash and size are passed in rather than recomputed: the caller has
+        already taken them to decide the payload is not already stored, and a
+        second computation is a second chance for the row and the manifest
+        beside it to disagree about what bytes they name.
+        """
+        stored = compress(payload)
+        return cls(
+            organization_id=organization_id,
+            content_hash=content_hash,
+            payload_compressed=stored,
+            byte_size=byte_size,
+            stored_bytes=len(stored),
+            first_stored_at=observed_at,
+            last_seen_at=observed_at,
+        )
 
 
 class ScanStep(UUIDPrimaryKey, TenantOwned, Base):

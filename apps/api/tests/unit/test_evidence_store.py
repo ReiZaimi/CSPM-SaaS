@@ -12,12 +12,15 @@ precondition for ever flipping that round is that the per-reading payloads add
 back up to the capture exactly -- so it is checked now, while both exist.
 """
 
+import hashlib
+import zlib
+
 from app.connectors.azure.evidence import AzureEvidence
 from app.connectors.azure.plan import STORAGE_ENDPOINT
 from app.connectors.collection import CoverageReport, TaskResult
 from app.connectors.evidence import EvidenceCategory
 from app.core.enums import TaskOutcome
-from app.services.scanner import _digest
+from app.core.payloads import compress, decompress, digest
 
 
 def result(key: AzureEvidence, outcome: TaskOutcome = TaskOutcome.COMPLETE) -> TaskResult:
@@ -40,21 +43,74 @@ def test_the_same_content_hashes_the_same_whatever_the_key_order() -> None:
     first = {"storage_accounts": [{"id": "/a", "name": "one", "kind": "StorageV2"}]}
     second = {"storage_accounts": [{"kind": "StorageV2", "name": "one", "id": "/a"}]}
 
-    assert _digest(first)[0] == _digest(second)[0]
+    assert digest(first)[0] == digest(second)[0]
 
 
 def test_different_content_hashes_differently() -> None:
-    a = _digest({"storage_accounts": [{"id": "/a"}]})[0]
-    b = _digest({"storage_accounts": [{"id": "/b"}]})[0]
+    a = digest({"storage_accounts": [{"id": "/a"}]})[0]
+    b = digest({"storage_accounts": [{"id": "/b"}]})[0]
     assert a != b
 
 
 def test_the_digest_reports_the_size_it_hashed() -> None:
     """The number retention reasons about, so it has to be the stored bytes
     rather than an estimate of them."""
-    digest, size = _digest({"storage_accounts": []})
-    assert len(digest) == 64
+    content_hash, size = digest({"storage_accounts": []})
+    assert len(content_hash) == 64
     assert size == len('{"storage_accounts":[]}')
+
+
+# -------------------------------------------------------------- compression
+def test_a_payload_survives_the_round_trip_through_compression() -> None:
+    """The stored form is bytes now, not a JSONB tree. Everything downstream
+    reads the payload back whole, so the only thing that matters about the
+    encoding is that it is exactly reversible."""
+    payload = {
+        "storage_accounts": [
+            {"id": f"/subscriptions/s/rg/storage/{n}", "properties": {"https": True}}
+            for n in range(50)
+        ]
+    }
+
+    assert decompress(compress(payload)) == payload
+
+
+def test_the_stored_bytes_are_the_bytes_the_hash_was_taken_over() -> None:
+    """What makes a stored payload checkable against the hash it is filed
+    under. Compressing a fresh serialization would round-trip to an equal dict
+    and a different byte string, and the check would then be a coin toss
+    between a real corruption and a whitespace difference."""
+    payload = {"storage_accounts": [{"name": "one", "id": "/a"}]}
+
+    inflated = zlib.decompress(compress(payload))
+
+    assert hashlib.sha256(inflated).hexdigest() == digest(payload)[0]
+
+
+def test_compression_actually_shrinks_a_provider_listing() -> None:
+    """The reason this exists. Azure listings are the same twenty key names and
+    the same resource-group prefix repeated per row, which is the input zlib is
+    best at -- a guard against a future encoding change that quietly stores
+    them at full size."""
+    payload = {
+        "network_security_groups": [
+            {
+                "id": f"/subscriptions/abc/resourceGroups/prod/providers/"
+                f"Microsoft.Network/networkSecurityGroups/nsg-{n}",
+                "location": "westeurope",
+                "properties": {"securityRules": [], "provisioningState": "Succeeded"},
+            }
+            for n in range(200)
+        ]
+    }
+
+    assert len(compress(payload)) * 10 < digest(payload)[1]
+
+
+def test_an_empty_payload_still_round_trips() -> None:
+    """A subscription with no storage accounts is a real reading, and it must
+    not come back as a row that has lost its bytes."""
+    assert decompress(compress({})) == {}
 
 
 # ------------------------------------------------------- payloads and coverage

@@ -1938,6 +1938,68 @@ what it named. Each made a test pass by proving the opposite of its name.
 
 ---
 
+## 55. A payload is stored as compressed bytes, not as JSONB
+
+§54 removed the copies. This removes the size of what is left.
+
+`evidence_blobs.payload` was JSONB, which is the wrong representation for what
+these rows hold. A payload is a provider listing — five hundred near-identical
+objects repeating the same twenty key names, the same resource-group prefix on
+every id, the same `"provisioningState": "Succeeded"` on every row — and JSONB
+stores that as a parsed tree with the key names held per value. PostgreSQL's
+TOAST compression only engages above a couple of kilobytes, and by then the
+expensive representation has already been chosen. The column is now `bytea`
+holding zlib-compressed bytes: roughly a tenth of the size on this input.
+
+**Nothing was given up, because nothing used it.** A payload is read whole, by
+hash, in `_rebuild_capture` and in the evidence planner, or not at all. There is
+no query anywhere that reaches into one with a JSONB operator, and the rules
+read the *normalized* `CloudResource`, never the stored blob. So the JSONB
+operators being lost were never load-bearing — which is the only thing that
+makes this a size change rather than a capability change.
+
+**The stored bytes are the hashed bytes.** `canonical()` is the one
+serialization the content hash is ever taken over, and it is that exact byte
+string that gets compressed and written. So a stored payload is checkable
+against the hash it is filed under: inflate, hash, compare, which is what
+`test_a_stored_payload_still_hashes_to_the_hash_it_is_filed_under` does against
+real scans. A version that compressed a fresh `json.dumps` would round-trip to
+an equal dict through a different byte string, and that check would become a
+coin toss between a real corruption and a whitespace difference.
+
+**zlib rather than zstd.** zstd would get perhaps a fifth off zlib's result on
+this input, at the price of a native wheel in the API image, the worker image
+and CI, for bytes already an order of magnitude down. The compression also runs
+on the scan's hot path, so the level is 6 rather than 9: level 9 spends
+noticeably longer for low single digits on JSON this repetitive.
+
+**No backfill, and a CHECK instead.** Rewriting every historical payload is a
+long write on the largest table in the schema, and retention retires those rows
+on its own schedule anyway — so `payload` is kept, made nullable, and read as a
+fallback, exactly as §54 kept `cloud_snapshots.data`. What 0028 does add is a
+CHECK that a row holds one form or the other. Without it, a row that had lost
+its bytes would read back as `{}`, and an empty payload is a real thing a
+subscription with no storage accounts produces: "the bytes are gone" would be
+indistinguishable from "there was nothing there", which is the same class of
+error as UNKNOWN being read as PASS.
+
+The downgrade inflates the compressed rows back into `payload` before dropping
+the column, in Python and a page at a time. PostgreSQL ships no zlib inflate —
+`pg_column_compression` reports how a value is TOASTed and nothing undoes an
+application-level `zlib.compress` — so a SQL-only downgrade would have had to
+discard every reading taken while compression was in use.
+
+**And the write path stopped reading what it was about to skip.** `_store_blobs`
+loaded whole `EvidenceBlob` rows to decide which payloads were already stored,
+then set `last_seen_at` on them. On an unchanged estate — the case content
+addressing exists for, and the common one — that read every payload it already
+held back out of PostgreSQL, decompressed nothing, used none of it, and wrote a
+timestamp. It now selects the hashes alone and touches them with one `UPDATE`,
+guarded by `last_seen_at < observed_at` so a replay of a capture collected in
+March cannot make its payloads look freshly read.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

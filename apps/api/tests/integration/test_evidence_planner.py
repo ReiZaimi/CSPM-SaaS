@@ -103,11 +103,12 @@ async def record_reading(
 
         if store_blob:
             session.add(
-                EvidenceBlob(
+                EvidenceBlob.of(
                     organization_id=org_id,
-                    content_hash=content_hash,
                     payload=PAYLOAD,
+                    content_hash=content_hash,
                     byte_size=len(str(PAYLOAD)),
+                    observed_at=datetime.now(UTC),
                 )
             )
         session.add(

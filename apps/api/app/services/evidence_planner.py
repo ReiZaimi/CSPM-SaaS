@@ -206,7 +206,7 @@ async def _payloads_for(
             )
         )
     ).scalars()
-    return {row.content_hash: row.payload for row in rows}
+    return {row.content_hash: row.content for row in rows}
 
 
 def _aware(moment: datetime) -> datetime:
