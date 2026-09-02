@@ -60,6 +60,7 @@ from app.core.enums import (
     TaskOutcome,
     VerificationStatus,
 )
+from app.core.errors import SnapshotUnavailable
 from app.core.logging import get_logger, log_context
 from app.domain.resource import CloudResource
 from app.graph import AssetGraph, Path
@@ -95,6 +96,82 @@ log = get_logger(__name__)
 # and the sentence. Named because two things now consume it -- a risk per
 # finding, and a risk per group of them.
 PendingFinding = tuple[Finding, SecurityRule, CloudResource | None, ScoredRisk, str]
+
+
+def _manifest(snapshot: RawSnapshot) -> dict:
+    """The capture, minus the bytes, plus where to find them.
+
+    Everything ``to_json`` records except ``data``, and in its place the content
+    hash of each reading. The payloads live once in ``evidence_blobs``, shared
+    by every scan that read identical bytes -- so an estate that has not changed
+    stores one copy rather than one per night.
+
+    The hashes are computed the same way ``_record_evidence`` computes them,
+    from the same ``snapshot.payloads``, so a manifest and the evidence rows
+    beside it can never name different bytes for one reading.
+    """
+    stored = snapshot.to_json()
+    stored.pop("data", None)
+    stored["payload_hashes"] = {
+        key: _digest(payload)[0] for key, payload in snapshot.payloads.items()
+    }
+    return stored
+
+
+async def _rebuild_capture(
+    session: AsyncSession, organization_id: UUID, row: CloudSnapshot
+) -> dict:
+    """The stored form of a capture, whichever way it was written.
+
+    A capture written before the manifest carries its payloads inline and is
+    returned as it stands. A manifest is rebuilt by merging the blobs it names,
+    which is exactly what ``TestCaptureReconstruction`` proves adds back up to
+    what used to be stored.
+
+    Merged rather than keyed by reading, and that is the case a careless version
+    of this gets wrong: one task can produce several payload keys.
+    ``authentication_methods`` has no task of its own -- the directory's
+    role-map task reads it -- so a rebuild that assumed one key per reading
+    would drop it, and the MFA rule would find nothing to judge while reporting
+    no error at all.
+
+    A missing blob is refused rather than silently skipped. Half a capture
+    replays as an estate that has lost whatever was in the missing half, which
+    is the same overclaim as a PASS nobody earned -- retention's interlock
+    exists so this cannot happen, and this is what says so if it ever does.
+    """
+    if row.data is not None:
+        return dict(row.data)
+
+    manifest = dict(row.manifest or {})
+    hashes = dict(manifest.pop("payload_hashes", {}) or {})
+    payloads = {
+        blob.content_hash: blob.payload
+        for blob in (
+            await session.execute(
+                select(EvidenceBlob).where(
+                    EvidenceBlob.organization_id == organization_id,
+                    EvidenceBlob.content_hash.in_(list(hashes.values())),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+    data: dict = {}
+    for key, content_hash in hashes.items():
+        payload = payloads.get(content_hash)
+        if payload is None:
+            raise SnapshotUnavailable(
+                f"the stored reading for {key} is no longer held, so this "
+                "capture cannot be replayed without describing an estate that "
+                "is missing whatever it contained"
+            )
+        data.update(payload)
+
+    manifest["data"] = data
+    return manifest
 
 
 def _digest(payload: dict) -> tuple[str, int]:
@@ -471,7 +548,7 @@ class ScanPipeline:
                     connection_id=account.connection_id,
                     scan_id=scan.id,
                     snapshot_version=snapshot.version,
-                    data=snapshot.to_json(),
+                    manifest=_manifest(snapshot),
                 )
             )
             await self._record_evidence(
@@ -651,7 +728,7 @@ class ScanPipeline:
                 connection_id=connection.id,
                 scan_id=scan.id,
                 snapshot_version=snapshot.version,
-                data=snapshot.to_json(),
+                manifest=_manifest(snapshot),
             )
         )
         await self._record_evidence(
@@ -1038,7 +1115,9 @@ class ScanPipeline:
             if check_freshness and row.id != newest_by_account.get(account.id):
                 state.is_current = False
 
-            snapshot = RawSnapshot.from_json(row.data)
+            snapshot = RawSnapshot.from_json(
+                await _rebuild_capture(session, org_id, row)
+            )
             connector = get_connector(
                 account.provider,
                 tenant_id=account.tenant_id,
@@ -1505,7 +1584,9 @@ class ScanPipeline:
             else row.id
         )
 
-        snapshot = RawSnapshot.from_json(row.data)
+        snapshot = RawSnapshot.from_json(
+            await _rebuild_capture(session, org_id, row)
+        )
         connector = get_connector(
             connection.provider,
             tenant_id=connection.tenant_id,

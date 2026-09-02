@@ -65,8 +65,16 @@ scans
   --         / COMPLETED / FAILED / PARTIAL / CANCELLED
 
 cloud_snapshots
-  id, organization_id, cloud_account_id, scan_id
-  snapshot_version, data JSONB, created_at
+  id, organization_id, cloud_account_id, connection_id, scan_id
+  snapshot_version, created_at
+  manifest JSONB             -- everything the capture recorded except the
+                             -- payloads, plus payload_hashes: the content hash
+                             -- of each reading. The bytes live once in
+                             -- evidence_blobs; holding them here as well meant
+                             -- a nightly scan of an unchanged estate stored a
+                             -- fresh full copy every night (DECISIONS.md §54)
+  data JSONB                 -- nullable. Captures written before the manifest
+                             -- carry their payloads inline and stay replayable
 ```
 
 ---

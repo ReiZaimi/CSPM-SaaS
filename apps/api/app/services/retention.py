@@ -149,10 +149,49 @@ async def prune_blobs(
     unavailable rather than offering a link that fails.
     """
     cutoff = datetime.now(UTC) - timedelta(days=keep_days)
+
+    # **The interlock.** A capture used to be self-contained; since 0027 it is a
+    # manifest naming the hashes of its readings, so a blob can be the only copy
+    # of part of a capture that is still well inside its own window.
+    #
+    # Deleting one would not fail here. It would fail months later, at the one
+    # moment somebody replays a capture to check whether a fix held, and the
+    # replay would be of an estate missing whatever the pruned reading held --
+    # a resolution reached by omission. So a hash any surviving manifest still
+    # names is kept whatever its age says.
+    spoken_for = {
+        content_hash
+        for (hashes,) in (
+            await session.execute(
+                select(CloudSnapshot.manifest["payload_hashes"]).where(
+                    CloudSnapshot.organization_id == organization_id,
+                    CloudSnapshot.manifest.is_not(None),
+                )
+            )
+        ).all()
+        for content_hash in (hashes or {}).values()
+    }
+
+    doomed = (
+        (
+            await session.execute(
+                select(EvidenceBlob.content_hash).where(
+                    EvidenceBlob.organization_id == organization_id,
+                    EvidenceBlob.last_seen_at < cutoff,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    unreferenced = [h for h in doomed if h not in spoken_for]
+    if not unreferenced:
+        return 0
+
     result = await session.execute(
         delete(EvidenceBlob).where(
             EvidenceBlob.organization_id == organization_id,
-            EvidenceBlob.last_seen_at < cutoff,
+            EvidenceBlob.content_hash.in_(unreferenced),
         )
     )
     return int(result.rowcount or 0)

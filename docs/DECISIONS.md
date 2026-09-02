@@ -1903,6 +1903,41 @@ would quietly destroy a capture that is inside its own window.
 
 ---
 
+## 54. The capture is a manifest, and retention is now interlocked with it
+
+§53 named the waste and shipped the gate. `TestCaptureReconstruction` passed
+against real scans, so the flip: `cloud_snapshots` stores everything the capture
+recorded *except* the payloads, plus the content hash of each reading. The
+payloads live once in `evidence_blobs`, shared by every scan that read identical
+bytes.
+
+`data` is kept and made nullable rather than dropped. Captures written before
+this carry their payloads inline and must go on being replayable, so the read
+path takes whichever it finds — and dropping a column holding the only copy of
+anything is not a migration anybody should be able to run by accident.
+
+**A missing blob is refused, not skipped.** `SnapshotUnavailable` rather than a
+partial rebuild: half a capture replays as an estate missing whatever the other
+half held, and that replay may resolve findings. A resolution reached by
+omission is the same overclaim as a PASS nobody earned, arrived at from a
+direction the rule engine cannot see.
+
+**The dependency this created, and the interlock that answers it.** A capture
+used to be self-contained. It now points at blobs, so a blob can be the only
+copy of part of a capture that is well inside its own window — and the two have
+different windows (30 days and 90). `prune_blobs` therefore keeps any hash a
+surviving manifest still names, whatever its age says. Without it, retention
+would delete nothing visibly and fail months later, at the one moment somebody
+replays a capture to check whether a fix held.
+
+Two things the tests had to be corrected about while building this, both the
+same mistake in different clothes: a fake matched `payload_hashes` in SQL text,
+where it is a bound parameter of the `->` operator and never appears; and a fake
+`DELETE` reported no rowcount, so every prune looked like a no-op regardless of
+what it named. Each made a test pass by proving the opposite of its name.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

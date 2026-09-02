@@ -40,7 +40,17 @@ class Result:
 class FakeSession:
     """Answers the three reads by shape, and records what would be deleted."""
 
-    def __init__(self, *, stale: list, newest_accounts: list, newest_dirs: list):
+    def __init__(
+        self,
+        *,
+        stale: list,
+        newest_accounts: list,
+        newest_dirs: list,
+        manifests: list | None = None,
+        expired_blobs: list | None = None,
+    ):
+        self.manifests = manifests or []
+        self.expired_blobs = expired_blobs or []
         self.stale = stale
         self.newest_accounts = newest_accounts
         self.newest_dirs = newest_dirs
@@ -71,14 +81,30 @@ class FakeSession:
                 if "organization" in key:
                     continue
                 if isinstance(value, list):
-                    self.doomed.extend(v for v in value if isinstance(v, uuid.UUID))
-                elif isinstance(value, uuid.UUID):
+                    self.doomed.extend(
+                        v for v in value if isinstance(v, uuid.UUID | str)
+                    )
+                elif isinstance(value, uuid.UUID | str):
                     self.doomed.append(value)
+            # A DELETE reports how many rows it matched, and the service returns
+            # that. A fake reporting zero would make every prune look like a
+            # no-op regardless of what it actually named.
+            result = Result([])
+            result.rowcount = len(self.doomed)
+            return result
             return Result([])
         if "DISTINCT ON (cloud_snapshots.cloud_account_id)" in text:
             return Result(self.newest_accounts)
         if "DISTINCT ON (cloud_snapshots.connection_id)" in text:
             return Result(self.newest_dirs)
+        # Matched on the column, not on the key. `payload_hashes` is a bound
+        # parameter of the `->` operator, so it never appears in the SQL text
+        # and a matcher written on it silently falls through -- leaving the
+        # interlock with nothing to protect and the test passing the wrong way.
+        if "cloud_snapshots.manifest" in text:
+            return Result(self.manifests)
+        if "evidence_blobs" in text:
+            return Result(self.expired_blobs)
         return Result(self.stale)
 
 
@@ -160,3 +186,62 @@ async def test_the_cutoff_is_measured_backwards_from_now() -> None:
 
     expected = datetime.now(UTC) - timedelta(days=30)
     assert expected < datetime.now(UTC)
+
+
+# --------------------------------------------------------------- the interlock
+HELD = "a" * 64
+ORPHAN = "b" * 64
+
+
+async def test_a_payload_a_capture_still_names_is_kept() -> None:
+    """The dependency 0027 created, and the reason retention had to change.
+
+    A capture used to be self-contained. It is now a manifest naming the hashes
+    of its readings, so a blob can be the only copy of part of a capture that is
+    well inside its own window.
+
+    Deleting one raises nothing here. It fails months later, at the one moment
+    somebody replays a capture to check whether a fix held -- and the replay is
+    then of an estate missing whatever the pruned reading held, which is a
+    resolution reached by omission.
+    """
+    session = FakeSession(
+        stale=[],
+        newest_accounts=[],
+        newest_dirs=[],
+        manifests=[({"storage_accounts": HELD},)],
+        expired_blobs=[HELD, ORPHAN],
+    )
+
+    pruned = await retention.prune_blobs(session, ORG, keep_days=90)  # type: ignore[arg-type]
+
+    assert pruned == 1, "the referenced payload should have been spared"
+    assert session.doomed == [ORPHAN], (
+        "the delete named the payload a surviving capture still points at"
+    )
+
+
+async def test_a_payload_nothing_names_is_pruned() -> None:
+    """The interlock must not become a reason never to prune anything."""
+    session = FakeSession(
+        stale=[],
+        newest_accounts=[],
+        newest_dirs=[],
+        manifests=[],
+        expired_blobs=[ORPHAN],
+    )
+
+    pruned = await retention.prune_blobs(session, ORG, keep_days=90)  # type: ignore[arg-type]
+
+    assert pruned == 1
+
+
+async def test_nothing_expired_means_no_delete_at_all() -> None:
+    session = FakeSession(
+        stale=[], newest_accounts=[], newest_dirs=[], manifests=[], expired_blobs=[]
+    )
+
+    pruned = await retention.prune_blobs(session, ORG, keep_days=90)  # type: ignore[arg-type]
+
+    assert pruned == 0
+    assert session.deleted == []

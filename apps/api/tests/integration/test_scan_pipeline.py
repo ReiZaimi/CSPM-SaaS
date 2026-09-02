@@ -2478,50 +2478,130 @@ class TestCaptureReconstruction:
     and store one. If the second reconstructs the first, the first is a copy
     the schema is paying for nightly.
 
-    Not a flip, deliberately. The claim is checkable only here, against
-    PostgreSQL and a real pipeline run, so the check ships first and the change
-    follows it.
+    The flip has since happened (0027): a capture is a manifest, and the
+    payloads live once. What these hold now is the shape that made it safe --
+    every hash resolves, a replay of a manifest reproduces the scan, and
+    retention refuses to prune a payload a live capture still names.
     """
 
-    async def test_the_stored_readings_rebuild_the_capture_exactly(
+    async def test_a_scan_stores_a_manifest_and_no_payloads(
         self, replay, connected_account
     ) -> None:
+        """The change itself: captures stop carrying the bytes.
+
+        The manifest keeps everything the capture recorded except ``data``, plus
+        the hash of each reading. The payloads live once in ``evidence_blobs``,
+        shared by every scan that read identical bytes.
+        """
         org_id, account_id = connected_account
         scan_id = await run_scan(org_id, account_id)
 
-        captures = await fetch(
-            "SELECT cloud_account_id, data FROM cloud_snapshots WHERE scan_id = :s",
+        rows = await fetch(
+            "SELECT data, manifest FROM cloud_snapshots WHERE scan_id = :s",
             {"s": scan_id},
         )
-        assert captures, "the scan stored no capture"
+        assert rows
+        for data, manifest in rows:
+            assert data is None, "the capture still carries its payloads"
+            assert manifest and manifest.get("payload_hashes")
+            # Everything else the capture recorded is still here: a manifest
+            # that dropped coverage or errors would make a replay evaluate
+            # blind where the original degraded to UNKNOWN.
+            assert "coverage" in manifest and "errors" in manifest
+            assert "data" not in manifest
 
-        for cloud_account_id, capture in captures:
-            # The payloads this scope actually read, joined back through the
-            # hash the evidence row recorded. A directory capture files under a
-            # NULL account, which is how Evidence records it too.
-            rows = await fetch(
-                "SELECT e.evidence_key, b.payload "
-                "FROM evidence e JOIN evidence_blobs b "
-                "  ON b.content_hash = e.content_hash "
-                "WHERE e.scan_id = :s AND e.organization_id = :o "
-                "  AND e.cloud_account_id IS NOT DISTINCT FROM :a",
-                {"s": scan_id, "o": org_id, "a": cloud_account_id},
+    async def test_a_replay_of_a_manifest_reproduces_the_scan(
+        self, replay, connected_account
+    ) -> None:
+        """The property the whole flip rests on.
+
+        A replay rebuilds the capture by merging the blobs the manifest names.
+        If that produced anything but the original, a replay would report on an
+        estate that never existed -- and it may resolve findings.
+        """
+        org_id, account_id = connected_account
+        original_id = await run_scan(org_id, account_id)
+
+        replayed_id = await run_replay(org_id, account_id, original_id)
+
+        async with service_session() as session:
+            original = await session.get(Scan, original_id)
+            replayed = await session.get(Scan, replayed_id)
+
+        assert replayed.status == original.status
+        assert replayed.resource_count == original.resource_count
+        assert replayed.finding_count == original.finding_count
+
+    async def test_retention_will_not_prune_a_payload_a_capture_needs(
+        self, replay, connected_account
+    ) -> None:
+        """The dependency this change created, held shut.
+
+        A capture is no longer self-contained. Pruning a blob it names raises
+        nothing now and fails months later, at the one moment somebody replays
+        to check whether a fix held.
+        """
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            # Every payload is far past any window somebody might configure.
+            await session.execute(
+                text(
+                    "UPDATE evidence_blobs SET last_seen_at = now() - interval "
+                    "'400 days' WHERE organization_id = :o"
+                ),
+                {"o": org_id},
             )
-            assert rows, "a capture whose readings stored nothing"
+            await session.commit()
+            pruned = await retention.prune_blobs(session, org_id, keep_days=90)
+            await session.commit()
 
-            # Merged by payload rather than keyed by task, and that is the
-            # case a careless flip gets wrong: one task can produce several
-            # payload keys. ``authentication_methods`` has no task of its own --
-            # the directory's role-map task reads it -- so a reconstruction that
-            # assumed one key per task would drop it silently, and the MFA rule
-            # would then find nothing to judge.
-            rebuilt: dict = {}
-            for _key, payload in rows:
-                rebuilt.update(payload)
+        remaining = await fetch(
+            "SELECT count(*) FROM evidence_blobs WHERE organization_id = :o",
+            {"o": org_id},
+        )
 
-            assert rebuilt == capture["data"], (
-                "the readings do not add back up to the capture, so evidence "
-                "cannot replace it: whatever differs would be silently dropped"
+        assert pruned == 0, "retention pruned a payload a live capture points at"
+        assert remaining[0][0] > 0
+
+    async def test_every_hash_a_manifest_names_is_stored(
+        self, replay, connected_account
+    ) -> None:
+        """No dangling reference at the moment a capture is written.
+
+        This was the gate on the flip, and it read the capture's inline data to
+        check the readings added back up to it. There is no inline data now --
+        which is the change -- so what it holds today is the property that
+        replaced it: every hash a manifest names resolves to a payload that is
+        actually here.
+
+        A manifest naming bytes nobody stored is a capture that cannot be
+        replayed, and it would be discovered months later by somebody checking
+        whether a fix held.
+        """
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        manifests = await fetch(
+            "SELECT manifest FROM cloud_snapshots WHERE scan_id = :s",
+            {"s": scan_id},
+        )
+        assert manifests, "the scan stored no capture"
+
+        for (manifest,) in manifests:
+            hashes = list((manifest.get("payload_hashes") or {}).values())
+            assert hashes, "a capture that names no readings"
+            stored = await fetch(
+                "SELECT count(*) FROM evidence_blobs "
+                "WHERE organization_id = :o AND content_hash = ANY(:h)",
+                {"o": org_id, "h": hashes},
+            )
+            assert stored[0][0] == len(set(hashes)), (
+                "a manifest names bytes nobody stored, so this capture cannot "
+                "be replayed"
             )
 
     async def test_an_unchanged_estate_stores_one_payload_set_and_many_captures(

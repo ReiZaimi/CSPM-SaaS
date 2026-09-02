@@ -184,7 +184,20 @@ class CloudSnapshot(UUIDPrimaryKey, TenantOwned, Base):
         PGUUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
     )
     snapshot_version: Mapped[str] = mapped_column(String(16), nullable=False, default="1.0")
-    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Everything about the reading except its payloads: provider, tenant, scope,
+    # the coverage report, the errors. Plus ``payload_hashes``, the content
+    # hashes of the readings it was made of.
+    #
+    # The payloads themselves live once in ``evidence_blobs``, deduplicated
+    # across every scan that read identical bytes. Holding them here as well
+    # meant a nightly scan of an unchanged estate stored a fresh full copy every
+    # night while the deduplicated set beside it stayed one.
+    manifest: Mapped[dict | None] = mapped_column(JSONB)
+    # Captures written before the manifest existed. Nullable now, and read as a
+    # fallback: an old capture must go on being replayable, and a column holding
+    # the only copy of anything is not one to drop in the same change that stops
+    # writing it.
+    data: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

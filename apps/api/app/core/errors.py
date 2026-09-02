@@ -85,6 +85,21 @@ class ScanNotFound(NotFound):
     code = "SCAN_NOT_FOUND"
 
 
+class SnapshotUnavailable(NotFound):
+    """A stored capture can no longer be rebuilt.
+
+    Raised rather than replayed from what survives. Half a capture describes an
+    estate missing whatever was in the other half, and a replay of it would
+    resolve findings on the strength of readings nobody holds -- the same
+    overclaim as a PASS nobody earned, arrived at by omission.
+
+    Retention's interlock exists so this cannot happen. This is what says so if
+    it ever does.
+    """
+
+    code = "SNAPSHOT_UNAVAILABLE"
+
+
 class ValidationFailed(AppError):
     """Request validation failed"""
 
