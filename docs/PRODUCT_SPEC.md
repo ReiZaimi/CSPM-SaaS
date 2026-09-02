@@ -1,7 +1,8 @@
 # CloudGuard — Product Specification
 
 **Status:** MVP Prototype v0.1 — single source of truth
-**Companion docs:** `ARCHITECTURE.md`, `AZURE_INTEGRATION.md`, `DATABASE.md`, `RULE_ENGINE.md`, `RISK_ENGINE.md`, `API.md`, `SECURITY.md`, `TESTING.md`, `UI.md`, `ROADMAP.md`
+**Companion docs:** `ARCHITECTURE.md`, `AZURE_INTEGRATION.md`, `DATABASE.md`, `RULE_ENGINE.md`, `RISK_ENGINE.md`, `API.md`, `SECURITY.md`, `TESTING.md`, `UI.md`, `DEPLOYMENT.md`, `MULTI_CLOUD.md`, `ROADMAP.md`
+**Decision log:** `DECISIONS.md` — every choice that departed from this spec, and why. Where the two disagree, that file is the later word.
 
 Read this file first. It sets the vision and scope; the companion docs hold the implementation detail for their area.
 
@@ -74,10 +75,28 @@ If a page doesn't help answer **WHAT / WHY / HOW BAD / HOW DO I FIX IT / DID THE
 Explicitly not built now:
 
 ```
-AWS, GCP, Kubernetes, CNAPP, DSPM, KSPM, CIEM, attack paths, autonomous remediation,
-full compliance engine, AI agent, MSP portal, white-labeling, complex billing,
-enterprise SSO, microservices
+AWS, GCP, Kubernetes, CNAPP, DSPM, KSPM, CIEM, autonomous remediation,
+AI agent, MSP portal, white-labeling, complex billing, enterprise SSO,
+microservices
 ```
+
+**Two items have left this list since it was written, and both were deliberate
+scope increases rather than drift.**
+
+*Attack paths* were a non-goal here and are now core. The reason for the change
+is the one in §2: a finding is a technical observation, and this product's claim
+is that it says what that observation *means*. Five findings across a jump box,
+an identity and a storage account rank by severity and get worked top-down,
+which is the right order for "what is wrong" and the wrong one for "what is
+wrong together". The graph answers the second question from the same normalized
+state the rules already read, so it cost a traversal rather than a second
+collection path (`app/graph/`, `DECISIONS.md` §44, §49).
+
+*Compliance* is partly built rather than absent — CIS Azure 2.0, ISO 27001, GDPR
+and NIST CSF map to a coverage view, driven entirely by `rules.compliance_mappings`
+data with no rule branching on a framework name. Still a non-goal is the rest of
+a compliance *engine*: per-control evidence export for auditors, per-organization
+framework selection, NIS2. See `ROADMAP.md`.
 
 ---
 
@@ -106,17 +125,34 @@ Revised from the original build spec: MockAzureConnector dropped, real Azure int
 | 6 | Risk engine — scoring, grouping, priority |
 | 7 | React UI — dashboard, assets, findings, finding detail, scans |
 | 8 | Remediation — assignment, status, due date, rescan, verification |
-| 9 | Reports — executive + technical PDFs *(built: Jinja2 + WeasyPrint, generated on request, not stored — see `DECISIONS.md`)* |
+| 9 | Reports — executive + technical PDFs *(Jinja2 + WeasyPrint, generated on request, not stored — see `DECISIONS.md`)* |
 
-> **Open item:** whether a dev Azure subscription/tenant is already available for Phase 2 (to register CloudGuard's app and create intentionally-misconfigured test resources) — not yet confirmed.
+**All ten phases are built.** The loop in §1 runs end to end. Work since has been
+depth rather than new phases, and it is worth naming because none of it appears
+above: the asset graph and attack-path correlation; compensating controls and
+per-instance exploitability; the two-number risk score that separates what
+CloudGuard ranks by from what it can demonstrate; asset context declarations;
+scan replay against a stored snapshot; change tracking between readings; and
+remediation verification as its own settled/unsettled state.
 
 ---
 
 ## 8. Open Items
 
-- Coverage/completeness indicator: build a visible badge in the MVP dashboard, or track internally (`scan_rule_results` / `scan_evaluation_gaps`) and surface the UI later?
-- Azure dev tenant/subscription: available already, or needs setting up before Phase 2?
-- Cautious-Unknown treatment was extended from criticality/data-sensitivity to internet_exposure for consistency — proposed, not explicitly confirmed.
+- ~~Coverage/completeness indicator: visible badge, or internal only?~~
+  **Resolved — visible.** It sits third on the dashboard, above the risks, because
+  a score computed over half an environment is a different claim from the same
+  number over all of it, and a reader who has already acted on the risks below has
+  been told too late (`UI.md` §1).
+- ~~Cautious-Unknown extended from criticality/data-sensitivity to
+  internet_exposure~~ **Resolved — confirmed and shipped.** UNKNOWN scores just
+  under HIGH on all three (`app/risk/config.py`). It has since been split in two:
+  that cautious reading is what *ranks* a finding, while a second pass takes every
+  UNKNOWN at the bottom of the scale and is what the org security score charges
+  for (`RISK_ENGINE.md` §3).
+- Azure dev tenant/subscription: still the one open item from Phase 2 — whether a
+  dedicated tenant with intentionally-misconfigured resources exists, or whether
+  fixtures remain the only end-to-end evidence.
 
 ---
 
@@ -155,9 +191,13 @@ Non-negotiable architecture requirements:
 10. Rule results are PASS / FAIL / UNKNOWN / NOT_APPLICABLE. UNKNOWN is
     never treated as PASS, and never becomes a Finding -- it's tracked for
     coverage only (scan_rule_results / scan_evaluation_gaps).
-11. Findings and risks are separate entities; 1:1 for MVP via risk_findings.
+11. Findings and risks are separate entities, joined through risk_findings.
+    Started 1:1; a rule may now declare that its findings are one problem, so
+    forty accounts missing MFA are forty findings and one risk.
 12. Risk scoring is the weighted-sum formula in RISK_ENGINE.md, deterministic
-    and configuration-driven (not hardcoded).
+    and configuration-driven (not hardcoded). A scenario -- a route through the
+    graph -- is scored separately: worst member on the path, plus a bounded
+    amplifier. Never the six weights, which describe one asset's context.
 13. Remediation is verified automatically: a rescan returning PASS where a
     prior scan had FAIL auto-resolves the Finding. No manual "verified" step.
 14. AI is not required for the MVP to function.
