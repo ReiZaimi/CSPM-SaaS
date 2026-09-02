@@ -18,7 +18,7 @@ from app.core.enums import FindingStatus, ScanStatus, ScanStepStatus, ScanTrigge
 from app.core.errors import ScanNotFound
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
-from app.models.finding import Finding
+from app.models.finding import Finding, FindingEvidence
 from app.models.scan import Evidence, Scan, ScanStep
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
@@ -472,6 +472,30 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
         ).all()
     )
 
+    # How many findings each reading is the evidence for -- the citation chain
+    # walked from the other end. The finding page asks "where did this come
+    # from"; this answers "what rests on this", which is the question a reader
+    # looking at a failed listing actually has.
+    #
+    # One grouped query rather than one per reading, and counted distinctly
+    # because a finding cites a reading once per key it declared.
+    cited: dict[UUID | None, int] = {
+        evidence_id: int(count)
+        for evidence_id, count in (
+            await session.execute(
+                select(
+                    FindingEvidence.evidence_id,
+                    func.count(func.distinct(FindingEvidence.finding_id)),
+                )
+                .where(
+                    FindingEvidence.organization_id == scan.organization_id,
+                    FindingEvidence.evidence_id.in_([row.id for row, _ in rows]),
+                )
+                .group_by(FindingEvidence.evidence_id)
+            )
+        ).all()
+    }
+
     tasks = [
         {
             # Named for what it is a reading of. "Tenant directory" rather than
@@ -489,6 +513,15 @@ async def collection_status(session: AsyncSession, scan: Scan) -> dict:
             "outcome": row.outcome.value,
             "detail": row.detail,
             "item_count": row.item_count,
+            # Exposed so the count below is followable to exactly the findings
+            # it counts. A key alone would span every subscription and every
+            # scan that read it, which is a different set from the one named.
+            "evidence_id": str(row.id),
+            # A reading that failed is the evidence for nothing: the rules that
+            # needed it degraded to UNKNOWN and never became findings. Zero is
+            # the honest answer there, not a gap.
+            "finding_count": cited.get(row.id, 0),
+            "collected_at": row.collected_at.isoformat(),
         }
         for row, name in rows
     ]

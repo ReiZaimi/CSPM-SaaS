@@ -123,6 +123,16 @@ request is neither, so the panel does not render at all. Age is the API's
 number, not the browser's: a carried reading is older than the scan that raised
 the finding, and a clock-side calculation would differ per machine.
 
+**Scan — what rested on a reading.** Each listing in a scan's collection panel
+says when the provider was read and how many findings rest on it, linking to
+exactly those. The finding page asks where its evidence came from; this is the
+same chain from the evidence end, which is the question somebody looking at a
+failed or stale listing actually has. A reading that failed says *no findings
+rest on this* and is not a link — the rules that needed it degraded to UNKNOWN
+and never became findings, which is the engine working rather than a gap. The
+link carries `status=all`, because a reading whose findings have since been
+fixed would otherwise land on an empty table and read as "nothing rested on it".
+
 **Rules** — the catalogue, filterable by severity and free text. It lists what CloudGuard *runs*: a rule withdrawn from the registry (`enabled: false`) is held back behind a toggle and named as withdrawn, because it no longer runs and compliance coverage no longer counts it. Each rule expands to its rationale and the fix in every form the backend holds — prose, CLI, Terraform, Azure Policy.
 
 **Risk detail** — the findings a risk was built from, each one openable, plus the arithmetic in the terms that score was actually built from: the six weighted components for a finding risk, or worst-member/amplifier/hops for a route. The two are never mixed — a scenario was not scored from criticality and exploitability, so it is not shown them.

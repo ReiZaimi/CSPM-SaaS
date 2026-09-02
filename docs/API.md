@@ -153,6 +153,13 @@ without a request per row. The row `id` is a CloudGuard identifier and names
 nothing in the customer's cloud — the ARM id is what they can search for in
 their own portal.
 
+`/findings` also takes `evidence_id` — the citation chain walked from the other
+end. `/scans/{id}/collection` reports how many findings rest on each reading, and
+this is what that count links to. Filtered on the reading rather than on its
+evidence key, because a key spans every subscription and every scan that ever
+read it: the number offered and the rows returned have to be the same set, or it
+is a count that does not survive being clicked.
+
 `/findings` takes `search` and `sort` (`risk` by default, or `severity` or
 `recent`), and `/risks` takes `search`. Both are on the server rather than left
 to the client for the same reason: these endpoints paginate, so a client that

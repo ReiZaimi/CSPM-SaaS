@@ -61,7 +61,6 @@ type SortKey = "risk" | "severity" | "recent";
 export function FindingsPage() {
   const t = useT();
   const [severity, setSeverity] = useState("all");
-  const [status, setStatus] = useState("OPEN");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("risk");
@@ -83,19 +82,42 @@ export function FindingsPage() {
   // has to survive being linked to, shared, and navigated back to.
   const [searchParams, setSearchParams] = useSearchParams();
   const ruleId = searchParams.get("rule_id") ?? "";
+  // Seeded from the URL rather than fixed at OPEN, and read through the router
+  // rather than off `window.location` -- the second is empty under a
+  // MemoryRouter and wrong under any router that has navigated.
+  //
+  // A link that scopes the list to one reading arrives asking "what rested on
+  // this", and the honest answer includes the findings that reading raised and
+  // somebody has since fixed. Defaulting to OPEN would land that link on an
+  // empty table, which reads as "nothing rested on it".
+  const [status, setStatus] = useState(
+    () => searchParams.get("status") ?? "OPEN",
+  );
+  // Arrived from a reading on the scans page: "what rests on this". Filtered on
+  // the reading rather than its key, so the count that was clicked and the rows
+  // that come back are the same set.
+  const evidenceId = searchParams.get("evidence_id") ?? "";
 
   const params = new URLSearchParams();
   if (severity !== "all") params.set("severity", severity);
   if (status !== "all") params.set("status", status);
   if (ruleId) params.set("rule_id", ruleId);
+  if (evidenceId) params.set("evidence_id", evidenceId);
   if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
   params.set("sort", sort);
   params.set("limit", String(PAGE_SIZE));
   params.set("offset", String(page * PAGE_SIZE));
 
-  function clearRuleFilter() {
+  /**
+   * Drop one or more scoping filters in a single write.
+   *
+   * Variadic rather than called twice: each call builds its next value from the
+   * unchanged `searchParams`, so two in a row would have the second put back
+   * what the first removed -- "Clear filters" leaving a chip on screen.
+   */
+  function clearParamFilters(...names: string[]) {
     const next = new URLSearchParams(searchParams);
-    next.delete("rule_id");
+    for (const name of names) next.delete(name);
     setSearchParams(next, { replace: true });
     setPage(0);
   }
@@ -106,6 +128,7 @@ export function FindingsPage() {
       severity,
       status,
       ruleId,
+      evidenceId,
       debouncedSearch,
       sort,
       page,
@@ -131,7 +154,8 @@ export function FindingsPage() {
     search.trim().length > 0 ||
     severity !== "all" ||
     status !== "OPEN" ||
-    !!ruleId;
+    !!ruleId ||
+    !!evidenceId;
 
   /** Any filter change re-slices the set, so page 4 of the old one is meaningless. */
   function refilter(apply: () => void) {
@@ -192,18 +216,35 @@ export function FindingsPage() {
         </div>
       </div>
 
-      {ruleId && (
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="gap-1.5 font-normal">
-            Rule <code className="font-medium">{ruleId}</code>
-            <button
-              onClick={clearRuleFilter}
-              aria-label="Clear rule filter"
-              className="rounded-full text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <XIcon className="size-3" />
-            </button>
-          </Badge>
+      {(ruleId || evidenceId) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {ruleId && (
+            <Badge variant="secondary" className="gap-1.5 font-normal">
+              Rule <code className="font-medium">{ruleId}</code>
+              <button
+                onClick={() => clearParamFilters("rule_id")}
+                aria-label="Clear rule filter"
+                className="rounded-full text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <XIcon className="size-3" />
+              </button>
+            </Badge>
+          )}
+          {evidenceId && (
+            // Named for what it means rather than for the column: nobody
+            // arrived here thinking about an evidence id, they clicked a
+            // listing on a scan.
+            <Badge variant="secondary" className="gap-1.5 font-normal">
+              {t.findings.restingOnReading}
+              <button
+                onClick={() => clearParamFilters("evidence_id")}
+                aria-label="Clear evidence filter"
+                className="rounded-full text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <XIcon className="size-3" />
+              </button>
+            </Badge>
+          )}
         </div>
       )}
 
@@ -237,7 +278,9 @@ export function FindingsPage() {
                   setSearch("");
                   setSeverity("all");
                   setStatus("OPEN");
-                  clearRuleFilter();
+                  // Both scoping filters, or "Clear filters" would leave the
+                  // reader on an empty table with a chip still narrowing it.
+                  clearParamFilters("rule_id", "evidence_id");
                 }}
               >
                 Clear filters

@@ -9,7 +9,7 @@ from app.core.deps import DbSession, Tenant
 from app.core.enums import FindingStatus, ScanStatus, Severity
 from app.core.errors import ConflictError, ValidationFailed, envelope
 from app.graph import Path
-from app.models.finding import Finding
+from app.models.finding import Finding, FindingEvidence
 from app.models.resource import ResourceRecord
 from app.models.scan import Scan
 from app.schemas.finding import (
@@ -59,6 +59,7 @@ async def list_findings(
     finding_status: FindingStatus | None = Query(default=None, alias="status"),
     rule_id: str | None = None,
     resource_id: UUID | None = None,
+    evidence_id: UUID | None = None,
     environment: str | None = None,
     search: str | None = None,
     sort: str = Query(default="risk", pattern="^(risk|severity|recent)$"),
@@ -87,6 +88,23 @@ async def list_findings(
         stmt = stmt.where(Finding.rule_id == rule_id)
     if resource_id:
         stmt = stmt.where(Finding.resource_id == resource_id)
+    if evidence_id:
+        # "What rests on this reading" -- the citation chain walked from the
+        # evidence end, which is what a person looking at a failed or stale
+        # listing on the scans page is actually asking.
+        #
+        # Filtered on the reading rather than on its key, because a key spans
+        # every subscription and every scan that read it: the count offered
+        # beside a reading and the rows this returns have to be the same set,
+        # or the link is a number that does not survive being clicked.
+        stmt = stmt.where(
+            Finding.id.in_(
+                select(FindingEvidence.finding_id).where(
+                    FindingEvidence.organization_id == tenant.organization_id,
+                    FindingEvidence.evidence_id == evidence_id,
+                )
+            )
+        )
     if environment:
         stmt = stmt.where(ResourceRecord.environment == environment)
     if search:

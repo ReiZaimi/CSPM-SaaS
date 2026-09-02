@@ -30,11 +30,11 @@ function finding(index: number) {
 
 let requested: string[] = [];
 
-function renderPage() {
+function renderPage(entry = "/findings") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={["/findings"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <FindingsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -160,5 +160,31 @@ describe("the findings list", () => {
         requested.some((url) => url.includes("sort=severity") && url.includes("offset=0")),
       ).toBe(true),
     );
+  });
+
+  /**
+   * Arriving from a reading on the scans page.
+   *
+   * Two halves, and both are load-bearing. The scope has to reach the request,
+   * or the page shows every finding under a chip claiming otherwise. And the
+   * status default has to give way, because a reading whose findings have since
+   * been fixed would otherwise answer "what rested on this" with an empty table
+   * -- the citation would be true and the screen would say nothing rested on it.
+   */
+  it("scopes to one reading and stops defaulting to open findings", async () => {
+    renderPage("/findings?evidence_id=ev-1&status=all");
+
+    await waitFor(() => expect(requested.length).toBeGreaterThan(0));
+    const url = requested[requested.length - 1];
+    expect(url).toContain("evidence_id=ev-1");
+    expect(url).not.toContain("status=OPEN");
+    expect(await screen.findByText("Resting on one reading")).toBeInTheDocument();
+  });
+
+  it("still defaults to open findings when nothing in the URL says otherwise", async () => {
+    renderPage();
+
+    await waitFor(() => expect(requested.length).toBeGreaterThan(0));
+    expect(requested[requested.length - 1]).toContain("status=OPEN");
   });
 });

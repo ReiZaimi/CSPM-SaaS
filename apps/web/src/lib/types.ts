@@ -734,6 +734,14 @@ export interface CollectionReading {
   outcome: CollectionOutcome;
   detail: string | null;
   item_count: number;
+  /** The reading itself, so its finding count is followable to exactly those findings. */
+  evidence_id: string;
+  /**
+   * How many findings cite this reading. Zero for a failed one, honestly: the
+   * rules that needed it degraded to UNKNOWN and never became findings.
+   */
+  finding_count: number;
+  collected_at: string;
 }
 
 export interface CollectionStatus {

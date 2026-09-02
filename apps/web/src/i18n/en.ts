@@ -414,6 +414,7 @@ export const en = {
     whyItMatters: "Why this matters",
     evidence: "Evidence",
     provenance: "How we know",
+    restingOnReading: "Resting on one reading",
     provenanceIntro:
       "Where the evidence above came from \u2014 which listing, when the provider was read, and under which permission.",
     // `null` from the API: a fact about CloudGuard, not about this finding.
@@ -589,6 +590,9 @@ export const en = {
       "Every resource category CloudGuard reads returned successfully and was empty, so there is nothing here to assess. If that is unexpected, check in Details which subscription this scan covered \u2014 a connection discovers every subscription it can see, including empty ones.",
     nothingFoundPartial:
       "Nothing was assessed, and some categories could not be read at all \u2014 see the gaps below. A category that failed is not the same as a category that was empty.",
+    supportsOne: "1 finding rests on this",
+    supportsMany: "{count} findings rest on this",
+    supportsNone: "no findings rest on this",
     collectionTitle: "What was read",
     collectionSummary: "read completely",
     collectionPartial: "partial",

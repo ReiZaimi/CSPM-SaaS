@@ -1,10 +1,11 @@
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import type { CollectionOutcome, CollectionReading, CollectionStatus } from "@/lib/types";
 import { useT } from "@/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
-import { outcomeStyle } from "@/lib/format";
+import { formatRelative, outcomeStyle } from "@/lib/format";
 
 /**
  * What the scan could and could not read.
@@ -93,6 +94,37 @@ export function CollectionPanel({ scanId }: { scanId: string }) {
                       {reading.detail}
                     </p>
                   )}
+                  <p className="w-full text-xs text-muted-foreground">
+                    <span title={reading.collected_at}>
+                      {formatRelative(reading.collected_at)}
+                    </span>
+                    {reading.finding_count > 0 ? (
+                      <>
+                        {" · "}
+                        {/* The chain from the evidence end. The finding page
+                            asks where its evidence came from; this asks what
+                            rested on this reading, and links to exactly the
+                            findings the number counts. */}
+                        <Link
+                          to={`/findings?evidence_id=${reading.evidence_id}&status=all`}
+                          className="underline underline-offset-2 hover:text-foreground"
+                        >
+                          {reading.finding_count === 1
+                            ? t.scans.supportsOne
+                            : t.scans.supportsMany.replace(
+                                "{count}",
+                                String(reading.finding_count),
+                              )}
+                        </Link>
+                      </>
+                    ) : (
+                      // Not a link, because there is nothing to go to. A
+                      // reading that failed supported nothing: the rules that
+                      // needed it degraded to UNKNOWN and never became
+                      // findings, which is the system working.
+                      <>{" · "}{t.scans.supportsNone}</>
+                    )}
+                  </p>
                 </li>
               ))}
             </ul>

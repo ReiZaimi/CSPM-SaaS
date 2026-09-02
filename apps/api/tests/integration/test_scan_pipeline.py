@@ -1224,6 +1224,43 @@ class TestCollectionStatus:
         assert status["failed"] == 0
         assert status["degraded_categories"] == []
 
+    async def test_a_reading_says_what_rests_on_it(
+        self, replay, connected_account
+    ) -> None:
+        """The citation chain walked from the evidence end.
+
+        The finding page asks where its evidence came from. A person looking at
+        a listing on the scans page has the mirror question -- what did this
+        reading actually support -- and the count has to be followable to
+        exactly those findings, which is why the reading's own id is exposed
+        beside it rather than only its key.
+        """
+        from app.services.scans import collection_status
+
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            scan = await session.get(Scan, scan_id)
+            status = await collection_status(session, scan)
+
+        cited = [t for t in status["tasks"] if t["finding_count"] > 0]
+        assert cited, "no reading was reported as supporting any finding"
+
+        for task in status["tasks"]:
+            assert task["evidence_id"], "a count with no way to follow it"
+            assert task["collected_at"]
+
+        # The count and the filter must name the same set, or the number stops
+        # surviving being clicked.
+        for task in cited:
+            rows = await fetch(
+                "SELECT count(DISTINCT finding_id) FROM finding_evidence "
+                "WHERE organization_id = :o AND evidence_id = :e",
+                {"o": org_id, "e": task["evidence_id"]},
+            )
+            assert rows[0][0] == task["finding_count"]
+
     async def test_each_reading_names_the_subscription_it_came_from(
         self, replay, connected_tenant
     ) -> None:
