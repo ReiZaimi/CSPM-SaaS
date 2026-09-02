@@ -674,6 +674,56 @@ class TestRemediationVerification:
         )
         assert rows == [], "a re-detection must update, not duplicate"
 
+    async def test_risks_are_not_duplicated_across_scans(
+        self, replay, connected_account
+    ) -> None:
+        """The half the finding check above never covered.
+
+        A finding is unique on (organization, rule, resource) and the database
+        says so, so re-detection could only ever update one. A risk has no such
+        key -- it is reached through ``risk_findings`` -- and nothing asserted
+        that the junction was actually written, so a risk row created without
+        its link would be invisible here and permanently listed on the risks
+        page, which shows an unlinked risk rather than dropping it.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT title, count(*) FROM risks WHERE organization_id = :o "
+            "AND kind = 'FINDING' GROUP BY title HAVING count(*) > 1",
+            {"o": org_id},
+        )
+
+        assert rows == [], f"three scans left duplicate risks: {rows}"
+
+    async def test_every_finding_risk_is_reachable_through_the_junction(
+        self, replay, connected_account
+    ) -> None:
+        """An unlinked risk is listed for ever.
+
+        ``list_risks`` hides a finding risk whose findings have closed, but
+        keeps one that is linked to nothing at all -- deliberately, because the
+        junction is the only thing that could vouch for it and silently
+        dropping a risk is the worse failure for a security product. That makes
+        a missing link permanent, so it is worth asserting that the writer
+        never leaves one.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        orphans = await fetch(
+            "SELECT r.id, r.title FROM risks r "
+            "LEFT JOIN risk_findings rf ON rf.risk_id = r.id "
+            "WHERE r.organization_id = :o AND r.kind = 'FINDING' "
+            "AND rf.risk_id IS NULL",
+            {"o": org_id},
+        )
+
+        assert orphans == [], f"finding risks with no junction row: {orphans}"
+
 
 class TestSecurityScoreMoves:
     async def test_score_improves_after_a_verified_fix(
