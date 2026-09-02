@@ -532,6 +532,17 @@ export const en = {
     exposure: "Exposure",
     sensitivity: "Sensitivity",
   },
+  notifications: {
+    aria: "Notifications",
+    ariaUnread: "Notifications, {count} unread",
+    title: "What happened",
+    // Says what the panel is *for*, because the changes page answers a
+    // neighbouring question and the two must not read as duplicates.
+    subtitle: "Since you last looked",
+    // Not "no notifications" alone: that is ambiguous between all quiet and
+    // CloudGuard having stopped checking.
+    empty: "Nothing new. CloudGuard tells you about reachable findings, verified fixes, and readings it could not take.",
+  },
   scans: {
     title: "Scans",
     runScan: "Run scan",

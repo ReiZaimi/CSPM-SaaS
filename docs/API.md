@@ -57,6 +57,8 @@ GET    /attack-paths/blast-radius/{resource_id}
 GET    /rules                              GET    /rules/{rule_id}
 GET    /compliance                         GET    /compliance/{framework_id}
 
+GET    /notifications                      POST   /notifications/read
+
 GET    /dashboard
 GET    /reports/{kind}?format=pdf|html&days=30&sections=a,b
 ```
@@ -136,6 +138,24 @@ must not exist, or an entry that satisfies. Two rules report an empty
 `expected_state` with a `notes` field explaining why — one judges a ratio across
 the directory, the other a relationship between two assets — rather than
 inventing a per-asset setting to point at.
+
+`/notifications` is deliberately not `/changes`. That answers "what moved in the
+environment" and is a property of the estate; this answers "what happened since
+you last looked" and is a property of a reader — the same scan gives everyone
+the same changes and each person a different unread count. Three kinds only:
+a new finding on an asset that stands on an attack path, a fix a scan verified,
+and a reading that stopped arriving. Severity alone is not a reason: a CRITICAL
+on an isolated sandbox is a rulebook event, and a bell that fired on every
+finding would be a filter rule inside a fortnight.
+
+`meta.unread` and the list come from one read of the same rows, so a badge
+cannot say three above a panel showing two. `POST /notifications/read` moves the
+caller's watermark to *now* rather than to the newest stored row — the sweep
+runs on a timer, and reading to the newest row would mark something seen before
+it was written. Rows are derived by a periodic job from `finding_events`,
+`evidence` and the graph, never written by the scanner: one source of truth
+about what happened, and a replay generates nothing because it writes no finding
+events.
 
 `/dashboard` carries two figures that are easy to confuse and answer different
 questions. `coverage` is the share of checks that reached a verdict;

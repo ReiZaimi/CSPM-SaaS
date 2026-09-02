@@ -314,6 +314,35 @@ class RiskKind(StrEnum):
     ESCALATION = "ESCALATION"
 
 
+class NotificationKind(StrEnum):
+    """What a notification is *about*, and the whole of the vocabulary.
+
+    Three, and the shortness is the design. A CSPM that notifies per finding
+    becomes a filter rule in the second week, and the product already made this
+    decision one layer down: a rule may declare that forty failures are one
+    problem, because forty rows saying the same sentence is not forty pieces of
+    news (``risk/grouping.py``).
+
+    So the bar is not severity -- severity is the rulebook's opinion, and the
+    product's whole argument is that what matters is what a finding means on
+    *this* asset. The bar is whether a person would want to be interrupted.
+    """
+
+    # A new finding on an asset standing on a route from somewhere an attacker
+    # could start to something worth taking. Not every Critical: "a Critical was
+    # raised" is a fact about the rulebook, while "something reachable just
+    # became exploitable" is news.
+    REACHABLE_FINDING = "REACHABLE_FINDING"
+    # A fix CloudGuard observed working. The only positive one, and the one a
+    # customer is actually waiting for -- verified risk reduction is the north
+    # star, and until now the only way to learn of it was to go and look.
+    VERIFIED_FIX = "VERIFIED_FIX"
+    # A reading that stopped arriving. The posture number is then measuring
+    # something narrower than it was yesterday, and saying nothing would let a
+    # score hold steady while the evidence under it thinned out.
+    COVERAGE_DROP = "COVERAGE_DROP"
+
+
 class AssetChange(StrEnum):
     """What happened to an asset between two readings of the same environment.
 

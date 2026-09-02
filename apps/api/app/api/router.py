@@ -12,6 +12,7 @@ from app.api.routes import (
     dashboard,
     events,
     findings,
+    notifications,
     organizations,
     remediation,
     reports,
@@ -28,6 +29,7 @@ api_router.include_router(cloud_connections.router)
 api_router.include_router(scans.router)
 api_router.include_router(assets.router)
 api_router.include_router(changes.router)
+api_router.include_router(notifications.router)
 api_router.include_router(attack_paths.router)
 api_router.include_router(findings.router)
 api_router.include_router(risks.router)

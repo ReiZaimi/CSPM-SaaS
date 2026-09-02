@@ -10,6 +10,7 @@ import { ShieldMark } from "@/components/Brand";
 import { AccountMenu } from "@/components/AccountMenu";
 import { SidebarNav } from "@/components/layout/Sidebar";
 import { CommandPalette } from "@/components/layout/CommandPalette";
+import { NotificationBell } from "@/components/layout/NotificationBell";
 import { ScanIndicator } from "@/components/layout/ScanIndicator";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { Button } from "@/components/ui/button";
@@ -185,6 +186,9 @@ export function Shell() {
             <div className="ml-auto flex items-center gap-3">
               <CommandPalette />
               <ScanIndicator />
+              {/* After the scan indicator and before the settings: what is
+                  happening now, then what happened, then how the app looks. */}
+              <NotificationBell />
               <ThemeToggle />
               <AccountMenu organizations={orgs ?? []} current={current} />
             </div>

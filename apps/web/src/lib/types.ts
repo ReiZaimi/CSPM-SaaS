@@ -833,3 +833,26 @@ export interface AzurePermissions {
   access_type: string;
   writes_performed: string;
 }
+
+export type NotificationKind =
+  | "REACHABLE_FINDING"
+  | "VERIFIED_FIX"
+  | "COVERAGE_DROP";
+
+/**
+ * One thing worth telling somebody, as it was true when it happened.
+ *
+ * `title` and `detail` come from the server already written. Composing them
+ * here from a finding that has since been fixed would describe a state nobody
+ * was ever notified about.
+ */
+export interface AppNotification {
+  id: string;
+  kind: NotificationKind;
+  title: string;
+  detail: string | null;
+  /** A path, so the client routes it. Never an absolute URL. */
+  link: string | null;
+  /** When it happened, which is not when the row was written. */
+  event_at: string;
+}

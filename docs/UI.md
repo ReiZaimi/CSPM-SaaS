@@ -133,6 +133,21 @@ and never became findings, which is the engine working rather than a gap. The
 link carries `status=all`, because a reading whose findings have since been
 fixed would otherwise land on an empty table and read as "nothing rested on it".
 
+**Notifications** — a bell in the header, between the scan indicator and the
+theme toggle: what is happening now, then what happened, then how the app looks.
+It answers "since you last looked", which is a different question from the
+Changes page and must not become a second copy of it. A popover rather than a
+dropdown menu, because the rows are content containing links and a screen reader
+announcing "menu, 6 items" would be wrong about what they are. Rows link and
+never act — resolving or accepting is a decision about a finding, and one taken
+from a dropdown is one taken without the evidence in front of you. It is marked
+read when the panel opens rather than when it closes, and by an effect rather
+than the click handler, because the unread count can arrive after the click.
+No polling: `ScanIndicator` beside it polls only while a scan is in flight and
+refuses to poll a finished one overnight, and there is no "in flight" here.
+Empty reads *"Nothing new"* plus what it would have told you about; a failed
+request renders nothing at all, because a network error is not an all-clear.
+
 **Rules** — the catalogue, filterable by severity and free text. It lists what CloudGuard *runs*: a rule withdrawn from the registry (`enabled: false`) is held back behind a toggle and named as withdrawn, because it no longer runs and compliance coverage no longer counts it. Each rule expands to its rationale and the fix in every form the backend holds — prose, CLI, Terraform, Azure Policy.
 
 **Risk detail** — the findings a risk was built from, each one openable, plus the arithmetic in the terms that score was actually built from: the six weighted components for a finding risk, or worst-member/amplifier/hops for a route. The two are never mixed — a scenario was not scored from criticality and exploitability, so it is not shown them.

@@ -67,6 +67,14 @@ celery_app.conf.beat_schedule = {
         "task": "cloudguard.verify_due_remediations",
         "schedule": 60.0,
     },
+    # Five minutes, not one. Nothing here is a lockout and nothing is waiting on
+    # it: a notification is news, and news five minutes old is news. The sweep
+    # loads a graph per organization, which is the one part of it that is not
+    # free, so looking often would cost more than the freshness is worth.
+    "derive-notifications": {
+        "task": "cloudguard.derive_notifications",
+        "schedule": 300.0,
+    },
 }
 
 celery_app.conf.update(

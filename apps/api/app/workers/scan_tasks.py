@@ -20,13 +20,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.db import dispose_engines, service_session
+from app.core.db import dispose_engines, scan_session, service_session
 from app.core.enums import ScanStatus, ScanStepKind, ScanTrigger
 from app.core.logging import configure_logging, get_logger, log_context
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
+from app.models.organization import Organization
 from app.models.scan import Scan
 from app.services import change_events as change_service
+from app.services import notifications as notifications_service
 from app.services import orchestrator
 from app.services import scans as scans_service
 from app.services import verification as verification_service
@@ -205,6 +207,27 @@ def verify_due_remediations(self: object) -> dict:
     for scan_id in started:
         run_scan.delay(str(scan_id))
     return {"started": len(started)}
+
+
+@celery_app.task(name="cloudguard.derive_notifications", bind=True, max_retries=0)
+def derive_notifications(self: object) -> dict:
+    """Turn what the scans recorded into what is worth telling somebody.
+
+    A sweep rather than a hook inside the pipeline, and the separation is the
+    point: the scanner stays the one thing that says what happened, and this
+    reads those rows. A notification can then never disagree with the finding it
+    is about, and a replay -- which writes no finding events -- produces none of
+    these without anyone having to remember that it should not.
+
+    Per organization, because the graph is loaded once per sweep and a tenant's
+    reachability is a fact about that tenant. One failing organization is logged
+    and skipped rather than taking the others' notifications with it.
+    """
+    configure_logging()
+    written = asyncio.run(_derive_all_notifications())
+    if written:
+        log.info("notifications.derived", count=written)
+    return {"written": written}
 
 
 @celery_app.task(name="cloudguard.start_due_scans", bind=True, max_retries=0)
@@ -508,3 +531,26 @@ async def _replay_and_release(scan_id: UUID) -> None:
         await ScanPipeline(scan_id).replay()
     finally:
         await dispose_engines()
+
+
+async def _derive_all_notifications() -> int:
+    """Every organization, each in its own transaction.
+
+    Committed per organization rather than once at the end: a sweep that failed
+    halfway would otherwise discard the notifications it had correctly derived
+    for everybody before the one that broke.
+    """
+    total = 0
+    async with service_session() as session:
+        org_ids = list(
+            (await session.execute(select(Organization.id))).scalars().all()
+        )
+
+    for org_id in org_ids:
+        try:
+            async with scan_session(org_id) as session:
+                total += await notifications_service.derive(session, org_id)
+                await session.commit()
+        except Exception:  # pragma: no cover - one tenant must not stop the rest
+            log.exception("notifications.derive_failed", organization_id=str(org_id))
+    return total
