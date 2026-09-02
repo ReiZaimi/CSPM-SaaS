@@ -2101,7 +2101,8 @@ class ScanPipeline:
                     asset_criticality=resource.criticality if resource else Level.UNKNOWN,
                     data_sensitivity=resource.data_sensitivity if resource else Level.UNKNOWN,
                     internet_exposure=resource.public_exposure if resource else Level.UNKNOWN,
-                    exploitability=rule.exploitability,
+                    # The rule's tag unless this instance earned a lower one.
+                    exploitability=rule.effective_exploitability(failure.result),
                 )
             )
             finding.risk_score = scored.score
@@ -2334,7 +2335,11 @@ class ScanPipeline:
             "asset_criticality": resource.criticality if resource else Level.UNKNOWN,
             "data_sensitivity": resource.data_sensitivity if resource else Level.UNKNOWN,
             "internet_exposure": resource.public_exposure if resource else Level.UNKNOWN,
-            "exploitability": rule.exploitability,
+            # From the scored inputs, not from the rule: the two differ whenever
+            # a result stepped its own exploitability down, and reading the
+            # class tag here would show a number the score was not computed
+            # from on the one page that exists to explain the score.
+            "exploitability": scored.inputs.exploitability,
             "business_impact": scored.business_impact,
             "score_breakdown": scored.breakdown,
         }

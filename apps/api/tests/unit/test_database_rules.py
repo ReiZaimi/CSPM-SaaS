@@ -24,6 +24,22 @@ class TestPublicDatabase:
         assert result.state == RuleState.FAIL
         assert "other tenants" in " ".join(result.evidence["problems"])
 
+    def test_every_azure_tenant_is_not_the_whole_internet(self) -> None:
+        """Both shapes fail, and they are not the same exposure. An attacker
+        needs a subscription and a credential to use the Azure-services rule,
+        rather than a scanner and an afternoon."""
+        azure_only = resource_from("vulnerable", "sql_server_azure_services")
+        everyone = resource_from("vulnerable", "sql_server_public")
+
+        narrow = self.rule.evaluate(azure_only, make_context(azure_only))
+        wide = self.rule.evaluate(everyone, make_context(everyone))
+
+        assert self.rule.effective_exploitability(narrow) == 3
+        assert self.rule.effective_exploitability(wide) == self.rule.exploitability
+        assert self.rule.effective_exploitability(narrow) < self.rule.effective_exploitability(
+            wide
+        )
+
     def test_private_server_passes(self) -> None:
         server = resource_from("secure", "sql_server_private")
         assert self.rule.evaluate(server, make_context(server)).state == RuleState.PASS

@@ -34,6 +34,33 @@ class TestPublicStorage:
         )
         assert self.rule.evaluate(opened, make_context(opened)).state == RuleState.FAIL
 
+    def test_anonymous_access_carries_the_rule_tag(self) -> None:
+        """No credential, no exploit: the data is handed to whoever asks. This
+        is the worst case the rule's tag describes."""
+        storage = resource_from("vulnerable", "storage_public")
+        result = self.rule.evaluate(storage, make_context(storage))
+
+        assert result.exploitability is None
+        assert self.rule.effective_exploitability(result) == self.rule.exploitability
+
+    def test_an_open_network_without_anonymous_access_scores_lower(self) -> None:
+        """Two different failures wear this one rule id. Reachable from every
+        network still needs a key or a SAS token, which is an attacker who
+        already has a credential -- a materially different afternoon from one
+        where the blobs are simply served."""
+        from dataclasses import replace
+
+        storage = resource_from("secure", "storage_locked_down")
+        opened = replace(
+            storage,
+            metadata={**storage.metadata, "network_default_action": "Allow"},
+        )
+        result = self.rule.evaluate(opened, make_context(opened))
+
+        assert result.state == RuleState.FAIL
+        assert self.rule.effective_exploitability(result) == 3
+        assert self.rule.exploitability > 3
+
     def test_unknown_when_config_missing(self) -> None:
         storage = resource_from("unknown", "storage_config_missing")
         assert self.rule.evaluate(storage, make_context(storage)).state == RuleState.UNKNOWN

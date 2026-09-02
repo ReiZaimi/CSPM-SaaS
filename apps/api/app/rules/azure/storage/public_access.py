@@ -115,6 +115,13 @@ class AzurePublicStorageRule(SecurityRule):
 
         return RuleResult.failed(
             evidence={**evidence, "problems": problems},
+            # Two different failures wear this one rule id, and only one of them
+            # serves data to a stranger. Anonymous blob access is the class tag:
+            # no credential, no exploit, the data is handed to whoever asks. An
+            # account merely reachable from every network still requires a key
+            # or a SAS token, which is an attacker who already has a credential
+            # -- a materially different afternoon, and the score should say so.
+            exploitability=None if allow_blob_public is True else 3,
             message=f"{resource.name} is publicly accessible: {'; '.join(problems)}",
         )
 

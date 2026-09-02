@@ -57,6 +57,35 @@ class TestPublicRdp:
         result = self.rule.evaluate(nsg, make_context(nsg))
         assert result.evidence["attached"] is False
 
+    def test_a_group_protecting_nothing_is_not_scored_as_reachable(self) -> None:
+        """The same rule text, none of the reach. Nobody can connect to a
+        machine this group does not protect, so what is left is a latent
+        mistake -- worth fixing before it is attached to something, and not the
+        thing being scanned for RDP this afternoon."""
+        nsg = resource_from("vulnerable", "nsg_public_rdp")
+        result = self.rule.evaluate(nsg, make_context(nsg))
+
+        assert result.exploitability == 1
+        assert self.rule.effective_exploitability(result) == 1
+        assert "protects nothing" in result.message
+
+    def test_a_group_that_guards_a_machine_keeps_the_rule_tag(self) -> None:
+        vm = resource_from("vulnerable", "vm_public_rdp")
+        nsg = resource_from("vulnerable", "nsg_public_rdp")
+        context = make_context(
+            nsg,
+            vm,
+            relationships={
+                (nsg.provider_resource_id, "protects"): [vm.provider_resource_id]
+            },
+        )
+
+        result = self.rule.evaluate(nsg, context)
+
+        assert result.evidence["attached"] is True
+        assert result.exploitability is None
+        assert self.rule.effective_exploitability(result) == self.rule.exploitability
+
 
 class TestPublicSsh:
     rule = AzurePublicSshRule()

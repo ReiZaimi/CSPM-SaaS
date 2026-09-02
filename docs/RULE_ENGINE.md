@@ -33,7 +33,7 @@ class SecurityRule(ABC):
     version: str
     severity: Severity
     category: str
-    exploitability: int              # 0-5, static -- feeds the risk formula
+    exploitability: int              # 0-5, REQUIRED -- the worst instance (section 5)
     scope: RuleScope = RuleScope.PER_RESOURCE
     applies_to: list[str] = []       # resource types this rule targets (PER_RESOURCE only)
     risk_grouping: RiskGrouping | None = None   # several findings, one risk (RISK_ENGINE.md section 2)
@@ -103,6 +103,31 @@ When a later scan runs the same rule against the same resource and returns PASS 
 | AZ-CMP-001 — Internet-exposed compute with admin service exposed | Compute | HIGH | 4 |
 
 Exploitability (0–5) is a proposed starting value for each rule — tune after testing against real environments, same as the risk-formula weights in `RISK_ENGINE.md`.
+
+### The scale
+
+What the attacker must **already have**:
+
+| | Needs |
+|---|---|
+| 5 | nothing — anonymous, from the internet, today |
+| 4 | a credential of the kind routinely phished or sprayed, or a guessable identifier |
+| 3 | a valid credential, or an existing foothold in the environment |
+| 2 | a foothold plus a particular position: a role, a host, a network |
+| 1 | no exploitation on its own — it weakens detection or defence in depth |
+| 0 | not exploitable |
+
+**Required, with no default.** A default of 0 meant a rule whose author never considered this silently asserted "not exploitable" — the same overclaim as a PASS nobody earned. `severity` is declared the same way for the same reason: leaving it out is an `AttributeError`, not a quiet answer.
+
+**A ceiling, not a constant.** The class value describes the *worst* instance of the misconfiguration. Where the evidence shows one instance is less exploitable, `evaluate` returns a lower value on that `RuleResult` and the risk formula uses it:
+
+| Rule | Steps down when | To |
+|---|---|---|
+| AZ-NET-001/002/003 | the NSG protects nothing — nobody can reach a machine it does not guard | 1 |
+| AZ-STO-001 | the account is open to every network but anonymous blob access is off, so a key or SAS is still needed | 3 |
+| AZ-DB-001 | the only over-broad firewall rule is Azure's `0.0.0.0-0.0.0.0` shortcut: every Azure tenant, not the open internet | 3 |
+
+Never up. The class value is the tuned number, and a rule able to raise it per finding would be retuning itself one finding at a time. The clamp enforces `0 ≤ value ≤ tag`, so a mistaken override can only understate.
 
 Registry:
 

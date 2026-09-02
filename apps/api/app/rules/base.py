@@ -34,6 +34,13 @@ class RuleResult:
     # Required when an AGGREGATE rule emits several results, so each one can be
     # attributed to the resource it concerns.
     resource_id: str | None = None
+    # How exploitable *this* instance is, where the rule can tell that it is
+    # less than the worst case its class tag describes.
+    #
+    # ``None`` means the rule has nothing instance-specific to say and the class
+    # tag stands. A value is only ever a step down: see
+    # :attr:`SecurityRule.exploitability`.
+    exploitability: int | None = None
 
     @classmethod
     def passed(cls, evidence: dict[str, Any] | None = None, **kw: Any) -> "RuleResult":
@@ -168,8 +175,32 @@ class SecurityRule(ABC):
     provider: Provider = Provider.AZURE
     severity: Severity
     version: str = "1.0"
-    # Static 0-5 tag feeding the risk formula (RISK_ENGINE.md section 1).
-    exploitability: int = 0
+    # How exploitable the *worst* instance of this misconfiguration is, 0-5,
+    # feeding the risk formula (RISK_ENGINE.md section 1). The scale is what an
+    # attacker must already have:
+    #
+    #   5  nothing -- anonymous, from the internet, today
+    #   4  a credential of the kind routinely phished or sprayed, or a
+    #      guessable identifier
+    #   3  a valid credential, or an existing foothold in the environment
+    #   2  a foothold plus a particular position: a role, a host, a network
+    #   1  no exploitation on its own -- it weakens detection or defence in
+    #      depth, and makes another step easier
+    #   0  not exploitable
+    #
+    # Required, with no default. A default of 0 meant a rule whose author never
+    # thought about this silently asserted "not exploitable" -- the same
+    # overclaim as a PASS nobody earned, and the one this engine refuses
+    # everywhere else. ``severity`` above is declared the same way for the same
+    # reason.
+    #
+    # A ceiling rather than a constant. Where the evidence shows one instance is
+    # less exploitable than the worst case -- an NSG rule attached to nothing, a
+    # storage account open to every network but not to anonymous readers -- the
+    # rule returns a lower value on that ``RuleResult``. Never a higher one: the
+    # class tag is the tuned number (RULE_ENGINE.md section 5), and a rule that
+    # could raise it would be retuning itself one finding at a time.
+    exploitability: int
     scope: RuleScope = RuleScope.PER_RESOURCE
     applies_to: ClassVar[list[ResourceType]] = []
     remediation: str = ""
@@ -203,6 +234,18 @@ class SecurityRule(ABC):
     # layer stops repeating one sentence and stops charging the security score
     # once per repetition.
     risk_grouping: ClassVar[RiskGrouping | None] = None
+
+    def effective_exploitability(self, result: RuleResult) -> int:
+        """What the risk formula should use for this finding.
+
+        The rule's own tag unless the result stepped down from it, and never
+        outside 0..tag -- so a mistaken override can only ever understate, which
+        is the direction that costs a customer nothing they were not already
+        told about by the severity.
+        """
+        if result.exploitability is None:
+            return self.exploitability
+        return max(0, min(self.exploitability, result.exploitability))
 
     @abstractmethod
     def evaluate(

@@ -162,7 +162,20 @@ class AzurePublicDatabaseRule(SecurityRule):
                 {**evidence, "note": "Public access is restricted by explicit firewall rules"}
             )
 
+        # Whose internet. A rule spanning 0.0.0.0-255.255.255.255 puts the
+        # server in front of everyone, which is the class tag. Azure's "allow
+        # all Azure services" shortcut (0.0.0.0-0.0.0.0) puts it in front of
+        # every Azure tenant -- a serious and frequently unintended gap, and
+        # still an attacker who needs a subscription and a credential rather
+        # than a scanner and an afternoon.
+        azure_services_only = all(
+            (str(r.get("start_ip_address", "")), str(r.get("end_ip_address", "")))
+            == ("0.0.0.0", "0.0.0.0")
+            for r in offending
+        )
+
         return RuleResult.failed(
             evidence={**evidence, "problems": problems},
+            exploitability=3 if azure_services_only else None,
             message=f"{resource.name} is reachable from the internet: {'; '.join(problems)}",
         )

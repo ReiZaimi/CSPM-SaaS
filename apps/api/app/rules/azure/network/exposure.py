@@ -174,6 +174,7 @@ class _PublicPortRule(SecurityRule):
                 {"service": self.service, "port": self.port, "public_access": False}
             )
 
+        attachment = _attachment_evidence(resource, context)
         return RuleResult.failed(
             evidence={
                 "service": self.service,
@@ -182,11 +183,20 @@ class _PublicPortRule(SecurityRule):
                 "port": self.port,
                 "nsg_rule_name": match.get("name"),
                 "priority": match.get("priority"),
-                **_attachment_evidence(resource, context),
+                **attachment,
             },
+            # An NSG governing nothing carries the same rule and none of the
+            # reach. Nobody can connect to a machine it does not protect, so
+            # what is left is a latent mistake: real, worth fixing before it is
+            # attached to something, and not the thing being scanned for RDP
+            # right now. The distinction is already drawn in AZ-CMP-001's own
+            # description ("unlike an unattached NSG rule") and in the note on
+            # ``ResourceRelationship``; this is where it reaches the score.
+            exploitability=None if attachment["attached"] else 1,
             message=(
                 f"{self.service} on port {self.port} is reachable from the entire internet "
                 f"via NSG rule '{match.get('name')}'"
+                + ("" if attachment["attached"] else ", but the group protects nothing")
             ),
         )
 

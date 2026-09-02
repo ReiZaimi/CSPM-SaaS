@@ -1556,6 +1556,63 @@ told them nothing and gave them nothing to do.
 
 ---
 
+## 47. Exploitability is required, and it is a ceiling rather than a constant
+
+Two defects in one tag, and both of them are shapes this codebase refuses
+everywhere else.
+
+**It defaulted to 0.** `exploitability: int = 0` on `SecurityRule` meant a rule
+whose author never thought about the question silently asserted the
+misconfiguration was unexploitable — an absence reading as safe, which is the
+same overclaim as a PASS nobody earned and the exact thing the UNKNOWN/PASS
+distinction exists to prevent. It is now declared without a default, like
+`severity`: a rule that omits it raises `AttributeError` at import rather than
+quietly scoring 0.
+
+**It was flat across instances.** An NSG rule allowing RDP from the whole
+internet scored 5 whether it guarded a production jump box or nothing at all —
+on the engine whose entire premise is that the same misconfiguration means
+different things in different places. The distinction was already computed:
+`_attachment_evidence` records whether the group protects anything, AZ-CMP-001's
+own description contrasts itself with "an unattached NSG rule", and the note on
+`ResourceRelationship` says an unattached NSG allowing RDP is noise. It reached
+the evidence and never reached the score.
+
+So `RuleResult` now carries an optional `exploitability`, and the class value
+becomes the **worst** instance of that misconfiguration rather than every
+instance of it. Three rules step down where they can already tell:
+
+- an NSG rule protecting nothing → 1. Nobody can connect to a machine it does
+  not guard, so what is left is a latent mistake, real and worth fixing before
+  something is attached to it.
+- a storage account open to every network but with anonymous blob access off →
+  3. A key or a SAS token is still required, which is an attacker who already
+  has a credential rather than one with a browser.
+- a database whose only over-broad firewall rule is Azure's `0.0.0.0-0.0.0.0`
+  shortcut → 3. Every Azure tenant is a serious and usually unintended gap, and
+  it is not the open internet.
+
+**Down only.** `effective_exploitability` clamps to `0..tag`, so a rule can
+never claim an instance is worse than its own tuned value. That number is the
+starting value `RULE_ENGINE.md` §5 says to tune against real environments; a
+rule able to raise it per finding would be retuning itself in the dark, one
+finding at a time. A mistaken override can therefore only understate — the
+direction that costs a customer nothing the severity has not already told them.
+
+The starting values themselves are unchanged. Retuning them wants the real
+environments the doc asks for, and this change is about the mechanism.
+
+The scale is now written down (`RULE_ENGINE.md` §5) in terms of what the
+attacker must already have, from "nothing, anonymous, today" at 5 to "weakens
+detection rather than enabling anything" at 1. Eleven magic integers with no
+stated basis could not be reviewed; 4 versus 5 is now a question with an answer.
+
+`_upsert_risk` reads the exploitability from the scored inputs rather than from
+the rule, so the number shown on the detail page is the number the arithmetic
+used.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

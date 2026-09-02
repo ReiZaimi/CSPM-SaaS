@@ -301,3 +301,47 @@ async def test_an_ungrouped_rule_still_gets_a_risk_each() -> None:
     session, _ = await persist(times=1)
 
     assert session.of_type(Risk)[0].scenario_key is None
+
+
+# --------------------------------------------------------- the exploitability
+async def test_a_stepped_down_exploitability_reaches_the_score() -> None:
+    """The tag is a ceiling, and the ceiling is not always what gets scored.
+
+    A rule that establishes this instance is less exploitable than its worst
+    case -- an NSG rule protecting nothing, a storage account open to every
+    network but not to anonymous readers -- must have that reach the risk row,
+    or the distinction is computed and thrown away.
+    """
+    rule = AzureExposedComputeRule()
+    target = resource()
+    session = FakeSession()
+    pipeline = ScanPipeline(uuid.uuid4())
+    org_id = uuid.uuid4()
+    scan = Scan(organization_id=org_id, status="QUEUED")  # type: ignore[arg-type]
+    scan.id = uuid.uuid4()
+
+    await pipeline._persist_findings(
+        session,  # type: ignore[arg-type]
+        org_id,
+        scan,
+        EvaluationReport(
+            failures=[
+                EvaluatedResult(
+                    rule=rule,
+                    result=RuleResult.failed(exploitability=1),
+                    resource=target,
+                )
+            ],
+            rules_run=1,
+        ),
+        {target.provider_resource_id: uuid.uuid4()},
+        datetime.now(UTC),
+        account_ids=[uuid.uuid4()],
+        connection_id=None,
+    )
+
+    risk = session.of_type(Risk)[0]
+    assert int(risk.exploitability) == 1
+    assert rule.exploitability > 1, "the class tag is the ceiling it stepped down from"
+    # And the arithmetic on the detail page is the arithmetic that ran.
+    assert risk.score_breakdown["components"]["exploitability"]["value"] == 1.0
