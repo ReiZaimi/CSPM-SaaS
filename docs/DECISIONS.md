@@ -1512,6 +1512,50 @@ and still land where they should — two Criticals is amber at 60, five is red a
 
 ---
 
+## 46. The security score charges for context CloudGuard established, not context it guessed at
+
+`RISK_ENGINE.md` §3 has always said coverage is reported beside the score and
+not folded into it. Half of that was true. A check that reaches no verdict
+raises no finding, so evidence coverage genuinely never reached the number. But
+§1 scores an UNKNOWN criticality, sensitivity or exposure at 3.5 — just under
+High — and that band drove the deduction. An estate nobody had labelled was
+therefore told its posture was worse, on the strength of what CloudGuard could
+not work out rather than anything about the customer's risk, on the same
+dashboard that promises the opposite.
+
+The cautious 3.5 is not the mistake and has not changed. It is what stops the
+cheapest route to a good score being to tag nothing, and an unclassified
+production database must never sort below a labelled dev box. The mistake was
+using one number for two jobs.
+
+So the scorer produces both. `risk_score` / `risk_level` rank, cautiously, and
+still drive the risks list, the top-risks panel and the band distribution.
+`known_score` / `known_risk_level` take every UNKNOWN input at the LOW floor —
+not zero, because an asset is at least a low-criticality asset — and the org
+Security Score deducts on those. For a fully classified asset the two are
+identical, so nothing changes for a customer who has done the labelling.
+
+Recomputed rather than discounted: the weights are not uniform, so which
+component was unknown changes how much it mattered, and a blanket multiplier
+would get that wrong in both directions.
+
+`known_risk_level` is NULL on scenario risks, and NULL means "not computed"
+rather than "no risk" — a route is a statement about wiring rather than about an
+asset's context, and it never reaches the org score because the findings it
+groups already do. The band queries coalesce to `risk_level`, which also leaves
+rows written before migration 0022 scoring exactly as they did rather than
+being silently re-banded.
+
+**The consequence is a visible one, and it is the point.** Untagged estates
+score higher than they did, immediately, without anyone fixing anything. What
+replaces the deduction is a sentence the customer can act on: `coverage.context`
+counts the open risks sitting on unclassified assets, shown on the dashboard
+beside the evidence-coverage ring and printed on the cover of every PDF, with a
+link to the subscription context declarations in Settings. Silently deducting
+told them nothing and gave them nothing to do.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

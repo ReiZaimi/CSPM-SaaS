@@ -28,7 +28,7 @@ function dashboard(overrides: Partial<Dashboard> = {}): Dashboard {
     verified_resolved_last_30_days: 3,
     remediation_rate: 0.3,
     top_risks: [],
-    coverage: { ratio: 0.9, unknown: 1, conclusive: 19 },
+    coverage: { ratio: 0.9, unknown: 1, conclusive: 19, context: { unclassified: 0, classified: 0, ratio: 1 } },
     evidence_freshness: null,
     last_scan: {
       id: "s-1",
@@ -145,6 +145,7 @@ describe("DashboardPage", () => {
             { name: "identity", readings: 4, incomplete: 3 },
             { name: "network", readings: 6, incomplete: 0 },
           ],
+          context: { unclassified: 0, classified: 0, ratio: 1 },
         },
       }),
     );
@@ -159,7 +160,7 @@ describe("DashboardPage", () => {
     // UNKNOWN is not a fifth severity and is not a pass. It belongs in the same
     // glance as the problem counts, because a reader tallying what is wrong has
     // to see what could not be answered.
-    mount(dashboard({ coverage: { ratio: 0.5, unknown: 7, conclusive: 7 } }));
+    mount(dashboard({ coverage: { ratio: 0.5, unknown: 7, conclusive: 7, context: { unclassified: 0, classified: 0, ratio: 1 } } }));
 
     const unknown = await screen.findByRole("link", { name: /No verdict/ });
     expect(unknown).toHaveAttribute("href", "/scans");

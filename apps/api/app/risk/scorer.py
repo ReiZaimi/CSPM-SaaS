@@ -31,20 +31,55 @@ class ScoredRisk:
     business_impact: float
     breakdown: dict[str, Any]
     inputs: RiskInputs
+    # The same finding scored over what CloudGuard actually established, with
+    # every UNKNOWN input taken at the bottom of the scale instead of just under
+    # High. Always less than or equal to ``score``, and equal to it whenever the
+    # asset's context is fully known.
+    #
+    # Two numbers because they answer two questions. ``score`` ranks: an
+    # unclassified production database must not sort below a tagged dev box, so
+    # missing context is treated cautiously. This one is what CloudGuard can
+    # *demonstrate*, and it is what the org security score charges for -- a
+    # posture number moved by CloudGuard's own blind spots is measuring the
+    # wrong thing (RISK_ENGINE.md section 3).
+    #
+    # ``None`` where the question does not apply. A scenario is a statement
+    # about a route rather than about one asset's context, and it never reaches
+    # the org score, so inventing a second number for it would be a claim
+    # nobody made.
+    known_score: float | None = None
+    known_level: Level | None = None
 
 
 class RiskScorer:
     def __init__(self, config: RiskEngineConfig | None = None) -> None:
         self.config = config or DEFAULT_RISK_CONFIG
 
+    def _level_value(self, level: Level, *, cautious: bool) -> float:
+        """What a context level is worth to the formula.
+
+        ``cautious`` is how a finding is *ranked*: UNKNOWN scores just under
+        High, so an unclassified asset never sorts below one somebody labelled
+        as unimportant. Without it, the cheapest way to look secure would be to
+        tag nothing.
+
+        The other reading is what CloudGuard can *demonstrate*: UNKNOWN takes
+        the bottom of the scale, because "we could not work this out" is not
+        evidence of anything. Not zero -- an asset is at least a low-criticality
+        asset -- and never used for ranking.
+        """
+        if level is Level.UNKNOWN and not cautious:
+            return self.config.level_scores[Level.LOW]
+        return self.config.level_scores[level]
+
     def score(self, inputs: RiskInputs) -> ScoredRisk:
         cfg = self.config
         w = cfg.weights
 
         severity = cfg.severity_scores[inputs.severity]
-        criticality = cfg.level_scores[inputs.asset_criticality]
-        sensitivity = cfg.level_scores[inputs.data_sensitivity]
-        exposure = cfg.level_scores[inputs.internet_exposure]
+        criticality = self._level_value(inputs.asset_criticality, cautious=True)
+        sensitivity = self._level_value(inputs.data_sensitivity, cautious=True)
+        exposure = self._level_value(inputs.internet_exposure, cautious=True)
         # Clamped rather than trusted: exploitability is a hand-set per-rule tag.
         exploitability = float(max(0, min(5, inputs.exploitability)))
 
@@ -64,6 +99,8 @@ class RiskScorer:
         score = round(weighted_sum * cfg.scale_factor, 2)
         score = max(0.0, min(100.0, score))
 
+        known_score = self._known_score(inputs, severity, exploitability)
+
         breakdown = {
             name: {
                 "value": round(value, 2),
@@ -82,9 +119,42 @@ class RiskScorer:
                 "weighted_sum": round(weighted_sum, 4),
                 "scale_factor": cfg.scale_factor,
                 "total": score,
+                # Recorded beside the arithmetic it differs from, so a customer
+                # asking why the org score did not fall as far as this risk
+                # suggests has the second number in front of them rather than
+                # having to be told a rule exists.
+                "known_total": known_score,
             },
             inputs=inputs,
+            known_score=known_score,
+            known_level=self.band(known_score),
         )
+
+    def _known_score(
+        self, inputs: RiskInputs, severity: float, exploitability: float
+    ) -> float:
+        """The same formula over established context only.
+
+        A second pass rather than a scaling of the first: the weights are not
+        uniform, so which component was unknown changes how much it mattered,
+        and a blanket discount would get that wrong in both directions.
+        """
+        cfg = self.config
+        w = cfg.weights
+        criticality = self._level_value(inputs.asset_criticality, cautious=False)
+        sensitivity = self._level_value(inputs.data_sensitivity, cautious=False)
+        exposure = self._level_value(inputs.internet_exposure, cautious=False)
+        business_impact = (criticality + sensitivity) / 2
+
+        weighted_sum = (
+            severity * w.severity
+            + criticality * w.asset_criticality
+            + sensitivity * w.data_sensitivity
+            + exposure * w.internet_exposure
+            + exploitability * w.exploitability
+            + business_impact * w.business_impact
+        )
+        return max(0.0, min(100.0, round(weighted_sum * cfg.scale_factor, 2)))
 
     def band(self, score: float) -> Level:
         for level, low, high in self.config.bands:

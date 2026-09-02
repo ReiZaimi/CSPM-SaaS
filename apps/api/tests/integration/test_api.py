@@ -549,6 +549,12 @@ class TestDashboard:
         # looked at.
         assert data["evidence_freshness"]["readings"] == 0
         assert data["evidence_freshness"]["stale_hours"] is None
+        # Nor about context. Nothing is open, so nothing is being guessed at.
+        assert data["coverage"]["context"] == {
+            "unclassified": 0,
+            "classified": 0,
+            "ratio": 1.0,
+        }
 
 
 class TestChangeFeed:

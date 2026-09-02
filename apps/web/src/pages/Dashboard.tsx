@@ -193,6 +193,7 @@ export function DashboardPage() {
         unknown={data.coverage.unknown}
         conclusive={data.coverage.conclusive}
         categories={data.coverage.categories}
+        context={data.coverage.context}
         gaps={gaps}
         freshness={data.evidence_freshness ?? null}
       />

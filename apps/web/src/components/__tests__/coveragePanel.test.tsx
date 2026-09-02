@@ -62,3 +62,46 @@ describe("collection failures", () => {
     expect(screen.getByText(/Access denied/)).toBeInTheDocument();
   });
 });
+
+describe("assets CloudGuard could not classify", () => {
+  it("states what the score is not charging for, and what to do about it", () => {
+    // The half of coverage the score used to spend silently. Missing evidence
+    // never becomes a finding; missing context did reach the number, because an
+    // unknown criticality ranks just under High so nothing hides behind a
+    // missing label. That caution belongs to the ordering, not the posture.
+    render(
+      <MemoryRouter>
+        <CoveragePanel
+          ratio={1}
+          unknown={0}
+          conclusive={12}
+          context={{ unclassified: 9, classified: 3, ratio: 0.25 }}
+          freshness={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("9 of 12 open risks")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /Tell CloudGuard what these subscriptions hold/ }),
+    ).toHaveAttribute("href", "/settings");
+  });
+
+  it("says nothing when every open risk sits on a classified asset", () => {
+    // A panel that reported "0 unclassified" would be a line of noise on the
+    // estates that did the work.
+    render(
+      <MemoryRouter>
+        <CoveragePanel
+          ratio={1}
+          unknown={0}
+          conclusive={12}
+          context={{ unclassified: 0, classified: 12, ratio: 1 }}
+          freshness={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText(/could not classify/)).not.toBeInTheDocument();
+  });
+});

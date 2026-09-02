@@ -180,6 +180,114 @@ def test_band_boundaries(score: float, expected: Level) -> None:
     assert scorer.band(score) == expected
 
 
+class TestKnownContext:
+    """The second number: what the score can be charged for.
+
+    The formula ranks UNKNOWN context just under High so an unlabelled asset
+    never sorts below a labelled one (section 1). That caution is right for an
+    ordering and wrong for a posture number -- section 3 says coverage is
+    reported beside the score rather than folded into it, and the cautious band
+    was folding it in through the back door: an estate nobody had labelled was
+    told its posture was worse, when the honest sentence is that CloudGuard
+    cannot yet tell.
+    """
+
+    def inputs(self, **overrides: object) -> RiskInputs:
+        base = {
+            "severity": Severity.CRITICAL,
+            "asset_criticality": Level.CRITICAL,
+            "data_sensitivity": Level.CRITICAL,
+            "internet_exposure": Level.CRITICAL,
+            "exploitability": 5,
+        }
+        base.update(overrides)
+        return RiskInputs(**base)  # type: ignore[arg-type]
+
+    def test_a_fully_classified_asset_scores_the_same_either_way(self) -> None:
+        """Nothing changes for a customer who has labelled their estate. The
+        two numbers only diverge where CloudGuard is guessing."""
+        scored = scorer.score(self.inputs())
+
+        assert scored.known_score == scored.score
+        assert scored.known_level == scored.level
+
+    def test_missing_context_is_not_charged_for(self) -> None:
+        scored = scorer.score(
+            self.inputs(
+                asset_criticality=Level.UNKNOWN,
+                data_sensitivity=Level.UNKNOWN,
+                internet_exposure=Level.UNKNOWN,
+            )
+        )
+
+        # Still ranked at the top, so it is not buried under labelled findings.
+        assert scored.level == Level.CRITICAL
+        # But the org score is charged for what was established, which here is
+        # the rule's own severity and exploitability and nothing else.
+        assert scored.known_score < scored.score
+        assert scored.known_level == Level.MEDIUM
+
+    def test_the_established_part_still_counts(self) -> None:
+        """Flooring an unknown is not discarding the whole finding. A publicly
+        reachable store with unclassified contents is public either way."""
+        scored = scorer.score(
+            self.inputs(
+                asset_criticality=Level.UNKNOWN,
+                data_sensitivity=Level.UNKNOWN,
+            )
+        )
+
+        assert scored.known_level == Level.HIGH
+
+    @pytest.mark.parametrize(
+        "level",
+        [Level.LOW, Level.MEDIUM, Level.HIGH, Level.CRITICAL, Level.UNKNOWN],
+    )
+    def test_the_known_score_never_exceeds_the_ranked_one(self, level: Level) -> None:
+        """The invariant. Caution may only ever add."""
+        scored = scorer.score(
+            self.inputs(
+                asset_criticality=level,
+                data_sensitivity=level,
+                internet_exposure=level,
+            )
+        )
+
+        assert scored.known_score is not None
+        assert scored.known_score <= scored.score
+
+    def test_an_unknown_floors_rather_than_vanishing(self) -> None:
+        """LOW, not zero: an asset is at least a low-criticality asset, and
+        scoring it at nothing would claim it does not matter at all."""
+        unknown = scorer.score(
+            self.inputs(
+                asset_criticality=Level.UNKNOWN,
+                data_sensitivity=Level.UNKNOWN,
+                internet_exposure=Level.UNKNOWN,
+            )
+        )
+        low = scorer.score(
+            self.inputs(
+                asset_criticality=Level.LOW,
+                data_sensitivity=Level.LOW,
+                internet_exposure=Level.LOW,
+            )
+        )
+
+        assert unknown.known_score == low.score
+
+    def test_a_scenario_has_no_second_band(self) -> None:
+        """A route is a statement about how an environment is wired rather than
+        about one asset's context, and it never reaches the org score -- the
+        findings it groups are already counted there."""
+        scenario = scorer.scenario_score(
+            [80.0], hops=2, entry_exposure=Level.HIGH, target_sensitivity=Level.HIGH
+        )
+
+        assert scenario.known_score is None
+        assert scenario.known_level is None
+
+
 class TestSecurityScore:
     def test_clean_environment_scores_100(self) -> None:
         assert scorer.security_score([]) == 100

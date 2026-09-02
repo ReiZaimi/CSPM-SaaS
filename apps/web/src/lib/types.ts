@@ -329,6 +329,17 @@ export interface Dashboard {
      * support "none of them are public".
      */
     categories?: { name: string; readings: number; incomplete: number }[];
+    /**
+     * The other half of coverage. A check that reached no verdict is missing
+     * evidence and never becomes a finding, so it never touched the score. An
+     * asset whose criticality or data sensitivity CloudGuard could not
+     * establish is missing *context*, and the risk formula ranks that just
+     * under High so an unlabelled asset never sorts below a labelled one — a
+     * caution that is right for the ordering and must not reach the posture
+     * number. So the score charges the established band, and what the caution
+     * would have added is reported here: label these assets and the score moves.
+     */
+    context: { unclassified: number; classified: number; ratio: number };
   };
   /**
    * How recently the provider was actually read, which is a different question

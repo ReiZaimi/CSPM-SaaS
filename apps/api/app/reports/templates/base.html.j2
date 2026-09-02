@@ -55,6 +55,23 @@
 </div>
 {% endif %}
 
+{% if report.evidence.unclassified_risks > 0 %}
+<div class="note">
+  <p class="note-title">
+    {{ report.evidence.unclassified_risks }} of
+    {{ report.evidence.unclassified_risks + report.evidence.classified_risks }}
+    open risks sit on assets of unknown business context
+  </p>
+  <p class="small">
+    CloudGuard could not establish how critical those assets are or how
+    sensitive the data they hold. They are ranked here as though they matter, so
+    nothing important is hidden behind a missing label — but the security score
+    is charged only for what was established, and it will move once these
+    subscriptions are described.
+  </p>
+</div>
+{% endif %}
+
 {#
   What this document does not contain. A reader handed a report with no
   compliance section should be told it was left out rather than conclude that

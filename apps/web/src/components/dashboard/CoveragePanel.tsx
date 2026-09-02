@@ -29,10 +29,19 @@ const Donut = lazy(() =>
  * let the reader assume it was complete — which is how a customer ends up
  * trusting an 84 computed over the half of their estate CloudGuard could read.
  *
- * Three separate facts, and they are not interchangeable: what fraction of
+ * Four separate facts, and they are not interchangeable: what fraction of
  * checks reached a verdict, which categories of evidence could not be read,
- * and how old the readings are. A fully covered estate can be three weeks
- * stale, and a fresh reading can cover half of one.
+ * how old the readings are, and how much of the estate CloudGuard could not
+ * classify. A fully covered estate can be three weeks stale, and a fresh
+ * reading can cover half of one.
+ *
+ * The last of those is the one the score used to quietly spend. Missing
+ * evidence never becomes a finding, so it never reached the number; missing
+ * *context* did, because the risk formula ranks an unknown criticality just
+ * under High so an unlabelled asset never sorts below a labelled one. That
+ * caution belongs to the ordering. Charging a posture number for it told a
+ * customer their estate was worse when the honest sentence was that CloudGuard
+ * could not tell — so it is stated here, as work they can do, instead.
  *
  * The percentage is never phrased as security. 94% coverage is not 94% secure;
  * it is the share of checks that reached *any* verdict, pass or fail.
@@ -42,6 +51,7 @@ export function CoveragePanel({
   unknown,
   conclusive,
   categories = [],
+  context,
   gaps = [],
   freshness,
 }: {
@@ -49,6 +59,7 @@ export function CoveragePanel({
   unknown: number;
   conclusive: number;
   categories?: Category[];
+  context?: { unclassified: number; classified: number; ratio: number };
   gaps?: [string, string][];
   freshness?: { readings: number; stale_hours: number | null; unusable: number } | null;
 }) {
@@ -149,6 +160,27 @@ export function CoveragePanel({
             <CategoryChip key={category.name} category={category} />
           ))}
         </ul>
+      )}
+
+      {context && context.unclassified > 0 && (
+        <div className="border-t border-dashed px-5 py-3">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {context.unclassified} of{" "}
+              {context.unclassified + context.classified} open risks
+            </span>{" "}
+            sit on assets CloudGuard could not classify. They are ranked as
+            though they matter, so nothing important hides behind a missing
+            label — but the score is only charged for what was established.{" "}
+            <Link
+              to="/settings"
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              Tell CloudGuard what these subscriptions hold
+            </Link>{" "}
+            and the number will move to match.
+          </p>
+        </div>
       )}
 
       {gaps.length > 0 && (

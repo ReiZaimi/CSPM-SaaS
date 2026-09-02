@@ -9,7 +9,7 @@ production database" (RISK_ENGINE.md section 3).
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import (
@@ -44,9 +44,26 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
     # across its findings, and a rule that groups its findings has one risk with
     # forty. Counting join rows would take the score to zero over the single
     # unwritten policy that grouping exists to state once.
+    #
+    # Two bands per risk, and they are not the same question. ``risk_level``
+    # ranks, cautiously: an unclassified production database must not sort below
+    # a dev box somebody tagged, so an UNKNOWN input scores just under High.
+    # ``known_risk_level`` is what CloudGuard can demonstrate, with unknowns at
+    # the bottom of the scale, and it is what the score charges for -- section 3
+    # of RISK_ENGINE.md says coverage is reported beside the score and not
+    # folded into it, and the cautious band was folding it in through the back
+    # door. An estate nobody has labelled was being told its posture was worse,
+    # when the honest sentence is that CloudGuard cannot yet tell.
+    #
+    # Coalesced, so risks written before the column existed keep scoring exactly
+    # as they did rather than being silently re-banded by a migration.
     band_rows = (
         await session.execute(
-            select(Risk.risk_level, func.count(func.distinct(Risk.id)))
+            select(
+                Risk.risk_level,
+                func.coalesce(Risk.known_risk_level, Risk.risk_level),
+                func.count(func.distinct(Risk.id)),
+            )
             .join(RiskFinding, RiskFinding.risk_id == Risk.id)
             .join(Finding, Finding.id == RiskFinding.finding_id)
             .where(
@@ -54,14 +71,20 @@ async def build_dashboard(session: AsyncSession, organization_id: UUID) -> dict:
                 Risk.kind == RiskKind.FINDING,
                 Finding.status.in_(open_statuses),
             )
-            .group_by(Risk.risk_level)
+            .group_by(
+                Risk.risk_level,
+                func.coalesce(Risk.known_risk_level, Risk.risk_level),
+            )
         )
     ).all()
-    band_counts = {Level(level): int(count) for level, count in band_rows}
 
+    # The distribution shown to a reader is the ranked one, because it is the
+    # one the risks list is sorted by. Only the deduction uses the other.
+    band_counts: dict[Level, int] = {}
     open_levels: list[Level] = []
-    for level, count in band_counts.items():
-        open_levels.extend([level] * count)
+    for level, known, count in band_rows:
+        band_counts[Level(level)] = band_counts.get(Level(level), 0) + int(count)
+        open_levels.extend([Level(known)] * int(count))
     security_score = default_scorer.security_score(open_levels)
 
     severity_rows = (
@@ -404,9 +427,30 @@ async def posture_history(
 async def _coverage(
     session: AsyncSession, organization_id: UUID, last_scan: Scan | None
 ) -> dict:
-    """Kept out of the security score, on purpose."""
+    """Kept out of the security score, on purpose — both halves of it.
+
+    Two different things can be missing, and only one of them was ever counted
+    here. A check that reached no verdict is missing *evidence*, and it never
+    becomes a finding, so it genuinely never touched the score. An asset whose
+    criticality or data sensitivity CloudGuard could not establish is missing
+    *context*, and that one did reach the score: the risk formula scores UNKNOWN
+    just under High so that an unlabelled asset never sorts below a labelled
+    one, and the band that caution produced was driving the deduction.
+
+    So the score now charges on ``known_risk_level`` instead, and what the
+    caution would have added is reported here rather than spent. The number
+    answers a question a customer can act on: how much of this posture is
+    CloudGuard guessing at, and how much would labelling those assets move it.
+    """
+    context = await _context_coverage(session, organization_id)
     if last_scan is None:
-        return {"ratio": None, "unknown": 0, "conclusive": 0, "categories": []}
+        return {
+            "ratio": None,
+            "unknown": 0,
+            "conclusive": 0,
+            "categories": [],
+            "context": context,
+        }
 
     totals = (
         await session.execute(
@@ -425,6 +469,48 @@ async def _coverage(
         "unknown": unknown,
         "conclusive": conclusive,
         "categories": await _coverage_categories(session, last_scan),
+        "context": context,
+    }
+
+
+async def _context_coverage(session: AsyncSession, organization_id: UUID) -> dict:
+    """How many open risks sit on assets CloudGuard could not classify.
+
+    Counted over risks rather than assets, because that is the unit the score is
+    computed from: an unclassified asset with nothing wrong on it costs the
+    customer nothing and is not worth reporting as a gap.
+
+    ``unclassified`` is any risk where at least one of the three context inputs
+    came out UNKNOWN. Not a ratio of inputs -- two thirds of a risk being known
+    does not make the risk two thirds classified, and the actionable sentence is
+    "these ones are guesses".
+    """
+    guessed = or_(
+        Risk.asset_criticality == Level.UNKNOWN,
+        Risk.data_sensitivity == Level.UNKNOWN,
+        Risk.internet_exposure == Level.UNKNOWN,
+    )
+    rows = (
+        await session.execute(
+            select(guessed, func.count(func.distinct(Risk.id)))
+            .join(RiskFinding, RiskFinding.risk_id == Risk.id)
+            .join(Finding, Finding.id == RiskFinding.finding_id)
+            .where(
+                Risk.organization_id == organization_id,
+                Risk.kind == RiskKind.FINDING,
+                Finding.status.in_([FindingStatus.OPEN, FindingStatus.IN_PROGRESS]),
+            )
+            .group_by(guessed)
+        )
+    ).all()
+
+    unclassified = sum(int(count) for unknown, count in rows if unknown)
+    classified = sum(int(count) for unknown, count in rows if not unknown)
+    total = unclassified + classified
+    return {
+        "unclassified": unclassified,
+        "classified": classified,
+        "ratio": round(classified / total, 4) if total else 1.0,
     }
 
 

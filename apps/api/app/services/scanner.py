@@ -2329,6 +2329,7 @@ class ScanPipeline:
             "description": rule.rationale or rule.description,
             "risk_score": scored.score,
             "risk_level": scored.level,
+            "known_risk_level": scored.known_level,
             "severity": rule.severity.value,
             "asset_criticality": resource.criticality if resource else Level.UNKNOWN,
             "data_sensitivity": resource.data_sensitivity if resource else Level.UNKNOWN,
@@ -2422,7 +2423,11 @@ class ScanPipeline:
         # problem grouping exists to state once.
         band_rows = (
             await session.execute(
-                select(Risk.risk_level, func.count(func.distinct(Risk.id)))
+                select(
+                    Risk.risk_level,
+                    func.coalesce(Risk.known_risk_level, Risk.risk_level),
+                    func.count(func.distinct(Risk.id)),
+                )
                 .join(RiskFinding, RiskFinding.risk_id == Risk.id)
                 .join(Finding, Finding.id == RiskFinding.finding_id)
                 .where(
@@ -2430,7 +2435,10 @@ class ScanPipeline:
                     Risk.kind == RiskKind.FINDING,
                     Finding.status.in_(open_statuses),
                 )
-                .group_by(Risk.risk_level)
+                .group_by(
+                    Risk.risk_level,
+                    func.coalesce(Risk.known_risk_level, Risk.risk_level),
+                )
             )
         ).all()
 
@@ -2446,10 +2454,11 @@ class ScanPipeline:
             )
         ).scalar_one()
 
-        bands = {Level(level): int(count) for level, count in band_rows}
+        bands: dict[Level, int] = {}
         open_levels: list[Level] = []
-        for level, count in bands.items():
-            open_levels.extend([level] * count)
+        for level, known, count in band_rows:
+            bands[Level(level)] = bands.get(Level(level), 0) + int(count)
+            open_levels.extend([Level(known)] * int(count))
 
         return {
             "security_score": default_scorer.security_score(open_levels),
@@ -2636,6 +2645,11 @@ class ScanPipeline:
             ]
             risk.risk_score = scored.score
             risk.risk_level = scored.level
+            # None, and deliberately. A scenario is a statement about a route
+            # rather than about one asset's context, and it never reaches the
+            # org security score -- the findings it groups are already counted
+            # there. A second band for it would be a number nobody claimed.
+            risk.known_risk_level = scored.known_level
             risk.severity = Severity.HIGH.value
             risk.asset_criticality = path.target.criticality
             risk.data_sensitivity = target_sensitivity

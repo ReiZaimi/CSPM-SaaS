@@ -353,6 +353,13 @@ def _evidence(dashboard: dict) -> dict:
         # reached no verdict, and they are never a pass.
         "unknown": coverage["unknown"],
         "conclusive": coverage["conclusive"],
+        # The other half of coverage, and the half a reader of a PDF cannot go
+        # and look up. The score in this document is charged only for context
+        # CloudGuard established, so a document quoting the score without saying
+        # how much of the estate is unclassified would be quoting half a
+        # sentence.
+        "unclassified_risks": coverage.get("context", {}).get("unclassified", 0),
+        "classified_risks": coverage.get("context", {}).get("classified", 0),
         "oldest_reading_at": freshness.get("oldest_at"),
         "newest_reading_at": freshness.get("newest_at"),
         "stale_hours": freshness.get("stale_hours"),

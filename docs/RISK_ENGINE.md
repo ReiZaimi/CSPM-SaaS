@@ -31,6 +31,21 @@ Applies to `severity`, `asset_criticality`, `data_sensitivity`, and `internet_ex
 | CRITICAL | 5 |
 | **UNKNOWN** | **3.5** — cautious: just under High, so missing context never reads as low risk. Applied consistently across all four components (extended from criticality/sensitivity to exposure for consistency — see open item in `PRODUCT_SPEC.md` §8). |
 
+### Two scores per finding
+
+The cautious UNKNOWN above is what makes the **ranking** honest: an unclassified production database must never sort below a dev box somebody labelled, or the cheapest way to look secure would be to tag nothing.
+
+It is the wrong number to charge an org-level posture for, so the scorer produces a second one alongside it:
+
+| | UNKNOWN input scores | Used for |
+|---|---|---|
+| `risk_score` / `risk_level` | 3.5 (just under High) | Ranking. The risks list, the dashboard's top risks, the band distribution. |
+| `known_score` / `known_risk_level` | 1.0 (the LOW floor) | The org Security Score in §3, and nothing else. |
+
+They are identical for any finding whose asset is fully classified — the second number only exists where CloudGuard is guessing. The floor is LOW rather than zero: an asset is at least a low-criticality asset, and scoring it at nothing would claim it does not matter at all.
+
+`known_risk_level` is NULL for scenario risks. A route is a statement about how an environment is wired rather than about one asset's context, and it never reaches the org score anyway — the findings it groups are already counted there.
+
 - **`exploitability`** — static per-rule tag, 0–5 (see the rule table in `RULE_ENGINE.md` §5).
 - **`business_impact`** — not manually set; **computed** as the average of `asset_criticality` and `data_sensitivity` scores.
 
@@ -95,7 +110,13 @@ Two properties of fitting the curve to an anchor rather than to a rate:
 
 Deductions key off each **risk's** band (asset-context-aware, §1 above), not the rule's raw severity: the same misconfiguration scores differently on a dev VM vs. a production database. One deduction per risk, so a grouped risk (§2) is charged once however many findings it holds.
 
-**Coverage/completeness** (how many rules/assets were actually evaluated vs. `UNKNOWN`, see `RULE_ENGINE.md` §2) is a **separate indicator**, not folded into the score — keeps "why is my score X?" answerable without also explaining coverage math. Whether this indicator gets a visible badge in the MVP dashboard is still open — see `PRODUCT_SPEC.md` §8.
+**Coverage is reported beside the score, never folded into it** — and there are two kinds of it.
+
+*Evidence coverage* (how many checks reached a verdict vs. `UNKNOWN`, see `RULE_ENGINE.md` §2) never touched the score in the first place: a check that reached no verdict raises no finding.
+
+*Context coverage* did, until it was fixed. The cautious UNKNOWN in §1 pushed unclassified assets into higher bands, and those bands drove the deductions — so an estate nobody had labelled was told its posture was worse, on the strength of CloudGuard's blind spot rather than the customer's risk, while this section claimed the opposite. Deductions now key off `known_risk_level`, and the gap is reported instead: `coverage.context` counts the open risks sitting on assets CloudGuard could not classify, on the dashboard and on the cover of every PDF report.
+
+That makes the caution actionable rather than punitive. "9 of 12 open risks sit on assets we cannot classify — describe those subscriptions and the score will move" is work a customer can do; a silently lower number was not.
 
 ---
 

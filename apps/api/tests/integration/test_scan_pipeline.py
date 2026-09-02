@@ -3115,6 +3115,75 @@ class TestTemporalModel:
         assert after == before
 
 
+class TestContextCoverage:
+    """What the score is not charging for.
+
+    The risk formula scores UNKNOWN context just under High, so an unlabelled
+    asset never sorts below a labelled one. That band used to drive the org
+    security score too, which meant an estate nobody had classified was told its
+    posture was worse -- CloudGuard's own blind spot spent as if it were the
+    customer's risk, on the same dashboard whose coverage panel promises that
+    coverage is reported beside the score and not folded into it.
+    """
+
+    async def test_the_score_charges_the_established_band_not_the_cautious_one(
+        self, replay, connected_account
+    ) -> None:
+        from app.risk.scorer import default_scorer
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            dashboard = await build_dashboard(session, org_id)
+        rows = await fetch(
+            "SELECT risk_level, known_risk_level FROM risks "
+            "WHERE organization_id = :o AND kind = 'FINDING'",
+            {"o": org_id},
+        )
+
+        assert rows, "the fixture estate has findings"
+        # Every risk carries both bands, and the established one is never the
+        # harsher of the two.
+        assert all(known is not None for _, known in rows)
+        cautious = default_scorer.security_score([Level(level) for level, _ in rows])
+        assert dashboard["security_score"] >= cautious
+
+    async def test_the_guessing_is_reported_rather_than_spent(
+        self, replay, connected_account
+    ) -> None:
+        """A number the customer can act on: label these assets and the score
+        will move. Silently deducting for them instead told them nothing."""
+        from app.services.dashboard import build_dashboard
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            context = (await build_dashboard(session, org_id))["coverage"]["context"]
+
+        assert context["unclassified"] + context["classified"] > 0
+        assert 0.0 <= context["ratio"] <= 1.0
+
+    async def test_a_scenario_risk_carries_no_established_band(
+        self, replay, connected_account
+    ) -> None:
+        """It never reaches the org score -- the findings it groups are already
+        counted there -- so a second band for it would be a number nobody
+        claimed."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        rows = await fetch(
+            "SELECT known_risk_level FROM risks "
+            "WHERE organization_id = :o AND kind <> 'FINDING'",
+            {"o": org_id},
+        )
+
+        assert all(known is None for (known,) in rows)
+
+
 class TestEvidenceFreshness:
     """How current the picture is, which is not what coverage says.
 

@@ -48,6 +48,20 @@ class Risk(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     risk_level: Mapped[Level] = mapped_column(
         StrEnumType(Level, 16), nullable=False, default=Level.LOW
     )
+    # The band this risk reaches on established context alone, with every
+    # UNKNOWN input taken at the bottom of the scale rather than just under
+    # High. What the org security score charges for.
+    #
+    # ``risk_level`` above ranks, and ranks cautiously so an unclassified
+    # production database never sorts below a tagged dev box. That caution is
+    # right for an ordering and wrong for a posture number: a score moved by
+    # what CloudGuard could not work out is measuring CloudGuard rather than the
+    # customer (RISK_ENGINE.md section 3).
+    #
+    # Nullable, and NULL means "not computed" rather than "no risk": scenario
+    # risks never reach the org score, and rows written before this column
+    # existed fall back to ``risk_level`` rather than being rewritten.
+    known_risk_level: Mapped[Level | None] = mapped_column(StrEnumType(Level, 16))
     status: Mapped[RiskStatus] = mapped_column(
         StrEnumType(RiskStatus, 16), nullable=False, default=RiskStatus.OPEN, index=True
     )

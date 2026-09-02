@@ -126,6 +126,49 @@ def report(**overrides) -> dict:
 # --- what the numbers are worth -------------------------------------------
 
 
+def test_unclassified_assets_are_declared_beside_the_score():
+    """A PDF is read away from the product, so a score quoted without saying how
+    much of the estate CloudGuard could not classify is half a sentence — and
+    the reader cannot go and look the other half up."""
+    html = render_html(
+        report(
+            dashboard={
+                "coverage": {
+                    "ratio": 0.9,
+                    "unknown": 3,
+                    "conclusive": 27,
+                    "context": {"unclassified": 9, "classified": 3, "ratio": 0.25},
+                }
+            }
+        )
+    )
+
+    # Whitespace-normalised: the template wraps the count across lines.
+    text = " ".join(body(html).split())
+
+    assert "9 of 12 open risks" in text
+    assert "unknown business context" in text
+    assert "charged only for what was established" in body(html)
+
+
+def test_a_fully_classified_estate_gets_no_such_note():
+    """Nothing to say is said by saying nothing."""
+    html = render_html(
+        report(
+            dashboard={
+                "coverage": {
+                    "ratio": 1.0,
+                    "unknown": 0,
+                    "conclusive": 30,
+                    "context": {"unclassified": 0, "classified": 12, "ratio": 1.0},
+                }
+            }
+        )
+    )
+
+    assert "unknown business context" not in body(html)
+
+
 def test_unknown_checks_are_named_and_are_not_a_pass():
     # The transformation this whole product exists to refuse. A report that
     # drops the checks that reached no verdict turns "we could not look" into
