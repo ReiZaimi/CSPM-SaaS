@@ -13,6 +13,7 @@ back up to the capture exactly -- so it is checked now, while both exist.
 """
 
 from app.connectors.azure.evidence import AzureEvidence
+from app.connectors.azure.plan import STORAGE_ENDPOINT
 from app.connectors.collection import CoverageReport, TaskResult
 from app.connectors.evidence import EvidenceCategory
 from app.core.enums import TaskOutcome
@@ -25,6 +26,7 @@ def result(key: AzureEvidence, outcome: TaskOutcome = TaskOutcome.COMPLETE) -> T
         category=key.category,
         outcome=outcome,
         permissions=("Microsoft.Storage/storageAccounts/read",),
+        endpoints=(STORAGE_ENDPOINT,),
     )
 
 
@@ -118,6 +120,23 @@ def test_coverage_records_the_permissions_a_reading_was_made_under() -> None:
     entry = report.to_json()["storage_accounts"]
     assert entry["permissions"] == ["Microsoft.Storage/storageAccounts/read"]
     assert entry["category"] == EvidenceCategory.STORAGE.value
+
+
+def test_coverage_records_what_the_reading_called_and_under_which_contract() -> None:
+    """The half ``permissions`` cannot answer.
+
+    A field absent from a stored capture is a setting nobody set, or an
+    api-version too old to return it. Only the contract tells them apart, and a
+    rule reading the second as the first raises a finding out of CloudGuard's
+    own staleness.
+    """
+    report = CoverageReport()
+    report.record(result(AzureEvidence.STORAGE_ACCOUNTS), {"storage_accounts": []})
+
+    entry = report.to_json()["storage_accounts"]
+    assert entry["endpoints"] == [
+        {"path": STORAGE_ENDPOINT.path, "api_version": STORAGE_ENDPOINT.api_version}
+    ]
 
 
 def test_the_payloads_stay_out_of_the_serialized_coverage() -> None:

@@ -1261,31 +1261,13 @@ class TestCollectionStatus:
             )
             assert rows[0][0] == task["finding_count"]
 
-    async def test_a_reading_records_what_it_called_and_under_which_contract(
-        self, replay, connected_account
-    ) -> None:
-        """The ambiguity this removes.
-
-        A field absent from a stored capture is a setting nobody set, or an
-        api-version too old to return it. Without the contract on the reading
-        those are the same row, and a rule reading the second as the first
-        raises a finding out of CloudGuard's own staleness.
-        """
-        from app.services.scans import collection_status
-
-        org_id, account_id = connected_account
-        scan_id = await run_scan(org_id, account_id)
-
-        async with service_session() as session:
-            scan = await session.get(Scan, scan_id)
-            status = await collection_status(session, scan)
-
-        described = [t for t in status["tasks"] if t["endpoints"]]
-        assert described, "no reading recorded what it called"
-        for task in described:
-            for endpoint in task["endpoints"]:
-                assert endpoint["path"].startswith("https://")
-                assert endpoint["api_version"]
+    # What a reading *called* is recorded from the plan's own declaration, and
+    # the recorded fixture predates it -- exactly as it predates `permissions`,
+    # noted in TestEvidence above for the same reason. A recording can only echo
+    # what was written into it, so asserting here would be this file checking
+    # its own fixture. The declaration lives in
+    # tests/unit/test_provider_endpoints.py and its journey into an evidence row
+    # in tests/unit/test_evidence_store.py, both against a real plan.
 
     async def test_each_reading_names_the_subscription_it_came_from(
         self, replay, connected_tenant

@@ -16,7 +16,10 @@ consequence is worse, because this one is shown to a customer as the answer to
 import re
 from pathlib import Path
 
+import httpx
+
 from app.connectors.azure import plan as plan_module
+from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.evidence import ProviderEndpoint
 
 CLIENT = (Path(plan_module.__file__).parent / "client.py").read_text()
@@ -150,3 +153,46 @@ def test_a_task_declaring_several_calls_records_all_of_them() -> None:
 def test_describe_reads_as_the_call_that_was_made() -> None:
     endpoint = ProviderEndpoint("https://example.test/things", "2023-01-01")
     assert endpoint.describe() == "https://example.test/things?api-version=2023-01-01"
+
+
+class _Tokens:
+    """Only ever held, never called: the plan is built here, not run."""
+
+    def arm_token(self) -> str:  # pragma: no cover - not reached
+        return "token"
+
+    def graph_token(self) -> str:  # pragma: no cover - not reached
+        return "token"
+
+
+def _plan() -> list:
+    builder = AzurePlanBuilder(
+        tokens=_Tokens(),  # type: ignore[arg-type]
+        subscription_id="00000000-0000-0000-0000-000000000000",
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _r: httpx.Response(200))
+        ),
+    )
+    return builder.build_account_plan() + builder.build_directory_plan()
+
+
+def test_every_collection_task_declares_what_it_calls() -> None:
+    """Asserted against a real plan rather than a recorded fixture.
+
+    The integration suite replays a recording, and a recording can only echo
+    what was written into it -- so a task's declared endpoints have to be
+    checked where the tasks are actually built. The same reason ``permissions``
+    is asserted in the unit suite rather than beside the pipeline.
+    """
+    undeclared = [t.key.value for t in _plan() if not t.endpoints]
+    assert not undeclared, (
+        "these tasks produce an evidence row recording no contract, which reads "
+        f"as a gap in CloudGuard's history rather than as one: {undeclared}"
+    )
+
+
+def test_a_task_reading_two_things_declares_both() -> None:
+    """A record naming one call describes a narrower read than the one made."""
+    by_key = {t.key.value: t for t in _plan()}
+    assert len(by_key["sql_servers"].endpoints) == 2
+    assert len(by_key["user_role_map"].endpoints) == 2
