@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import RelationshipType
 from app.domain.resource import CloudResource
-from app.graph import AssetGraph, Path
+from app.graph import AssetGraph, ChokePoint, Path
 from app.models.resource import ResourceRecord, ResourceRelationship
 
 
@@ -98,6 +98,44 @@ async def load_graph(session: AsyncSession, organization_id: UUID) -> AssetGraph
     ]
 
     return AssetGraph.build(resources, relationships)
+
+
+def serialize_choke_point(choke: ChokePoint, total_routes: int) -> dict:
+    """One link, what closes with it, and the honest denominator.
+
+    ``on_routes`` is carried beside ``severs`` rather than dropped, because the
+    gap between them is the useful part: a link sitting on twenty routes that
+    closes three is a link with a way round, and a customer who cut it expecting
+    twenty would rightly stop trusting the number.
+    """
+    return {
+        "description": choke.describe(),
+        "relationship": choke.step.relationship.value,
+        "source": {
+            "id": choke.step.source.provider_resource_id,
+            "name": choke.step.source.name,
+            "resource_type": choke.step.source.resource_type.value,
+        },
+        "target": {
+            "id": choke.step.target.provider_resource_id,
+            "name": choke.step.target.name,
+            "resource_type": choke.step.target.resource_type.value,
+        },
+        "severs": choke.severs,
+        "on_routes": choke.on_routes,
+        "total_routes": total_routes,
+        # What actually closes, named. A count is a claim; these are the claim's
+        # working, and they are what a customer checks it against.
+        "closes": [
+            {
+                "entry": path.entry.name,
+                "target": path.target.name,
+                "hops": path.hops,
+                "data_sensitivity": path.target.data_sensitivity.value,
+            }
+            for path in choke.severed
+        ],
+    }
 
 
 def serialize_path(path: Path) -> dict:

@@ -502,6 +502,13 @@ export const en = {
     cutHere: "Cut it here",
     cutHereDetail:
       "Removing this one link severs the route. Containment cannot be removed \u2014 a storage account has to live somewhere \u2014 so the fix is always an identity or a role.",
+    chokeTitle: "The changes that close the most",
+    chokeHelp:
+      "Every route below is one thing to read. These are the links holding several of them up at once \u2014 and each is usually not the fix any single route would have suggested on its own, because the shared link tends to sit in the middle while each route's own cheapest break is at its start.",
+    chokeSevers: "routes close",
+    chokeOf: "of",
+    chokeSitsOn:
+      "It sits on {on} \u2014 the rest have another way round, so cutting this does not close them.",
     entryPoints: "exposed assets",
     sensitiveTargets: "sensitive assets",
     exposure: "Exposure",

@@ -399,3 +399,102 @@ def test_an_asset_on_no_route_says_so_rather_than_guessing() -> None:
     # here is a fact about the graph, not an all-clear about the asset.
     assert environment().paths_through(QUIET_VM) == []
     assert environment().paths_through("/subscriptions/sub-1/nothing") == []
+
+
+# --------------------------------------------------------------- choke points
+SECOND_VM = f"{GROUP}/providers/Microsoft.Compute/virtualMachines/web-02"
+SECOND_IDENTITY = "/principals/mi-web-02"
+VAULT = f"{GROUP}/providers/Microsoft.KeyVault/vaults/secrets"
+
+
+def shared_hop() -> AssetGraph:
+    """Two exposed hosts, two identities, one role assignment between them and
+    everything worth taking.
+
+    The shape the whole analysis is for: each route's own cheapest break is its
+    first hop, and neither of those is the change worth making.
+    """
+    return AssetGraph.build(
+        [
+            node(SUB, ResourceType.SUBSCRIPTION),
+            node(GROUP, ResourceType.RESOURCE_GROUP),
+            node(VM, ResourceType.VIRTUAL_MACHINE, exposure=Level.CRITICAL),
+            node(SECOND_VM, ResourceType.VIRTUAL_MACHINE, exposure=Level.CRITICAL),
+            node(IDENTITY, ResourceType.SERVICE_PRINCIPAL),
+            node(STORAGE, ResourceType.STORAGE_ACCOUNT, sensitivity=Level.HIGH),
+            node(VAULT, ResourceType.UNKNOWN, sensitivity=Level.CRITICAL),
+        ],
+        [
+            (SUB, RelationshipType.CONTAINS, GROUP),
+            (GROUP, RelationshipType.CONTAINS, STORAGE),
+            (GROUP, RelationshipType.CONTAINS, VAULT),
+            (VM, RelationshipType.HAS_IDENTITY, IDENTITY),
+            (SECOND_VM, RelationshipType.HAS_IDENTITY, IDENTITY),
+            (IDENTITY, RelationshipType.GRANTS_ROLE, SUB),
+        ],
+    )
+
+
+def test_the_one_change_that_closes_the_most() -> None:
+    """Four routes -- two hosts, two targets -- and one role assignment holding
+    every one of them up. Neither host's own cheapest break is the answer."""
+    graph = shared_hop()
+    assert len(graph.attack_paths()) == 4
+
+    chokes = graph.choke_points()
+
+    assert chokes[0].describe() == "mi-jump-01 can act over sub-1"
+    assert chokes[0].severs == 4
+
+
+def test_a_route_with_a_way_round_is_not_counted_as_closed() -> None:
+    """Sitting on a route is not holding it up. A customer told four routes
+    close who then sees two remain stops believing the next number too.
+
+    Here jump-01 gains its own role assignment over the subscription, so it
+    reaches everything without the shared identity. That link now holds up only
+    web-02's two routes, and the analysis has to say two rather than four --
+    which counting the routes it sits on could not tell it.
+    """
+    graph = shared_hop()
+    graph._out.setdefault(VM, []).append((RelationshipType.GRANTS_ROLE, SUB))
+    assert len(graph.attack_paths()) == 4, "all four are still reachable"
+
+    shared = next(
+        c for c in graph.choke_points() if c.describe() == "mi-jump-01 can act over sub-1"
+    )
+
+    assert shared.severs == 2
+    assert {p.entry.name for p in shared.severed} == {"web-02"}
+
+
+def test_containment_is_never_a_candidate() -> None:
+    """A storage account has to live somewhere. Offering "stop the resource
+    group containing it" is a recommendation nobody can take."""
+    for choke in shared_hop().choke_points():
+        assert choke.step.relationship is not RelationshipType.CONTAINS
+
+
+def test_an_environment_with_no_routes_has_nothing_to_cut() -> None:
+    graph = AssetGraph.build([node(SUB, ResourceType.SUBSCRIPTION)], [])
+    assert graph.choke_points() == []
+
+
+def test_the_severed_routes_are_named_not_only_counted() -> None:
+    """A count is a claim; the routes are its working, and what a customer
+    checks it against."""
+    top = shared_hop().choke_points()[0]
+
+    assert {p.target.name for p in top.severed} == {"customerdata", "secrets"}
+    assert {p.entry.name for p in top.severed} == {"jump-01", "web-02"}
+
+
+def test_removing_a_link_leaves_the_graph_it_was_asked_about_alone() -> None:
+    """The analysis is a question, not a change. Asking it twice must give the
+    same answer."""
+    graph = shared_hop()
+    before = len(graph.attack_paths())
+
+    graph.choke_points()
+
+    assert len(graph.attack_paths()) == before

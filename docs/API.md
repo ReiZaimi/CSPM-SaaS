@@ -39,6 +39,7 @@ POST   /api/v1/findings/{id}/rescan
 GET    /api/v1/findings/{id}/attack-paths
 
 GET    /api/v1/attack-paths                GET  /api/v1/attack-paths/blast-radius/{id}
+GET    /api/v1/attack-paths/choke-points
 
 GET    /api/v1/rules                       GET  /api/v1/rules/{rule_id}
 GET    /api/v1/compliance                  GET  /api/v1/compliance/{framework_id}
@@ -168,6 +169,20 @@ per page its assets straddled, each time with a fraction of its findings.
 can drill in — `subscription_id=directory` is the tenant-scoped set, and
 `resource_group` compares case-insensitively because ARM treats `Prod` and
 `prod` as the same place.
+
+`/attack-paths/choke-points` answers a different question from the list: not
+which routes exist but which single change closes the most of them. `severs` is
+verified by removing the link and re-asking the whole question, so it is what
+actually closes; `on_routes` is the larger count of routes the link merely sits
+on, carried beside it because the gap is the point — a link on twenty routes
+that closes three is a link with a way round, and promising twenty would be a
+number the customer can check and find wrong. `closes` names the routes, because
+a count is a claim and those are its working.
+
+Its own endpoint rather than a field on the list, because it costs a full
+re-traversal per candidate and the list is read far more often than the question
+is asked. Only removable links are candidates — a storage account has to live
+somewhere, so containment is never offered.
 
 `/findings/{id}/attack-paths` answers whether this finding's asset stands on a
 route from an internet-facing asset to a sensitive one, and where on it —

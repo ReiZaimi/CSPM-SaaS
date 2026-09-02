@@ -47,6 +47,28 @@ async def list_attack_paths(
     )
 
 
+@router.get("/choke-points")
+async def list_choke_points(
+    session: DbSession,
+    tenant: Tenant,
+    limit: int = Query(default=5, le=20),
+) -> dict:
+    """The links worth cutting first, ranked by how many routes close with them.
+
+    A separate endpoint rather than a field on the list above, because it costs
+    a re-traversal per candidate and the list is read far more often than the
+    question is asked. A page that wants both asks for both.
+    """
+    graph = await graph_service.load_graph(session, tenant.organization_id)
+    total = len(graph.attack_paths())
+    chokes = graph.choke_points(limit=limit)
+
+    return envelope(
+        [graph_service.serialize_choke_point(choke, total) for choke in chokes],
+        {"total_routes": total},
+    )
+
+
 @router.get("/blast-radius/{resource_id:path}")
 async def blast_radius(
     resource_id: str, session: DbSession, tenant: Tenant

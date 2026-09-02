@@ -1687,6 +1687,54 @@ has been checked against a real tenant.
 
 ---
 
+## 49. Choke points: the one change, verified rather than counted
+
+The attack-path list ranks routes shortest-first, which is the right order for
+reading them and the wrong one for acting. Fifty routes are fifty things to
+read. "Remove this one role assignment and thirty-seven of them close" is one
+thing to do — and it is frequently not the fix any single route would have
+suggested, because each route's own `cheapest_break` is at its start while the
+link they all share sits in the middle.
+
+`AssetGraph.choke_points()` is two passes, and the second one is the whole
+point. Counting how many routes a link sits on takes a single walk and
+**overstates**: a link on twenty routes closes only the ones with no way round.
+So the leading candidates by containment are then checked by removing the link
+and re-running the entire traversal, comparing which (entry, target) pairs are
+still reachable. That is the only way to distinguish a route that is gone from
+one that has merely been made longer.
+
+Verified for the top few rather than for every candidate, because each check is
+a full re-traversal. Containment is an upper bound on severance, so the ordering
+that selects candidates can never skip a link that would sever more than a
+checked one.
+
+Both numbers are reported. `severs` is what closes and `on_routes` is what it
+sits on, and where they differ the UI says so — a customer told four routes
+close who then sees two remain stops believing the next number too. The severed
+routes are named as well as counted: a count is a claim, and those are its
+working.
+
+`CONTAINS` is never a candidate. A storage account has to live somewhere, so
+offering "stop the resource group containing it" is a recommendation nobody can
+take — the same reason `Path.cheapest_break` skips it.
+
+Attack paths only, not escalation chains. They answer a different question, and
+one count spanning both would make "routes" mean two things in a single
+sentence.
+
+Its own endpoint and its own query, fetched only once the page has routes to be
+about. It costs a re-traversal per candidate, and the list is read far more often
+than the question is asked.
+
+**Not wired into the remediation queue.** A choke point is a change to make and
+frequently corresponds to no finding at all — the shared role assignment may be
+perfectly ordinary in isolation. Turning one into a queue item would mean
+minting work with no finding behind it, which is a decision about what the queue
+*is*, not a detail of this analysis.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

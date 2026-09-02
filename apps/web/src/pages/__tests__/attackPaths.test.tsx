@@ -14,12 +14,12 @@
  * go and cut.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AttackPathsPage } from "../AttackPaths";
 import { api } from "@/lib/api";
-import type { AttackPath } from "@/lib/types";
+import type { AttackPath, ChokePoint } from "@/lib/types";
 
 const PATH: AttackPath = {
   entry: {
@@ -77,8 +77,18 @@ const PATH: AttackPath = {
   },
 };
 
-function mount(paths: AttackPath[], meta: Record<string, number>) {
-  vi.spyOn(api, "get").mockResolvedValue({ data: paths, meta });
+function mount(
+  paths: AttackPath[],
+  meta: Record<string, number>,
+  chokes: ChokePoint[] = [],
+) {
+  vi.spyOn(api, "get").mockImplementation((url: string) =>
+    Promise.resolve(
+      url.includes("/choke-points")
+        ? { data: chokes, meta: { total_routes: meta.total } }
+        : { data: paths, meta },
+    ) as never,
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -158,5 +168,73 @@ describe("AttackPathsPage", () => {
         screen.getByText("Nothing exposed can reach anything sensitive"),
       ).toBeInTheDocument(),
     );
+  });
+
+  it("leads with the one change that closes the most routes", async () => {
+    // The list ranks routes, which is the right order for reading them and the
+    // wrong one for acting: fifty routes are fifty things to read, and one role
+    // assignment holding them up is one thing to do.
+    mount([PATH], { total: 4, entry_points: 2, sensitive_targets: 2 }, [
+      {
+        description: "mi-jump-01 can act over sub-1",
+        relationship: "grants_role",
+        source: { id: "mi", name: "mi-jump-01", resource_type: "service_principal" },
+        target: { id: "sub", name: "sub-1", resource_type: "subscription" },
+        severs: 4,
+        on_routes: 4,
+        total_routes: 4,
+        closes: [
+          { entry: "jump-01", target: "customerdata", hops: 4, data_sensitivity: "HIGH" },
+        ],
+      },
+    ]);
+
+    const panel = (
+      await screen.findByText("The changes that close the most")
+    ).closest("[data-slot='card']") as HTMLElement;
+
+    // Scoped: the route list below repeats the same link, deliberately, so the
+    // reader can see which hop it is.
+    expect(within(panel).getByText("mi-jump-01 can act over sub-1")).toBeInTheDocument();
+    expect(within(panel).getByText("4")).toBeInTheDocument();
+    expect(within(panel).getByText(/of 4 routes close/)).toBeInTheDocument();
+    // Named, not just counted: the count is a claim and these are its working.
+    expect(within(panel).getByText("jump-01 → customerdata")).toBeInTheDocument();
+  });
+
+  it("says when a link sits on more routes than it closes", async () => {
+    // A customer told four routes close who then sees two remain stops
+    // believing the next number too.
+    mount([PATH], { total: 4, entry_points: 2, sensitive_targets: 2 }, [
+      {
+        description: "mi-jump-01 can act over sub-1",
+        relationship: "grants_role",
+        source: { id: "mi", name: "mi-jump-01", resource_type: "service_principal" },
+        target: { id: "sub", name: "sub-1", resource_type: "subscription" },
+        severs: 2,
+        on_routes: 4,
+        total_routes: 4,
+        closes: [
+          { entry: "web-02", target: "customerdata", hops: 3, data_sensitivity: "HIGH" },
+        ],
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText(/another way round/)).toBeInTheDocument(),
+    );
+  });
+
+  it("says nothing about cutting when there is nothing to cut", async () => {
+    mount([], { total: 0, entry_points: 3, sensitive_targets: 0 });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Nothing has been classified as sensitive"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("The changes that close the most"),
+    ).not.toBeInTheDocument();
   });
 });

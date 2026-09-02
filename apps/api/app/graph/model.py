@@ -99,6 +99,34 @@ class Path:
         return None
 
 
+@dataclass(frozen=True)
+class ChokePoint:
+    """One removable link, and the routes that stop existing without it.
+
+    The question the attack-path list cannot answer however carefully it is
+    sorted. Fifty routes are fifty things to read; "remove this one role
+    assignment and thirty-seven of them close" is one thing to do, and it is
+    frequently not the fix any single route would have suggested on its own --
+    the shared hop is usually in the middle, while each route's own cheapest
+    break is at its start.
+    """
+
+    step: PathStep
+    #: Routes that no longer exist once this link is gone. The real answer.
+    severed: tuple[Path, ...]
+    #: Routes this link sits on, which is larger whenever another way round
+    #: exists. Kept because the gap between the two is the interesting part:
+    #: a link on twenty routes that closes three is a link with alternates.
+    on_routes: int
+
+    @property
+    def severs(self) -> int:
+        return len(self.severed)
+
+    def describe(self) -> str:
+        return self.step.describe()
+
+
 @dataclass
 class AssetGraph:
     """Assets and the edges between them, for one scan.
@@ -267,6 +295,108 @@ class AssetGraph:
         # exposed host whose own identity can grant roles -- is both likelier and
         # cheaper to explain than one that arrives through three intermediaries.
         return sorted(chains, key=lambda p: (p.hops, p.target.name))
+
+    def choke_points(
+        self, *, limit: int = 5, max_depth: int = MAX_DEPTH
+    ) -> list["ChokePoint"]:
+        """The links worth cutting first, ranked by how much closes with them.
+
+        Two passes, because the cheap answer is the wrong one. Counting how many
+        routes a link sits on takes one walk and *overstates*: a link on twenty
+        routes closes only the ones with no way round, and reporting the
+        containment as though it were the severance would promise a customer a
+        result they will not get. So the leading candidates are then checked by
+        removing the link and re-asking the whole question -- the only way to
+        know that a route is gone rather than merely re-routed.
+
+        Verified for the top few rather than for every candidate, because each
+        check is a full re-traversal. The ordering that selects them is
+        containment, which is an upper bound on severance, so a link that could
+        sever more than a checked one is always itself checked first.
+
+        Structural links are not candidates. A storage account has to live
+        somewhere, so ``CONTAINS`` cannot be removed and offering it would be a
+        recommendation nobody can take -- the same reason
+        :meth:`Path.cheapest_break` skips it.
+
+        Attack paths only. Escalation chains answer a different question, and a
+        single count covering both would make "routes" mean two things in one
+        sentence.
+        """
+        paths = self.attack_paths(max_depth)
+        if not paths:
+            return []
+
+        # Every removable hop, and the routes it sits on. Every hop rather than
+        # each route's own cheapest break: the link several routes share is
+        # usually in the middle, and looking only at the breaks would rank the
+        # entry points -- which are the answer for one route each.
+        containment: dict[tuple[str, str, str], list[Path]] = {}
+        steps: dict[tuple[str, str, str], PathStep] = {}
+        for path in paths:
+            for step in path.steps:
+                if step.relationship is RelationshipType.CONTAINS:
+                    continue
+                key = (
+                    step.source.provider_resource_id,
+                    step.relationship.value,
+                    step.target.provider_resource_id,
+                )
+                containment.setdefault(key, []).append(path)
+                steps.setdefault(key, step)
+
+        reachable_now = {
+            (p.entry.provider_resource_id, p.target.provider_resource_id) for p in paths
+        }
+        ranked = sorted(
+            containment.items(),
+            key=lambda item: (-len(item[1]), steps[item[0]].describe()),
+        )
+
+        found: list[ChokePoint] = []
+        for key, on in ranked[:limit]:
+            still = {
+                (p.entry.provider_resource_id, p.target.provider_resource_id)
+                for p in self._without(key).attack_paths(max_depth)
+            }
+            gone = reachable_now - still
+            if not gone:
+                # Every route through it has another way round. Cutting it
+                # changes nothing a customer would see, so it is not offered.
+                continue
+            found.append(
+                ChokePoint(
+                    step=steps[key],
+                    severed=tuple(
+                        p
+                        for p in paths
+                        if (p.entry.provider_resource_id, p.target.provider_resource_id)
+                        in gone
+                    ),
+                    on_routes=len(on),
+                )
+            )
+
+        return sorted(found, key=lambda c: (-c.severs, c.describe()))
+
+    def _without(self, edge: tuple[str, str, str]) -> "AssetGraph":
+        """This graph with one link removed, for asking what it was holding up.
+
+        A shallow copy: the nodes are shared, because nothing here mutates them
+        and copying an estate's worth of resources per candidate would make the
+        analysis cost more than the answer is worth.
+        """
+        source, relationship, target = edge
+        pruned = AssetGraph(nodes=self.nodes)
+        for node, outgoing in self._out.items():
+            kept = [
+                (rel, other)
+                for rel, other in outgoing
+                if not (node == source and rel.value == relationship and other == target)
+            ]
+            if kept:
+                pruned._out[node] = kept
+        return pruned
 
     def contained_by(self, scope_id: str, max_depth: int = MAX_DEPTH) -> list[CloudResource]:
         """Everything that sits under a scope.

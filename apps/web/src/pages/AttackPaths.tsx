@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { RouteIcon, ScissorsIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
-import type { AttackPath, AttackPathMeta } from "@/lib/types";
+import type { AttackPath, AttackPathMeta, ChokePoint } from "@/lib/types";
 import { useT } from "@/i18n";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { AttackPathRoute } from "@/components/graph/AttackPathRoute";
@@ -38,6 +38,16 @@ export function AttackPathsPage() {
       })),
   });
 
+  // Its own request, and only once there is something for it to be about. It
+  // costs a re-traversal per candidate on the server, and a page with no routes
+  // has no links to cut.
+  const chokes = useQuery({
+    queryKey: ["attack-paths", "choke-points"],
+    enabled: Boolean(data && data.paths.length > 0),
+    queryFn: () =>
+      api.get<ChokePoint[]>("/api/v1/attack-paths/choke-points").then((r) => r.data),
+  });
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -65,6 +75,9 @@ export function AttackPathsPage() {
             {t.attackPaths.entryPoints} · {data.meta.sensitive_targets}{" "}
             {t.attackPaths.sensitiveTargets}
           </p>
+
+          {/* Before the list, because it is what to do about the list. */}
+          <ChokePoints chokes={chokes.data} />
           <div className="flex flex-col gap-3">
             {data.paths.map((path) => (
               <PathCard
@@ -76,6 +89,82 @@ export function AttackPathsPage() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The links holding up several routes at once.
+ *
+ * The list below this ranks routes, which is the right order for reading them
+ * and the wrong one for acting: fifty routes are fifty things to read, and
+ * "remove this one role assignment and thirty-seven of them close" is one thing
+ * to do. It is also frequently not the fix any single route suggests — each
+ * route's own cheapest break is at its start, while the link they share sits in
+ * the middle.
+ *
+ * The number is what actually closes, checked by removing the link and re-asking
+ * the whole question rather than by counting the routes it appears on. Where
+ * those two differ the panel says so: a customer told four routes close who then
+ * sees two remain stops believing the next number too.
+ */
+function ChokePoints({ chokes }: { chokes?: ChokePoint[] }) {
+  const t = useT();
+  if (!chokes?.length) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ScissorsIcon className="size-4 text-muted-foreground" aria-hidden />
+          {t.attackPaths.chokeTitle}
+        </CardTitle>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {t.attackPaths.chokeHelp}
+        </p>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {chokes.map((choke) => (
+          <div
+            key={`${choke.source.id}-${choke.relationship}-${choke.target.id}`}
+            className="rounded-lg border border-border px-4 py-3"
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <p className="font-mono text-xs text-foreground">
+                {choke.description}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                <span className="text-sm font-semibold tabular-nums text-foreground">
+                  {choke.severs}
+                </span>{" "}
+                {t.attackPaths.chokeOf} {choke.total_routes}{" "}
+                {t.attackPaths.chokeSevers}
+              </p>
+            </div>
+            {choke.on_routes > choke.severs && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t.attackPaths.chokeSitsOn.replace(
+                  "{on}",
+                  String(choke.on_routes),
+                )}
+              </p>
+            )}
+            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+              {choke.closes.map((route) => (
+                <li
+                  key={`${route.entry}->${route.target}`}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                >
+                  <SeverityBadge level={route.data_sensitivity} size="sm" />
+                  <span>
+                    {route.entry} → {route.target}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 

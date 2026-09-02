@@ -2301,6 +2301,59 @@ class TestAssetGraph:
         )
 
 
+class TestChokePoints:
+    """Which single change closes the most routes.
+
+    The list ranks routes, which is right for reading and wrong for acting. This
+    is the other half, and the number has to be the verified one: a customer
+    told four routes close who then sees two remain stops believing the next
+    number too.
+    """
+
+    async def test_the_link_it_names_really_does_close_those_routes(
+        self, replay, connected_account
+    ) -> None:
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            graph = await graph_service.load_graph(session, org_id)
+
+        routes = graph.attack_paths()
+        assert routes, "the fixture estate has a route"
+
+        for choke in graph.choke_points():
+            # The claim, re-checked against the graph it was made about.
+            pruned = graph._without(
+                (
+                    choke.step.source.provider_resource_id,
+                    choke.step.relationship.value,
+                    choke.step.target.provider_resource_id,
+                )
+            )
+            assert len(pruned.attack_paths()) == len(routes) - choke.severs
+            assert choke.severs <= choke.on_routes
+
+    async def test_asking_does_not_change_the_graph(
+        self, replay, connected_account
+    ) -> None:
+        """The analysis is a question, not a change."""
+        from app.services import graph as graph_service
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            graph = await graph_service.load_graph(session, org_id)
+
+        before = len(graph.attack_paths())
+        graph.choke_points()
+
+        assert len(graph.attack_paths()) == before
+
+
 class TestScenarioRisk:
     """A route through the environment, as a risk rather than a page.
 

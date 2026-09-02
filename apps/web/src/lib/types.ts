@@ -585,6 +585,30 @@ export interface AttackPathMeta {
   sensitive_targets: number;
 }
 
+/**
+ * One removable link, and the routes that stop existing without it.
+ *
+ * `severs` is verified by removing the link and re-asking the whole question,
+ * so it is what actually closes. `on_routes` is the larger number of routes the
+ * link merely sits on — carried beside it because the gap is the interesting
+ * part: a link on twenty routes that closes three is a link with a way round.
+ */
+export interface ChokePoint {
+  description: string;
+  relationship: string;
+  source: { id: string; name: string; resource_type: string };
+  target: { id: string; name: string; resource_type: string };
+  severs: number;
+  on_routes: number;
+  total_routes: number;
+  closes: {
+    entry: string;
+    target: string;
+    hops: number;
+    data_sensitivity: Level;
+  }[];
+}
+
 export interface RevocationStep {
   title: string;
   detail: string;
