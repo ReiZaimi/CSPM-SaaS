@@ -1472,6 +1472,46 @@ exactly one member.
 
 ---
 
+## 45. The security score decays instead of subtracting
+
+`max(0, 100 - Σ deductions)` was strict, which was right, and clamped, which was
+not. Five open Criticals scored 0. Twenty scored 0. So did the same estate after
+seven of them had been fixed and verified. The number stopped moving exactly
+where a customer needs it to move most — through the months of a remediation
+programme — and `score_delta` on the dashboard, computed from it, reported that
+nothing had happened. On the product whose north-star metric is verified risk
+reduction, the headline number was structurally incapable of showing it.
+
+The same deduction total now drives `round(100 × exp(-Σd / k))`. Every fix moves
+the score; the curve is steepest across the first few Criticals, where the
+strictness has to live; and 0 is where a catastrophic estate lands rather than
+where an ordinarily bad one starts. One Critical leaves 77, five leave 28,
+twelve leave 5, thirty leave 0.
+
+**Fitted to an anchor, not to a rate.** `k` is solved for from
+`score_anchor_criticals` and `score_anchor_value` — two Criticals leave 60, the
+sentence already in `RISK_ENGINE.md` §3 and already asserted in the tests. The
+calibration is therefore the thing configured, and it survives somebody retuning
+what a Critical costs, rather than silently parting company with the doc.
+
+Two consequences worth stating because neither is obvious:
+
+- Fitting to the anchor **normalizes** the deductions, so their absolute size is
+  absorbed and only their ratios to a Critical decide anything. Doubling every
+  deduction changes no score at all — which matters because "make everything
+  cost more" is the obvious way to attempt a stricter score. The levers are the
+  ratios, and the anchor.
+- The integer rounding does flatten the curve eventually, around twenty open
+  Criticals. That is a real limit and an acceptable one: the score is read
+  rather than computed with, and by then it has said what it has to say. Below
+  that, every Critical closed is visible.
+
+The band thresholds the UI colours by (`scoreColor`: 85 / 60 / 40) are unchanged
+and still land where they should — two Criticals is amber at 60, five is red at
+28, where it used to be red at 0 alongside every other broken estate.
+
+---
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

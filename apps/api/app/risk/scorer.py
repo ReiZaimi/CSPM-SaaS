@@ -6,6 +6,7 @@ different risk on an isolated dev box than on a production jump host, and this
 module is where that difference gets quantified.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -162,13 +163,33 @@ class RiskScorer:
         )
 
     def security_score(self, open_risk_levels: list[Level]) -> int:
-        """Org-level posture, 0-100. Strict on purpose.
+        """Org-level posture, 0-100. Strict on purpose, and never flat.
 
         Two open Criticals take 100 down to 60. A CSPM that reports 92/100 while
         a production database is world-readable is not telling the truth.
+
+        **Decay rather than subtraction.** The deductions used to be taken off
+        100 and clamped at zero, which made the number stop moving exactly where
+        it needed to move most: an estate with five open Criticals scored 0, and
+        so did one with twenty, and so did the same estate after seven of them
+        were fixed. A customer working through a remediation programme watched a
+        flat line for months, on the product whose north-star metric is verified
+        risk reduction -- and the dashboard's delta, computed from that number,
+        reported nothing had happened.
+
+        So the same deduction total drives an exponential instead. Every fix
+        moves the score, the curve is steepest where the first few Criticals
+        are, and zero is where a catastrophic estate ends up rather than where
+        an ordinarily bad one starts. The anchor everyone already agreed --
+        two Criticals leave 60 -- is preserved exactly; it is what the curve is
+        fitted to (RISK_ENGINE.md section 3).
+
+        Rounded to a whole number because the score is read, not computed with.
+        Far enough out the rounding does flatten it, but by then the estate has
+        twenty open Criticals and the number has said what it has to say.
         """
         deductions = sum(self.config.score_deductions.get(level, 0) for level in open_risk_levels)
-        return max(0, 100 - deductions)
+        return round(100.0 * math.exp(-deductions / self.config.score_decay))
 
     def priority(self, score: float, effort_minutes: int) -> Priority:
         """High impact plus low effort should surface first.

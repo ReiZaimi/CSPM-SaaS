@@ -61,18 +61,39 @@ A group is scored as its **worst member**, never their sum, and closes only when
 
 ## 3. Security Score (org level)
 
-Strict by design — a few Critical findings should visibly tank the score:
+Strict by design — a few Critical findings should visibly tank the score — and **never flat**, because a score that stops moving stops measuring:
 
 ```
-security_score = max(0, 100 - Σ deductions)
+security_score = round(100 × exp(-Σ deductions / k))
 
-  Critical open finding:  -20
-  High open finding:      - 8
-  Medium open finding:    - 3
-  Low open finding:       - 1
+  Critical open risk:  -20
+  High open risk:      - 8
+  Medium open risk:    - 3
+  Low open risk:       - 1
+
+  k fitted so the anchor holds: two open Criticals leave exactly 60
 ```
 
-Deductions key off each **risk's** band (asset-context-aware, §1 above), not the rule's raw severity: the same misconfiguration scores differently on a dev VM vs. a production database. One deduction per risk, so a grouped risk (§2) is charged once however many findings it holds. Two open Criticals alone drop the score from 100 to 60.
+| Open Criticals | Score |
+|---|---|
+| 0 | 100 |
+| 1 | 77 |
+| 2 | **60** (the anchor) |
+| 3 | 46 |
+| 5 | 28 |
+| 8 | 13 |
+| 12 | 5 |
+| 20 | 1 |
+| 30+ | 0 |
+
+The earlier form was `max(0, 100 - Σ deductions)`, and the clamp is what had to go. It made the number stop moving exactly where a customer needs it to move: five open Criticals scored 0, twenty scored 0, and so did the same estate after seven of them were fixed. Months of remediation showed a flat line, and the dashboard's delta — computed from that number — reported that nothing had happened, on the product whose north-star metric is verified risk reduction.
+
+Two properties of fitting the curve to an anchor rather than to a rate:
+
+- **The anchor survives retuning.** Change what a Critical costs and "two open Criticals leave 60" is still true.
+- **Only ratios matter.** The absolute size of the deductions is absorbed by the fit, so doubling all of them changes no score at all. The levers are each band's cost *relative to a Critical*, and the anchor itself.
+
+Deductions key off each **risk's** band (asset-context-aware, §1 above), not the rule's raw severity: the same misconfiguration scores differently on a dev VM vs. a production database. One deduction per risk, so a grouped risk (§2) is charged once however many findings it holds.
 
 **Coverage/completeness** (how many rules/assets were actually evaluated vs. `UNKNOWN`, see `RULE_ENGINE.md` §2) is a **separate indicator**, not folded into the score — keeps "why is my score X?" answerable without also explaining coverage math. Whether this indicator gets a visible badge in the MVP dashboard is still open — see `PRODUCT_SPEC.md` §8.
 

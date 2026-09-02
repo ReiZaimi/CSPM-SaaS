@@ -6,6 +6,7 @@ values to be tuned against real environments — which is only possible if they
 are in one place with names attached.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from app.core.enums import Level, Severity
@@ -82,6 +83,20 @@ class RiskEngineConfig:
         }
     )
 
+    # Where the score curve is pinned: this many open Criticals leave exactly
+    # this score. The number stated in RISK_ENGINE.md section 3, expressed as
+    # the pair the doc words it as rather than as a decay rate -- so the
+    # calibration is the thing configured, and retuning the deduction above
+    # moves the curve with it instead of quietly breaking the sentence.
+    #
+    # One consequence worth knowing before tuning: fitting the curve to this
+    # anchor normalizes the deductions, so their absolute size is absorbed and
+    # only their ratios to a Critical decide anything. Doubling every deduction
+    # changes no score at all. The levers are the ratios above, and the anchor
+    # here.
+    score_anchor_criticals: int = 2
+    score_anchor_value: float = 60.0
+
     # How much a scenario may add on top of its worst member, and what earns
     # it. Bounded so a path can never dominate the score on structure alone:
     # the members are the evidence, and this is the fact that they compose.
@@ -95,10 +110,26 @@ class RiskEngineConfig:
     # nothing rather than on adding a lot slowly.
     scenario_hop_penalty: float = 6.0
 
+    @property
+    def score_decay(self) -> float:
+        """The constant that puts the anchor where the anchor says.
+
+        Solving ``100 * exp(-d / k) = value`` for k at the anchor's deduction.
+        """
+        deduction = self.score_anchor_criticals * self.score_deductions[Level.CRITICAL]
+        return -deduction / math.log(self.score_anchor_value / 100.0)
+
     def __post_init__(self) -> None:
         total = self.weights.total()
         if abs(total - 1.0) > 1e-9:
             raise ValueError(f"Risk weights must sum to 1.0, got {total}")
+        if not 0.0 < self.score_anchor_value < 100.0:
+            raise ValueError(
+                "Score anchor must sit strictly between 0 and 100, got "
+                f"{self.score_anchor_value}"
+            )
+        if self.score_anchor_criticals < 1:
+            raise ValueError("Score anchor needs at least one Critical to pin to")
 
 
 DEFAULT_RISK_CONFIG = RiskEngineConfig()

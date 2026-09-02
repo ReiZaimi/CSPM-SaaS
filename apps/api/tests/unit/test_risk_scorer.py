@@ -1,5 +1,7 @@
 """Risk formula (RISK_ENGINE.md section 1) and org security score (section 3)."""
 
+from itertools import pairwise
+
 import pytest
 
 from app.core.enums import Level, Priority, Severity
@@ -186,13 +188,103 @@ class TestSecurityScore:
         """Stated explicitly in RISK_ENGINE.md section 3."""
         assert scorer.security_score([Level.CRITICAL, Level.CRITICAL]) == 60
 
-    def test_score_floors_at_zero(self) -> None:
-        assert scorer.security_score([Level.CRITICAL] * 20) == 0
-
     def test_mixed_findings(self) -> None:
-        # 20 + 8 + 8 + 3 + 1 = 40 deducted.
+        # 20 + 8 + 8 + 3 + 1 = 40 deducted, which is the anchor's deduction, so
+        # this lands on the anchor's score.
         levels = [Level.CRITICAL, Level.HIGH, Level.HIGH, Level.MEDIUM, Level.LOW]
         assert scorer.security_score(levels) == 60
+
+    def test_every_critical_fixed_moves_the_number(self) -> None:
+        """The regression this curve exists for.
+
+        Subtracting from 100 and clamping made the score stop moving exactly
+        where a customer needs it to: five open Criticals scored 0, twenty
+        scored 0, and so did the same estate after seven were fixed. Months of
+        remediation showed a flat line on the product whose north-star metric is
+        verified risk reduction.
+        """
+        scores = [scorer.security_score([Level.CRITICAL] * n) for n in range(0, 16)]
+
+        assert scores[0] == 100
+        assert all(
+            later < earlier for earlier, later in pairwise(scores)
+        ), scores
+
+    def test_a_badly_broken_estate_still_scores_badly(self) -> None:
+        """Not flat is not the same as forgiving. Five open Criticals is a red
+        number, not a mid-range one."""
+        assert scorer.security_score([Level.CRITICAL] * 5) < 40
+
+    def test_zero_is_where_a_catastrophe_ends_up_not_where_bad_starts(self) -> None:
+        assert scorer.security_score([Level.CRITICAL] * 8) > 0
+        assert scorer.security_score([Level.CRITICAL] * 40) == 0
+
+    def test_the_anchor_holds_when_the_deductions_are_retuned(self) -> None:
+        """The calibration is what is configured, not a decay rate. The doc's
+        sentence -- two open Criticals leave 60 -- has to stay true after
+        somebody tunes what a Critical costs, or the number in the doc and the
+        number on the dashboard part company silently.
+
+        And because the curve is fitted to that anchor, the *size* of the
+        deductions is absorbed by it: scaling all of them by the same factor is
+        a no-op, and only their ratios to a Critical decide anything. Worth
+        pinning, because "make everything cost more" is the obvious way to
+        attempt a stricter score and it does nothing at all.
+        """
+        scaled_up = RiskScorer(
+            RiskEngineConfig(
+                score_deductions={
+                    Level.CRITICAL: 40,
+                    Level.HIGH: 16,
+                    Level.MEDIUM: 6,
+                    Level.LOW: 2,
+                    Level.UNKNOWN: 6,
+                }
+            )
+        )
+
+        assert scaled_up.security_score([Level.CRITICAL, Level.CRITICAL]) == 60
+        assert scaled_up.security_score([Level.HIGH]) == scorer.security_score(
+            [Level.HIGH]
+        )
+
+    def test_moving_a_band_against_critical_does_change_it(self) -> None:
+        """The lever that works: what a High costs *relative to* a Critical."""
+        high_hurts = RiskScorer(
+            RiskEngineConfig(
+                score_deductions={
+                    Level.CRITICAL: 20,
+                    Level.HIGH: 16,
+                    Level.MEDIUM: 3,
+                    Level.LOW: 1,
+                    Level.UNKNOWN: 3,
+                }
+            )
+        )
+
+        assert high_hurts.security_score([Level.CRITICAL, Level.CRITICAL]) == 60
+        assert high_hurts.security_score([Level.HIGH]) < scorer.security_score(
+            [Level.HIGH]
+        )
+
+    def test_an_anchor_off_the_scale_is_rejected(self) -> None:
+        """A curve pinned to 0 or 100 has no solution, and one pinned outside
+        them describes nothing. Fail at construction rather than at the first
+        scan."""
+        with pytest.raises(ValueError, match="strictly between 0 and 100"):
+            RiskEngineConfig(score_anchor_value=0.0)
+        with pytest.raises(ValueError, match="at least one Critical"):
+            RiskEngineConfig(score_anchor_criticals=0)
+
+    def test_the_curve_is_steepest_at_the_first_critical(self) -> None:
+        """Where the strictness has to live. The first Critical must cost more
+        than the tenth, or a clean estate and a nearly clean one read alike."""
+        first = 100 - scorer.security_score([Level.CRITICAL])
+        tenth = scorer.security_score([Level.CRITICAL] * 9) - scorer.security_score(
+            [Level.CRITICAL] * 10
+        )
+
+        assert first > tenth
 
 
 class TestPriority:
