@@ -9,6 +9,7 @@ from app.rules.azure.compute.exposure import (
     AzureExposedComputeRule,
     AzureUnguardedVmRule,
 )
+from app.rules.azure.database.encryption import AzureDatabaseEncryptionRule
 from app.rules.azure.database.public_access import (
     AzureDatabaseAuditingRule,
     AzureDatabasePrivateConnectivityRule,
@@ -18,23 +19,39 @@ from app.rules.azure.identity.credentials import (
     AzureLongLivedApplicationCredentialRule,
 )
 from app.rules.azure.identity.dormant import AzureDormantPrivilegedAccountRule
-from app.rules.azure.identity.mfa import AzureMfaRule
-from app.rules.azure.identity.privileged import AzurePrivilegedUserRule
+from app.rules.azure.identity.mfa import (
+    AzureLegacyAuthenticationRule,
+    AzureMfaRule,
+    AzureTenantMfaEnforcementRule,
+    AzureUserWithoutMfaRule,
+)
+from app.rules.azure.identity.privileged import (
+    AzureDisabledPrivilegedUserRule,
+    AzureGuestPrivilegedUserRule,
+    AzurePrivilegedUserRule,
+)
 from app.rules.azure.logging.diagnostics import (
     AzureActivityLogExportRule,
+    AzureCriticalResourceLoggingRule,
     AzureLoggingRule,
 )
 from app.rules.azure.network.exposure import (
     AzureOpenNsgRule,
     AzurePublicRdpRule,
+    AzurePublicSmbRule,
+    AzurePublicSqlPortRule,
     AzurePublicSshRule,
     AzurePublicWinRmRule,
+    AzureSensitivePublicAddressRule,
 )
 from app.rules.azure.posture.defender import (
     AzureExposedVulnerableMachineRule,
     AzureMissingEndpointProtectionRule,
 )
 from app.rules.azure.rbac.privilege import (
+    AzureBroadScopeAssignmentRule,
+    AzureDangerousCustomRoleRule,
+    AzureExcessiveOwnersRule,
     AzurePersonWithSubscriptionControlRule,
     AzureRoleGrantingIdentityRule,
     AzureWorkloadWithSubscriptionControlRule,
@@ -52,12 +69,20 @@ from app.rules.base import SecurityRule
 
 RULE_REGISTRY: list[SecurityRule] = [
     AzureMfaRule(),
+    AzureUserWithoutMfaRule(),
+    AzureTenantMfaEnforcementRule(),
+    AzureLegacyAuthenticationRule(),
+    AzureGuestPrivilegedUserRule(),
+    AzureDisabledPrivilegedUserRule(),
     AzurePrivilegedUserRule(),
     AzureDormantPrivilegedAccountRule(),
     AzureLongLivedApplicationCredentialRule(),
     AzurePublicRdpRule(),
     AzurePublicSshRule(),
     AzurePublicWinRmRule(),
+    AzurePublicSqlPortRule(),
+    AzurePublicSmbRule(),
+    AzureSensitivePublicAddressRule(),
     AzureOpenNsgRule(),
     AzurePublicStorageRule(),
     AzureStorageEncryptionRule(),
@@ -65,13 +90,18 @@ RULE_REGISTRY: list[SecurityRule] = [
     AzurePublicDatabaseRule(),
     AzureDatabasePrivateConnectivityRule(),
     AzureDatabaseAuditingRule(),
+    AzureDatabaseEncryptionRule(),
     AzureLoggingRule(),
+    AzureCriticalResourceLoggingRule(),
     AzureActivityLogExportRule(),
     AzureExposedComputeRule(),
     AzureUnguardedVmRule(),
     AzurePersonWithSubscriptionControlRule(),
     AzureWorkloadWithSubscriptionControlRule(),
     AzureRoleGrantingIdentityRule(),
+    AzureExcessiveOwnersRule(),
+    AzureBroadScopeAssignmentRule(),
+    AzureDangerousCustomRoleRule(),
     AzureKeyVaultDeletionRule(),
     AzureKeyVaultNetworkRule(),
     AzureExposedVulnerableMachineRule(),

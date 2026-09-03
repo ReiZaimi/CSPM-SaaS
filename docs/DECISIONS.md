@@ -2884,6 +2884,89 @@ Nothing here issues a score. The export says what was checked, what was found,
 and what it was found from -- the same position `coverage_ratio` takes on the
 screen, carried into the one artefact that outlives it.
 
+## 68. Thirteen more rules, and the ten that were already the same finding
+
+A catalogue of 25 checks grew to 38. The interesting part is not the thirteen
+that were written; it is the twelve that were asked for and are not here, and
+why each is missing.
+
+**Ten of them already ship under a different id.** A public storage account is
+AZ-STO-001, which covers anonymous blob access *and* an unrestricted network
+default; a vault that can be purged is AZ-KV-001; an Any/Any inbound rule is
+AZ-NET-003; a person or workload with subscription-wide control is AZ-IAM-001
+and AZ-IAM-002; an identity that can hand out roles is AZ-IAM-003; a database
+firewall admitting the whole internet is AZ-DB-001. Adding the requested ids
+beside them would raise two findings for one misconfiguration, ask a customer
+to close the same door twice, and deduct from the security score twice for
+closing it once. The split was offered and declined deliberately: renaming
+those rules into finer ids would orphan every finding raised under the old ones,
+and the history is worth more than the taxonomy.
+
+**Two more were near-duplicates found while building.** A subscription-level
+Contributor is what AZ-IAM-001 already reports -- its ``FULL_CONTROL_ROLES`` is
+Owner, Contributor and User Access Administrator, not Owner alone -- and a
+managed identity with excessive privilege is AZ-IAM-002, which covers every
+workload identity rather than only service principals.
+
+**What is genuinely new falls into four groups.**
+
+*The tenant, rather than anything in it.* AZ-ID-005 asks whether anything
+enforces multi-factor authentication at all, and AZ-ID-006 whether legacy
+authentication is blocked. Both are aggregate rules reading Conditional Access
+and security defaults -- data CloudGuard already collected to *lower* findings'
+scores as compensating controls, and had never read in the other direction. The
+second is the one that matters most in practice: IMAP, POP, SMTP AUTH and
+Exchange ActiveSync cannot present a second factor, so they bypass every policy
+demanding one, and a tenant can enforce MFA everywhere and still accept a
+password on those endpoints.
+
+*The accounts nobody calls an administrator.* AZ-ID-004 asks for a second
+factor on ordinary accounts, and is careful to decline the privileged ones,
+which AZ-ID-001 already reports at Critical. AZ-ID-011 and AZ-ID-012 are the two
+states a privileged account can be in that a role review does not show: a guest
+whose password and second factor belong to another tenant's administrator, and a
+disabled account whose privilege survived being disabled -- offboarding that
+stopped halfway, one checkbox from being an administrator again.
+
+*Privilege the subscription cannot see.* AZ-IAM-008 reports full control granted
+at a management group or the tenant root, which every subscription beneath it
+inherits, including the ones created next year. AZ-IAM-010 reads the tenant's
+own role definitions: a custom role granting ``*``, or the right to write role
+assignments, is Owner under a name a privilege review does not recognise -- and
+``notActions`` is read the way ARM reads it, so a Contributor-shaped custom role
+is not reported as dangerous. AZ-IAM-005 is the count rather than the holders:
+no single Owner is the one too many, so it cannot be asked per identity.
+
+*Exposure and evidence.* AZ-NET-005 and AZ-NET-008 give SQL and SMB rules of
+their own, and both ports leave AZ-NET-003's catch-all list in the same change,
+following the convention RDP, SSH and WinRM already set -- a port in both places
+would be that double-reporting again. AZ-NET-015 reports a public address on a
+machine the estate says is sensitive or business-critical, and declines to judge
+one nothing has classified: AZ-CMP-001 already reports what the internet can
+reach, and this is a statement about the data behind it. AZ-LOG-004 asks
+AZ-LOG-001's question of the two security-relevant types it does not cover --
+key vaults and machines -- with the applies-to sets deliberately disjoint and a
+test holding them that way.
+
+**AZ-DB-006 is a reversal, and is marked as one.** `RULE_ENGINE.md` recorded a
+decision against a transparent-data-encryption check: it costs an ARM
+permission and a per-database fan-out to report PASS for very nearly everyone,
+since TDE has defaulted to on since 2017. That reasoning still holds on its own
+terms. What changed is §67: a control's passes now carry the readings behind
+them, so a pass on an encryption control is the evidence an auditor asks for by
+name rather than a row nobody reads. The role goes to `v6` for it, which means
+every existing connection reports "redeploy the role" until they do -- the
+prompt is honest, the checks that need the new actions report UNKNOWN in the
+meantime, and no other category is affected.
+
+Two smaller things fell out of the work. `Microsoft.Sql/servers/databases/read`
+and its transparent-data-encryption sibling are the first actions whose task
+fans out two levels deep -- servers, then databases -- which is why the reading
+is keyed separately: a role that cannot make those calls loses exactly that
+check rather than the reachability rule beside it. And the ARM action matcher
+moved from the normalizer into `rbac.py`, where the vocabulary it interprets
+already lives, because three callers now need the same reading of a wildcard.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

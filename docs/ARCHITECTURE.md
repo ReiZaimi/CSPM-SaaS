@@ -71,7 +71,7 @@ cloudguard/
 |       |   |-- connectors/azure/
 |       |   |-- context/         # asset context: inferred, then overruled by declaration
 |       |   |-- graph/           # AssetGraph: attack paths, escalation chains, choke points
-|       |   |-- rules/azure/{identity,network,storage,compute,database,logging}/
+|       |   |-- rules/azure/{identity,rbac,network,storage,compute,database,logging,secrets,posture}/
 |       |   |-- rules/{base.py, controls.py, registry.py}
 |       |   |-- risk/{config.py, scorer.py, grouping.py}
 |       |   |-- remediation/     # RemediationSpec: the machine-readable half of a fix

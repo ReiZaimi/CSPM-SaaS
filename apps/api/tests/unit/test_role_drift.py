@@ -222,19 +222,34 @@ class TestRoleUpgrades:
     redeploy, the rules behind it report UNKNOWN rather than PASS.
     """
 
-    def test_the_current_role_is_v5(self) -> None:
-        assert rbac.ROLE_VERSION == "v5"
-        assert rbac.role_is_current("v5")
+    def test_the_current_role_is_v6(self) -> None:
+        assert rbac.ROLE_VERSION == "v6"
+        assert rbac.role_is_current("v6")
 
-    def test_a_v4_role_lacks_exactly_the_defender_read(self) -> None:
-        assert rbac.actions_missing_from("v4") == (
+    def test_a_v5_role_lacks_exactly_the_encryption_reads(self) -> None:
+        """v6 asks for two more reads and nothing else: which databases a SQL
+        server holds, and whether each encrypts what it stores."""
+        assert set(rbac.actions_missing_from("v5")) == {
+            "Microsoft.Sql/servers/databases/read",
+            "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+        }
+        assert rbac.categories_behind("v5") == frozenset({EvidenceCategory.DATABASE})
+
+    def test_a_v4_role_lacks_the_defender_and_encryption_reads(self) -> None:
+        assert set(rbac.actions_missing_from("v4")) == {
             "Microsoft.Security/assessments/read",
+            "Microsoft.Sql/servers/databases/read",
+            "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+        }
+        assert rbac.categories_behind("v4") == frozenset(
+            {EvidenceCategory.POSTURE, EvidenceCategory.DATABASE}
         )
-        assert rbac.categories_behind("v4") == frozenset({EvidenceCategory.POSTURE})
 
-    def test_a_v3_role_lacks_the_auditing_and_defender_reads(self) -> None:
+    def test_a_v3_role_lacks_the_auditing_encryption_and_defender_reads(self) -> None:
         assert set(rbac.actions_missing_from("v3")) == {
             "Microsoft.Sql/servers/auditingSettings/read",
+            "Microsoft.Sql/servers/databases/read",
+            "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
             "Microsoft.Security/assessments/read",
         }
         assert not rbac.role_is_current("v3")
@@ -275,7 +290,7 @@ class TestRoleUpgrades:
         believed to grant, and ``actions_missing_from`` would stop reporting a
         gap that is still real.
         """
-        versions = ["v1", "v2", "v3", "v4", "v5"]
+        versions = ["v1", "v2", "v3", "v4", "v5", "v6"]
         for older, newer in itertools.pairwise(versions):
             assert set(rbac.ROLE_HISTORY[older]) <= set(rbac.ROLE_HISTORY[newer]), (
                 f"{newer} dropped an action {older} granted"
@@ -369,7 +384,8 @@ class TestTheConnectionPayloadExplainsTheGap:
     def test_a_stale_role_names_the_checks_that_cannot_run(self) -> None:
         """The same categories the scanner uses to explain its own gaps, so the
         screen and the scan cannot disagree about which checks are affected."""
-        assert self._payload("v4")["degraded_categories"] == ["posture"]
+        assert self._payload("v5")["degraded_categories"] == ["database"]
+        assert self._payload("v4")["degraded_categories"] == ["database", "posture"]
         assert self._payload("v3")["degraded_categories"] == ["database", "posture"]
         assert self._payload("v2")["degraded_categories"] == [
             "database",

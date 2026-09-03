@@ -347,3 +347,64 @@ async def test_the_whole_plan_shares_one_request_ceiling() -> None:
 
     assert limiter.stats()["requests"] > 10, "the plan really did fan out"
     assert state["peak"] <= 3
+
+
+# ------------------------------------------ encryption is its own reading too
+async def test_encryption_is_collected_as_its_own_reading() -> None:
+    """A per-database fan-out beneath the server listing, keyed separately.
+
+    The permissions behind it arrive in role v6, so on every connection that
+    has not redeployed this is the reading that fails while the servers, their
+    firewall rules and their auditing settings all succeed.
+    """
+    snapshot = await collect()
+
+    assert "sql_tde" in snapshot.coverage
+    assert snapshot.coverage["sql_tde"]["outcome"] == "COMPLETE"
+    assert snapshot.data["sql_tde"]
+
+
+async def test_a_refused_encryption_read_leaves_the_server_listing_complete() -> None:
+    """The gap a role upgrade produces, and the one ``requires_evidence``
+    exists to keep from spreading: a 403 here must not cost the reachability
+    rule its verdict over a call it never reads."""
+    snapshot = await collect(fail={"transparentDataEncryption"})
+
+    assert snapshot.coverage["sql_servers"]["outcome"] == "COMPLETE"
+    assert snapshot.coverage["sql_tde"]["outcome"] == "PARTIAL"
+
+
+async def test_a_refused_encryption_read_names_the_role_as_the_likely_cause() -> None:
+    """"Encryption state could not be read" points nowhere. "Your scanner role
+    predates the permission" is a thing a customer can act on this afternoon."""
+    snapshot = await collect(fail={"transparentDataEncryption"})
+
+    assert "role deployed before" in snapshot.coverage["sql_tde"]["detail"]
+
+
+async def test_a_refused_database_listing_is_reported_rather_than_empty() -> None:
+    """A server whose databases could not be listed is not a server with no
+    databases, and only one of those can support a pass."""
+    snapshot = await collect(fail={"/databases"})
+
+    assert snapshot.coverage["sql_tde"]["outcome"] == "PARTIAL"
+    assert all(
+        isinstance(entry, str) and entry.startswith("error:")
+        for entry in snapshot.data["sql_tde"].values()
+    )
+
+
+async def test_encryption_waits_for_the_servers_it_reads() -> None:
+    """It reads one call per database of each server, so it cannot run before
+    the server listing that names them."""
+    from app.connectors.azure.evidence import AzureEvidence
+    from app.connectors.azure.plan import AzurePlanBuilder
+
+    builder = AzurePlanBuilder(
+        tokens=FakeTokens(), subscription_id="sub-1", http_client=azure()
+    )
+    task = next(
+        t for t in builder.build_account_plan() if t.key is AzureEvidence.SQL_TDE
+    )
+
+    assert AzureEvidence.SQL_SERVERS in task.depends_on

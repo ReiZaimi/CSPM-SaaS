@@ -10,10 +10,16 @@ All three read normalized NSG rules of the shape produced by
 from typing import Any, ClassVar
 
 from app.connectors.azure.evidence import AzureEvidence
-from app.core.enums import ResourceType, Severity
+from app.core.enums import Level, ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.remediation import Comparison, ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
+
+# What counts as worth keeping off the internet. HIGH and CRITICAL only: a
+# MEDIUM asset is the default an untagged, undeclared machine lands on, and
+# reporting those would make this rule a second copy of "this VM has a public
+# IP" rather than a statement about the data on it.
+_SENSITIVE_LEVELS = frozenset({Level.HIGH, Level.CRITICAL})
 
 # Source ranges that mean "anyone on the internet". Azure spells this several
 # ways and they are not interchangeable strings to a human reader.
@@ -432,12 +438,14 @@ class AzureOpenNsgRule(SecurityRule):
 
     # Ports whose exposure is a finding in its own right. 80/443 are absent on
     # purpose -- a public web server is a design, not a defect.
+    # 3389, 22, 5985/5986, 445 and 1433 are absent because each has a rule of
+    # its own. This one is the catch-all for the ports that do not, and a port
+    # listed in both places would raise two findings for one NSG rule and charge
+    # the security score twice for closing it.
     SENSITIVE_PORTS: ClassVar[dict[int, str]] = {
         135: "RPC",
         137: "NetBIOS",
         139: "NetBIOS",
-        445: "SMB",
-        1433: "MSSQL",
         1521: "Oracle",
         3306: "MySQL",
         5432: "PostgreSQL",
@@ -513,3 +521,212 @@ class AzureOpenNsgRule(SecurityRule):
 AzurePublicRdpRule.remediation_spec = AzurePublicRdpRule._spec()
 AzurePublicSshRule.remediation_spec = AzurePublicSshRule._spec()
 AzurePublicWinRmRule.remediation_spec = AzurePublicWinRmRule._spec()
+
+
+class AzurePublicSqlPortRule(_PublicPortRule):
+    rule_id = "AZ-NET-005"
+    name = "SQL exposed to the internet"
+    description = (
+        "A network security group permits inbound connections to the SQL Server port "
+        "(TCP/1433) from any source address. A database engine answering the open internet "
+        "is attacked continuously by credential-stuffing tools, and the credentials it "
+        "accepts are usually the ones an application uses rather than ones a person rotates."
+    )
+    category = "network"
+    severity = Severity.CRITICAL
+    exploitability = 4
+    port = 1433
+    service = "SQL Server"
+    estimated_effort_minutes = 30
+    rationale = (
+        "A database is the thing an attacker is trying to reach, so exposing its port skips "
+        "every step in between. Unlike a web server, nothing about it needs to be publicly "
+        "reachable: applications connect from inside the network, and administrators "
+        "connect through a jump host or a private endpoint."
+    )
+    remediation = (
+        "Stop answering the internet on 1433.\n\n"
+        "Azure Portal: Network security group > Inbound security rules > select the rule > "
+        "change Source from Any to the address range that needs it, or delete the rule.\n\n"
+        "Azure CLI:\n"
+        "  az network nsg rule update --resource-group <rg> --nsg-name <nsg> \\\n"
+        "    --name <rule> --source-address-prefixes <your.ip.range/24>\n\n"
+        "For Azure SQL Database, the durable fix is a private endpoint plus public network "
+        "access disabled, so the server has no internet-facing address to firewall at all."
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["6.1", "6.2", "4.1.1"],
+        "ISO_27001": ["A.8.20", "A.8.22", "A.8.23"],
+        "NIST_CSF": ["PR.AC-3", "PR.AC-5", "PR.DS-5"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["SC-7", "AC-17"],
+        "SOC2": ["CC6.1", "CC6.6"],
+        "PCI_DSS_4": ["1.2.1", "1.3.1"],
+    }
+
+
+class AzurePublicSmbRule(_PublicPortRule):
+    rule_id = "AZ-NET-008"
+    name = "SMB exposed publicly"
+    description = (
+        "A network security group permits inbound SMB (TCP/445) from any source address. "
+        "SMB is a file-sharing protocol designed for a local network: it has carried "
+        "wormable remote-code-execution vulnerabilities repeatedly, and exposing it to the "
+        "internet is how several of them spread."
+    )
+    category = "network"
+    severity = Severity.CRITICAL
+    exploitability = 5
+    port = 445
+    service = "SMB"
+    estimated_effort_minutes = 30
+    rationale = (
+        "WannaCry and NotPetya both spread over this port. Internet-facing SMB is scanned "
+        "continuously, most ISPs block it outbound precisely because of that history, and "
+        "no legitimate design needs a file share answering the whole internet."
+    )
+    remediation = (
+        "Close 445 at the network security group.\n\n"
+        "Azure Portal: Network security group > Inbound security rules > select the rule > "
+        "change Source from Any to the address range that needs it, or delete the rule.\n\n"
+        "Azure CLI:\n"
+        "  az network nsg rule delete --resource-group <rg> --nsg-name <nsg> --name <rule>\n\n"
+        "Where files genuinely need to be reached from outside, use Azure Files with a "
+        "private endpoint and a VPN, or a storage account with SAS tokens, rather than SMB "
+        "over the public internet."
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["6.1", "6.2"],
+        "ISO_27001": ["A.8.20", "A.8.22"],
+        "NIST_CSF": ["PR.AC-3", "PR.AC-5"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["SC-7", "CM-7"],
+        "SOC2": ["CC6.1", "CC6.6"],
+        "PCI_DSS_4": ["1.2.1", "1.3.1"],
+    }
+
+
+class AzureSensitivePublicAddressRule(SecurityRule):
+    rule_id = "AZ-NET-015"
+    name = "Sensitive machine holds a public IP address"
+    description = (
+        "A virtual machine carrying sensitive or business-critical data has a public IP "
+        "address of its own. Its exposure is then whatever its network security group "
+        "happens to allow, today and after every future change to that group -- and the "
+        "machine is reachable from anywhere in the world while somebody makes one."
+    )
+    category = "network"
+    severity = Severity.HIGH
+    exploitability = 3
+    applies_to: ClassVar[list[ResourceType]] = [ResourceType.VIRTUAL_MACHINE]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.VIRTUAL_MACHINES,
+        AzureEvidence.NETWORK_INTERFACES,
+        AzureEvidence.PUBLIC_IP_ADDRESSES,
+    )
+    estimated_effort_minutes = 120
+    rationale = (
+        "A public address is a standing invitation that survives the reasoning behind it. "
+        "The rule that made it safe was written once; the address remains after the machine "
+        "changes hands, changes purpose and changes what it stores. On a machine holding "
+        "regulated or business-critical data, that is the difference between an incident "
+        "and a breach notification."
+    )
+    remediation = (
+        "Take the public address off the machine and reach it another way.\n\n"
+        "Azure Portal: Virtual machine > Networking > select the network interface > IP "
+        "configurations > select the configuration > Public IP address: Dissociate.\n\n"
+        "Azure CLI:\n"
+        "  az network nic ip-config update --resource-group <rg> --nic-name <nic> \\\n"
+        "    --name <ipconfig> --remove publicIpAddress\n\n"
+        "Reach it through Azure Bastion for administration, a load balancer or Application "
+        "Gateway for published services, and a NAT gateway for outbound traffic -- each of "
+        "which keeps the machine itself unaddressable from the internet."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="has_public_ip",
+                equals=False,
+                describes="The machine has no public IP address of its own",
+            ),
+        ),
+        # Who the expectation is about. A rule that declines to judge an
+        # unclassified machine is not passing it, and saying so is the
+        # difference between "your machines are fine" and "this is about the
+        # ones you told us matter".
+        applies_when={"data_sensitivity": Level.HIGH},
+        cli=(
+            "az network nic ip-config update --resource-group <rg> "
+            "--nic-name <nic> --name <ipconfig> --remove publicIpAddress",
+        ),
+        notes=(
+            "No policy is generated. Azure Policy can deny public IP creation "
+            "through the network interface's own alias, and that expression has "
+            "not been verified against a real deployment from here -- an "
+            "unverified alias fails the whole definition atomically, which the "
+            "customer sees as 'Deployment Failed'."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["6.5", "7.1"],
+        "ISO_27001": ["A.8.20", "A.8.22", "A.5.10"],
+        "NIST_CSF": ["PR.AC-3", "PR.AC-5", "PR.DS-5"],
+        "GDPR": ["5(1)(f)", "25", "32(1)(b)"],
+        "NIST_800_53": ["SC-7", "AC-3"],
+        "SOC2": ["CC6.1", "CC6.6"],
+        "PCI_DSS_4": ["1.3.1", "1.4.1"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Network configuration unavailable: {failure}")
+
+        has_public_ip = resource.get("has_public_ip")
+        if has_public_ip is None:
+            # The machine's interfaces never arrived, so whether it is
+            # addressable from the internet is not something this scan knows.
+            return RuleResult.unknown("Public address information missing from snapshot")
+
+        # Sensitivity is the whole point of this rule, and it is the one input a
+        # customer can state for themselves (``context/``). A machine nothing
+        # has said anything about is not judged here: AZ-CMP-001 already reports
+        # what the internet can reach.
+        sensitive = _SENSITIVE_LEVELS & {resource.data_sensitivity, resource.criticality}
+        if not sensitive:
+            return RuleResult.not_applicable(
+                "This machine is not marked sensitive or business-critical"
+            )
+        if not has_public_ip:
+            return RuleResult.passed(
+                {
+                    "has_public_ip": False,
+                    "data_sensitivity": resource.data_sensitivity.value,
+                    "criticality": resource.criticality.value,
+                }
+            )
+
+        return RuleResult.failed(
+            evidence={
+                "has_public_ip": True,
+                "public_ips": resource.get("public_ips") or [],
+                "data_sensitivity": resource.data_sensitivity.value,
+                "criticality": resource.criticality.value,
+                "guarding_nsgs": resource.get("guarding_nsgs") or [],
+            },
+            message=(
+                f"{resource.name} holds sensitive or business-critical data and is "
+                "addressable from the internet"
+            ),
+        )
+
+
+# Bound after the classes exist, exactly as the three above are.
+AzurePublicSqlPortRule.remediation_spec = AzurePublicSqlPortRule._spec()
+AzurePublicSmbRule.remediation_spec = AzurePublicSmbRule._spec()

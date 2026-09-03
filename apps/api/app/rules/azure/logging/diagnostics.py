@@ -1,10 +1,16 @@
 from typing import ClassVar
 
 from app.connectors.azure.evidence import AzureEvidence
-from app.core.enums import ResourceType, Severity
+from app.core.enums import Level, ResourceType, Severity
 from app.domain.resource import CloudResource
 from app.remediation import Comparison, ExpectedState, RemediationSpec
 from app.rules.base import RuleContext, RuleResult, SecurityRule
+
+# What "critical" means here. HIGH and CRITICAL only: MEDIUM is where an
+# untagged, undeclared resource lands, and logging every one of those would make
+# this a catalogue-wide requirement rather than a statement about the assets a
+# customer said matter.
+_CRITICAL_LEVELS = frozenset({Level.HIGH, Level.CRITICAL})
 
 
 class AzureLoggingRule(SecurityRule):
@@ -260,5 +266,132 @@ class AzureActivityLogExportRule(SecurityRule):
             message=(
                 "The activity log for this subscription is not exported anywhere, so "
                 "the record of who changed what is kept for 90 days and then lost"
+            ),
+        )
+
+
+class AzureCriticalResourceLoggingRule(SecurityRule):
+    """The same question as AZ-LOG-001, asked of the resources it does not cover.
+
+    Deliberately disjoint from it. AZ-LOG-001 judges storage accounts, database
+    servers and network security groups; this judges key vaults and virtual
+    machines, and only where the estate says the asset matters. Overlapping the
+    two would raise two findings for one missing diagnostic setting, which is a
+    second row to close and a second deduction from the security score for one
+    piece of work.
+    """
+
+    rule_id = "AZ-LOG-004"
+    name = "Critical resource keeps no record of what happens to it"
+    description = (
+        "A business-critical or sensitive resource has no diagnostic setting sending its "
+        "logs anywhere. For a key vault that means no record of which identity read which "
+        "secret; for a machine it means no record of what ran on it. Neither can be "
+        "reconstructed afterwards -- the events are not stored and then discarded, they are "
+        "never written."
+    )
+    category = "logging"
+    severity = Severity.MEDIUM
+    exploitability = 1
+    applies_to: ClassVar[list[ResourceType]] = [
+        ResourceType.KEY_VAULT,
+        ResourceType.VIRTUAL_MACHINE,
+    ]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.DIAGNOSTIC_SETTINGS,
+    )
+    estimated_effort_minutes = 90
+    rationale = (
+        "The value of a log is decided before the incident, not during it. On the assets "
+        "that matter most, the absence of one turns every question an investigator asks -- "
+        "what was read, by whom, when it started -- into an answer nobody can give, and "
+        "turns a bounded incident into a disclosure with no scope."
+    )
+    remediation = (
+        "Send this resource's diagnostic logs to a Log Analytics workspace.\n\n"
+        "Azure Portal: select the resource > Monitoring > Diagnostic settings > Add "
+        "diagnostic setting > tick the audit and security categories > Send to Log "
+        "Analytics workspace > Save.\n\n"
+        "Azure CLI:\n"
+        "  az monitor diagnostic-settings create --name security-logs \\\n"
+        "    --resource <resource-id> --workspace <workspace-id> \\\n"
+        "    --logs '[{\"categoryGroup\":\"audit\",\"enabled\":true}]'\n\n"
+        "Do it once across the estate with an Azure Policy assignment that deploys the "
+        "setting, rather than per resource: the resources created next month are the ones "
+        "a manual pass will miss."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="diagnostic_settings",
+                comparison=Comparison.NOT_EMPTY,
+                equals=None,
+                describes="The resource sends its logs to a destination that keeps them",
+                example={"name": "security-logs", "workspace_id": "<workspace>"},
+            ),
+        ),
+        cli=(
+            "az monitor diagnostic-settings create --name security-logs "
+            "--resource <resource-id> --workspace <workspace-id> "
+            "--logs '[{\"categoryGroup\":\"audit\",\"enabled\":true}]'",
+        ),
+        notes=(
+            "Azure Policy has built-in DeployIfNotExists definitions that add "
+            "diagnostic settings per resource type. None is generated here: the "
+            "policy needs a workspace id that is this customer's own, and a "
+            "generated definition naming a placeholder would deploy nothing."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["5.3", "5.1.1"],
+        "ISO_27001": ["A.8.15", "A.8.16"],
+        "NIST_CSF": ["PR.PT-1", "DE.AE-3", "DE.CM-1"],
+        "GDPR": ["30", "32(1)(d)", "33"],
+        "NIST_800_53": ["AU-2", "AU-6"],
+        "SOC2": ["CC7.2", "CC7.3"],
+        "PCI_DSS_4": ["10.2.1", "10.3.2"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Diagnostic settings unavailable: {failure}")
+
+        # A key vault is critical whatever anybody declared -- it holds the
+        # credentials to everything else, which is why the context engine gives
+        # it a floor rather than an inference. A machine is judged on what the
+        # estate says about it.
+        matters = resource.resource_type == ResourceType.KEY_VAULT or bool(
+            _CRITICAL_LEVELS & {resource.criticality, resource.data_sensitivity}
+        )
+        if not matters:
+            return RuleResult.not_applicable(
+                "This resource is not marked business-critical or sensitive"
+            )
+
+        settings = resource.get("diagnostic_settings")
+        if settings is None:
+            return RuleResult.unknown("Diagnostic settings missing from snapshot")
+
+        if settings:
+            return RuleResult.passed(
+                {"diagnostic_setting_count": len(settings), "logs_retained": True}
+            )
+
+        return RuleResult.failed(
+            evidence={
+                "diagnostic_setting_count": 0,
+                "criticality": resource.criticality.value,
+                "data_sensitivity": resource.data_sensitivity.value,
+                "resource_type": resource.resource_type.value,
+            },
+            message=(
+                f"{resource.name} matters to this business and keeps no record of "
+                "what happens to it"
             ),
         )

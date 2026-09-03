@@ -39,7 +39,7 @@ from app.connectors.evidence import EvidenceCategory
 from app.core.enums import ConnectionScope
 
 # Bump when the action list changes.
-ROLE_VERSION = "v5"
+ROLE_VERSION = "v6"
 
 ROLE_NAME = "CloudGuard Security Scanner"
 
@@ -102,6 +102,18 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     # able to see that CloudGuard can tell them their vault is deletable
     # without being able to read a single secret in it.
     "Microsoft.KeyVault/vaults/read",
+    # The databases on a SQL server, and whether what they hold is encrypted
+    # where it sits. Two actions rather than one because encryption is a
+    # per-database setting and a server does not carry it: the list says which
+    # databases exist, the second says what each one does.
+    #
+    # Verified against the published operations reference on 2026-09-03, which
+    # is what this file's rule about unverified strings asks for -- a string
+    # that is not a real provider operation fails the whole role definition
+    # atomically, and the customer sees "Deployment Failed" rather than a note
+    # about one permission.
+    "Microsoft.Sql/servers/databases/read",
+    "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
     # Microsoft Defender for Cloud's assessments. A read of conclusions the
     # customer's own security service has already reached -- vulnerability
     # findings, endpoint protection state, patch level -- which CloudGuard
@@ -141,6 +153,10 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_diagnostic_settings": ("Microsoft.Insights/diagnosticSettings/read",),
     "list_role_assignments": ("Microsoft.Authorization/roleAssignments/read",),
     "list_role_assignments_at_scope": ("Microsoft.Authorization/roleAssignments/read",),
+    "list_sql_databases": ("Microsoft.Sql/servers/databases/read",),
+    "get_database_encryption": (
+        "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+    ),
     "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
     "get_role_definition": ("Microsoft.Authorization/roleDefinitions/read",),
     "list_key_vaults": ("Microsoft.KeyVault/vaults/read",),
@@ -176,6 +192,8 @@ COLLECTION_ACTIONS: dict[EvidenceCategory, tuple[str, ...]] = {
         "Microsoft.Sql/servers/read",
         "Microsoft.Sql/servers/firewallRules/read",
         "Microsoft.Sql/servers/auditingSettings/read",
+        "Microsoft.Sql/servers/databases/read",
+        "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
         "Microsoft.DBforPostgreSQL/flexibleServers/read",
     ),
     EvidenceCategory.LOGGING: ("Microsoft.Insights/diagnosticSettings/read",),
@@ -314,6 +332,32 @@ ROLE_HISTORY: dict[str, tuple[str, ...]] = {
         "Microsoft.KeyVault/vaults/read",
         "Microsoft.Security/assessments/read",
     ),
+    # v6 adds the two reads behind encryption at rest: which databases a SQL
+    # server holds, and whether each one encrypts what it stores. A v5 role
+    # keeps every other category and loses only that check, which then reports
+    # UNKNOWN -- a database whose encryption state could not be read is not a
+    # database known to be encrypted.
+    "v6": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.Sql/servers/auditingSettings/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+        "Microsoft.KeyVault/vaults/read",
+        "Microsoft.Sql/servers/databases/read",
+        "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+        "Microsoft.Security/assessments/read",
+    ),
 }
 
 
@@ -345,6 +389,23 @@ def role_is_current(role_version: str) -> bool:
     return not actions_missing_from(role_version)
 
 
+def action_matches(pattern: str, action: str) -> bool:
+    """Whether an ARM action pattern covers a specific action.
+
+    ARM patterns are segment-wise globs -- ``*``, ``Microsoft.Authorization/*``,
+    ``Microsoft.Authorization/*/Write`` -- so matching by equality would miss
+    every built-in role, since the interesting ones are written with wildcards.
+    Case-insensitive because ARM is: ``/Write`` and ``/write`` are the same
+    action, and Azure's own definitions use both.
+
+    Here rather than in the normalizer or in a rule because it is a fact about
+    ARM's own vocabulary, and three callers now need the same reading of it --
+    the role-version comparison below, the normalizer's escalation check, and
+    the rule that judges a tenant's custom roles.
+    """
+    return fnmatch(action.lower(), pattern.lower())
+
+
 def _permits(action: str, patterns: Iterable[str]) -> bool:
     """Whether an ARM action matches any of these permission patterns.
 
@@ -353,7 +414,7 @@ def _permits(action: str, patterns: Iterable[str]) -> bool:
     assigned Reader instead of the custom role does grant every read here.
     Comparing literally would have reported that role as granting nothing.
     """
-    return any(fnmatch(action.lower(), pattern.lower()) for pattern in patterns)
+    return any(action_matches(pattern, action) for pattern in patterns)
 
 
 def actions_granted_by(permissions: Iterable[Mapping[str, Any]]) -> frozenset[str]:

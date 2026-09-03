@@ -153,12 +153,22 @@ can consent their way to, and saying "consent is missing" to a tenant whose
 consent is complete would send somebody to fix a directory that is already
 correct.
 
-And not every gap is worth closing. Transparent data encryption and managed
-disk encryption were both scoped and then dropped: TDE has been on by default
-for Azure SQL databases since 2017, and managed disks are always encrypted at
-rest and cannot be turned off. Checks for them would have cost a permission and
-a per-database fan-out to report PASS for very nearly everyone, which is how a
-catalogue grows in size and shrinks in signal. SQL auditing is the opposite —
+And not every gap is worth closing. Managed disk encryption was scoped and
+dropped: managed disks are always encrypted at rest and cannot be turned off, so
+a check for it reports PASS for everyone, which is how a catalogue grows in size
+and shrinks in signal.
+
+Transparent data encryption was dropped on the same reasoning and has since been
+built anyway (AZ-DB-006, role `v6`), which is worth recording as a reversal
+rather than quietly overwriting. The original argument still holds on its own
+terms -- TDE has been on by default for Azure SQL since 2017, so the check costs
+a permission and a per-database fan-out to report PASS for very nearly everyone.
+What changed is what a pass is for. Encryption at rest is a control an auditor
+asks about by name, and since the compliance view began citing the readings
+behind each control, a pass carrying its provenance is the evidence somebody
+needs rather than a row nobody reads (`DECISIONS.md` §67). The two answers that
+are not a pass are also worth having: a database somebody turned it off on, and
+one whose state could not be read. SQL auditing is the opposite —
 off by default, one call per server — so v4 carries that action and only that
 one. Adding the rule first would produce a
 catalogue that looks complete and answers UNKNOWN, which is worse than a shorter

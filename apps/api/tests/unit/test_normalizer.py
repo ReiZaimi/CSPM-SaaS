@@ -318,3 +318,163 @@ class TestGraphFromRecordedAzure:
 
         targets = {t for _s, r, t in state.relationships if r == RelationshipType.GRANTS_ROLE}
         assert not any("managementGroups" in t for t in targets)
+
+
+class TestWhatTheNewRulesRead:
+    """Fields added for the rules that judge a tenant rather than a resource.
+
+    Each is here because the failure mode is silence: a normalizer that drops
+    one of these does not error, it produces a rule that reports UNKNOWN or --
+    worse -- PASS on data that was actually collected.
+    """
+
+    @staticmethod
+    def _state(**data):
+        snapshot = load_snapshot("snapshot_mixed")
+        snapshot.data.update(data)
+        return AzureNormalizer().normalize(snapshot)
+
+    def test_a_guest_is_distinguishable_from_a_member(self) -> None:
+        state = self._state(
+            users=[
+                {
+                    "id": "guest-1",
+                    "displayName": "Partner",
+                    "userPrincipalName": "p_partner#EXT#@contoso.onmicrosoft.com",
+                    "accountEnabled": True,
+                    "userType": "Guest",
+                }
+            ]
+        )
+        guest = next(u for u in by_type(state, ResourceType.USER) if u.name == "Partner")
+        assert guest.metadata["user_type"] == "Guest"
+
+    def test_a_directory_that_reported_no_user_type_says_nothing(self) -> None:
+        """None rather than "Member": the rule reports UNKNOWN, because
+        guessing the common answer is a pass nobody earned."""
+        state = self._state(
+            users=[
+                {
+                    "id": "u-1",
+                    "displayName": "Nobody",
+                    "userPrincipalName": "n@contoso.onmicrosoft.com",
+                    "accountEnabled": True,
+                }
+            ]
+        )
+        user = next(u for u in by_type(state, ResourceType.USER) if u.name == "Nobody")
+        assert user.metadata["user_type"] is None
+
+    def test_custom_roles_are_recorded_on_the_subscription(self) -> None:
+        state = self._state(
+            role_definitions=[
+                {
+                    "id": "/r/1",
+                    "properties": {
+                        "roleName": "Platform Support",
+                        "type": "CustomRole",
+                        "permissions": [{"actions": ["*"], "notActions": []}],
+                        "assignableScopes": ["/subscriptions/1"],
+                    },
+                }
+            ]
+        )
+        subscription = by_type(state, ResourceType.SUBSCRIPTION)[0]
+        roles = subscription.metadata["custom_roles"]
+        assert [r["name"] for r in roles] == ["Platform Support"]
+        assert roles[0]["actions"] == ["*"]
+
+    def test_built_in_roles_are_not_reported_as_the_tenants_own(self) -> None:
+        """Owner grants everything in every tenant. Reporting it would be
+        reporting the design of Azure rather than a decision anybody made."""
+        state = self._state(
+            role_definitions=[
+                {
+                    "id": "/r/owner",
+                    "properties": {
+                        "roleName": "Owner",
+                        "type": "BuiltInRole",
+                        "permissions": [{"actions": ["*"]}],
+                    },
+                }
+            ]
+        )
+        subscription = by_type(state, ResourceType.SUBSCRIPTION)[0]
+        assert subscription.metadata["custom_roles"] == []
+
+    def test_a_policy_blocking_legacy_clients_for_everybody_is_recorded(self) -> None:
+        state = self._state(
+            conditional_access_policies=[
+                {
+                    "id": "p1",
+                    "state": "enabled",
+                    "grantControls": {"builtInControls": ["block"]},
+                    "conditions": {
+                        "clientAppTypes": ["exchangeActiveSync", "other"],
+                        "users": {"includeUsers": ["All"]},
+                        "applications": {"includeApplications": ["All"]},
+                    },
+                }
+            ]
+        )
+        assert state.controls["legacy_authentication_blocked"] is True
+
+    def test_a_policy_covering_one_group_is_not_the_tenant(self) -> None:
+        """Established or nothing, exactly as the MFA policies are read. A
+        block scoped to one group leaves every other account reachable by
+        password alone."""
+        state = self._state(
+            conditional_access_policies=[
+                {
+                    "id": "p1",
+                    "state": "enabled",
+                    "grantControls": {"builtInControls": ["block"]},
+                    "conditions": {
+                        "clientAppTypes": ["exchangeActiveSync", "other"],
+                        "users": {"includeGroups": ["finance"]},
+                        "applications": {"includeApplications": ["All"]},
+                    },
+                }
+            ]
+        )
+        assert state.controls["legacy_authentication_blocked"] is False
+
+    def test_a_policy_naming_only_modern_clients_is_not_this(self) -> None:
+        state = self._state(
+            conditional_access_policies=[
+                {
+                    "id": "p1",
+                    "state": "enabled",
+                    "grantControls": {"builtInControls": ["block"]},
+                    "conditions": {
+                        "clientAppTypes": ["browser", "mobileAppsAndDesktopClients"],
+                        "users": {"includeUsers": ["All"]},
+                        "applications": {"includeApplications": ["All"]},
+                    },
+                }
+            ]
+        )
+        assert state.controls["legacy_authentication_blocked"] is False
+
+    def test_encryption_state_reaches_the_server_it_belongs_to(self) -> None:
+        servers = load_snapshot("snapshot_mixed").data["sql_servers"]
+        state = self._state(
+            sql_tde={
+                servers[0]["id"]: [{"database": "payments", "state": "Disabled"}]
+            }
+        )
+        server = next(
+            s
+            for s in by_type(state, ResourceType.SQL_SERVER)
+            if s.provider_resource_id == servers[0]["id"]
+        )
+        assert server.metadata["databases"] == [
+            {"database": "payments", "state": "Disabled"}
+        ]
+
+    def test_a_server_whose_databases_were_never_read_carries_none(self) -> None:
+        """None, not []. "No databases" and "we could not list them" are
+        different answers and only one supports a pass."""
+        state = self._state(sql_tde={})
+        server = by_type(state, ResourceType.SQL_SERVER)[0]
+        assert server.metadata["databases"] is None

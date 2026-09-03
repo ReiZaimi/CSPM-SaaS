@@ -16,9 +16,9 @@ labels — a public IP is attached or it is not.
 
 import re
 from datetime import UTC, datetime
-from fnmatch import fnmatch
 from typing import Any
 
+from app.connectors.azure.rbac import action_matches
 from app.connectors.base import NormalizedState, RawSnapshot
 from app.context import AssetContext, infer
 from app.core.enums import Level, Provider, RelationshipType, ResourceType
@@ -127,18 +127,6 @@ def _role_summary(definition: dict[str, Any] | None) -> str:
 ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
 
 
-def _action_matches(pattern: str, action: str) -> bool:
-    """Whether an ARM action pattern covers a specific action.
-
-    ARM patterns are segment-wise globs -- ``*``, ``Microsoft.Authorization/*``,
-    ``Microsoft.Authorization/*/Write`` -- and matching them by equality would
-    miss every built-in role, since the interesting ones are written with
-    wildcards. Case-insensitive because ARM is: ``/Write`` and ``/write`` are the
-    same action, and Azure's own definitions use both.
-    """
-    return fnmatch(action.lower(), pattern.lower())
-
-
 def _grants_role_assignment(definition: dict[str, Any] | None) -> bool:
     """Whether this role definition lets its holder hand out roles.
 
@@ -158,9 +146,9 @@ def _grants_role_assignment(definition: dict[str, Any] | None) -> bool:
     for permission in _first(definition, "properties", "permissions", default=[]) or []:
         actions = permission.get("actions") or []
         not_actions = permission.get("notActions") or []
-        if not any(_action_matches(p, ROLE_ASSIGNMENT_WRITE) for p in actions):
+        if not any(action_matches(p, ROLE_ASSIGNMENT_WRITE) for p in actions):
             continue
-        if any(_action_matches(p, ROLE_ASSIGNMENT_WRITE) for p in not_actions):
+        if any(action_matches(p, ROLE_ASSIGNMENT_WRITE) for p in not_actions):
             continue
         return True
     return False
@@ -397,6 +385,51 @@ class AzureNormalizer:
         return resources
 
     # ------------------------------------------------------------ containment
+    @staticmethod
+    def _custom_roles(snapshot: RawSnapshot) -> list[dict[str, Any]]:
+        """This tenant's own role definitions, reduced to what they permit.
+
+        Built-in roles are excluded. They are Microsoft's, every tenant has the
+        same ones, and a rule reporting that Owner grants everything would be
+        reporting the design of Azure rather than a decision anybody made.
+
+        ``None`` is not distinguished from ``[]`` here, and the rule reading
+        this is why: it degrades on the evidence key instead, which says
+        whether the definitions were read at all.
+        """
+        definitions = snapshot.data.get("role_definitions") or []
+        roles: list[dict[str, Any]] = []
+        for definition in definitions:
+            props = definition.get("properties") or {}
+            if str(props.get("type", "")).lower() not in {"customrole", "custom"}:
+                continue
+            permissions = props.get("permissions") or []
+            roles.append(
+                {
+                    "id": definition.get("id"),
+                    "name": props.get("roleName"),
+                    "actions": [
+                        str(action)
+                        for permission in permissions
+                        for action in (permission.get("actions") or [])
+                    ],
+                    "not_actions": [
+                        str(action)
+                        for permission in permissions
+                        for action in (permission.get("notActions") or [])
+                    ],
+                    "data_actions": [
+                        str(action)
+                        for permission in permissions
+                        for action in (permission.get("dataActions") or [])
+                    ],
+                    "assignable_scopes": [
+                        str(scope) for scope in (props.get("assignableScopes") or [])
+                    ],
+                }
+            )
+        return roles
+
     def _normalize_scopes(
         self,
         snapshot: RawSnapshot,
@@ -430,6 +463,12 @@ class AzureNormalizer:
                 # Claiming a level here would double-count it.
                 metadata={
                     "subscription_id": subscription_id,
+                    # The roles this tenant wrote itself, with what each one
+                    # grants. Recorded on the subscription because that is
+                    # where they are defined and where they are assignable: a
+                    # custom role is not an asset with its own lifecycle, it is
+                    # a statement about what may be done here.
+                    "custom_roles": self._custom_roles(snapshot),
                     # Where the activity log goes, if anywhere. Carried on the
                     # subscription rather than derived per resource, because
                     # the activity log is one record of what was done across
@@ -792,6 +831,7 @@ class AzureNormalizer:
     ) -> list[CloudResource]:
         resources = []
         auditing = data.get("sql_auditing", {}) or {}
+        encryption = data.get("sql_tde", {}) or {}
 
         for server in data.get("sql_servers", []):
             props = server.get("properties", {}) or {}
@@ -818,6 +858,11 @@ class AzureNormalizer:
                         "administrator_login": props.get("administratorLogin"),
                         "minimal_tls_version": props.get("minimalTlsVersion"),
                         "auditing": self._auditing(server["id"], auditing),
+                        # What each database on this server does about
+                        # encryption at rest. None where the reading never
+                        # arrived, which the rule reports as UNKNOWN rather
+                        # than as a server with no databases.
+                        "databases": self._encryption(server["id"], encryption),
                         "diagnostic_settings": self._diagnostics_for(server["id"], diagnostics),
                         "tags": server.get("tags") or {},
                     },
@@ -910,6 +955,28 @@ class AzureNormalizer:
             "log_analytics_enabled": props.get("isAzureMonitorTargetEnabled"),
             "audit_actions": props.get("auditActionsAndGroups") or [],
         }
+
+    @staticmethod
+    def _encryption(
+        server_id: str, encryption: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        """What this server's databases do about encryption at rest.
+
+        ``None`` when the reading failed or was never taken -- the same
+        distinction ``_auditing`` and ``_firewall_rules`` draw, and for the same
+        reason: a database whose encryption state could not be read is not a
+        database known to be unencrypted, and only one of those is a finding.
+
+        A database whose own read failed keeps a ``state`` of None inside an
+        otherwise readable server, so one refusal costs one database its verdict
+        rather than the server's.
+        """
+        raw = encryption.get(server_id)
+        if not isinstance(raw, list):
+            # Absent, or the string 'error: ...' the collector records per
+            # server it could not list databases for.
+            return None
+        return [entry for entry in raw if isinstance(entry, dict)]
 
     def _database_exposure(
         self, props: dict[str, Any], firewall_rules: list[dict[str, Any]] | None
@@ -1037,6 +1104,11 @@ class AzureNormalizer:
             metadata: dict[str, Any] = {
                 "user_principal_name": user.get("userPrincipalName"),
                 "account_enabled": user.get("accountEnabled"),
+                # Member or Guest. A guest is an account whose password,
+                # lifecycle and second factor belong to another tenant's
+                # administrator, which is a different thing from a member of
+                # this one holding the same role.
+                "user_type": user.get("userType"),
                 "directory_roles": roles,
             }
             metadata.update(
@@ -1225,7 +1297,58 @@ class AzureNormalizer:
             controls["mfa_policies"] = self._mfa_policies(
                 policies, data.get("directory_roles") or [], data.get("group_members")
             )
+            # Whether anything stops a client that cannot present a second
+            # factor from authenticating at all. Recorded as a fact about the
+            # tenant rather than as a policy list, because that is the whole
+            # question: legacy protocols bypass Conditional Access, so MFA is
+            # not enforced anywhere they are still allowed.
+            controls["legacy_authentication_blocked"] = self._blocks_legacy_auth(
+                policies
+            )
         return controls
+
+    @staticmethod
+    def _blocks_legacy_auth(policies: list[dict[str, Any]]) -> bool:
+        """Whether an enabled policy blocks legacy authentication for everyone.
+
+        Established or nothing, exactly as ``_mfa_policies`` is. A policy
+        blocking legacy clients for one group leaves the tenant's other accounts
+        reachable by password alone, and reporting the tenant as covered on the
+        strength of it would be CloudGuard vouching for a boundary the customer
+        did not draw.
+
+        The two legacy client types are Azure's own names for them:
+        ``exchangeActiveSync`` and ``other`` -- the second covering IMAP, POP,
+        SMTP AUTH and the older Office clients. A policy naming only the modern
+        types is not this.
+        """
+        legacy = {"exchangeactivesync", "other"}
+        for policy in policies:
+            if str(policy.get("state", "")).lower() != "enabled":
+                continue
+            grant = policy.get("grantControls") or {}
+            built_in = [str(c).lower() for c in (grant.get("builtInControls") or [])]
+            if "block" not in built_in:
+                continue
+
+            conditions = policy.get("conditions") or {}
+            client_types = {
+                str(c).lower() for c in (conditions.get("clientAppTypes") or [])
+            }
+            if not legacy <= client_types:
+                continue
+
+            users = conditions.get("users") or {}
+            included = {str(u).lower() for u in (users.get("includeUsers") or [])}
+            if "all" not in included:
+                continue
+            applications = (conditions.get("applications") or {}).get(
+                "includeApplications"
+            ) or []
+            if "all" not in {str(a).lower() for a in applications}:
+                continue
+            return True
+        return False
 
     @staticmethod
     def _requires_mfa(policy: dict[str, Any]) -> bool:

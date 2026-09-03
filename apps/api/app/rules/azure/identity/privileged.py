@@ -129,3 +129,198 @@ class AzurePrivilegedUserRule(SecurityRule):
                 ),
             )
         return RuleResult.passed(evidence)
+
+
+class AzureGuestPrivilegedUserRule(SecurityRule):
+    rule_id = "AZ-ID-011"
+    name = "Guest account holds a privileged role"
+    description = (
+        "An account invited into this directory from outside it holds a privileged role. "
+        "Its password, its second factor and its lifecycle belong to another organization's "
+        "administrator: this tenant cannot reset it, cannot enforce how it is protected, and "
+        "does not learn when the person leaves the company that owns it."
+    )
+    category = "identity"
+    severity = Severity.HIGH
+    exploitability = 3
+    scope = RuleScope.PER_RESOURCE
+    applies_to: ClassVar[list[ResourceType]] = [ResourceType.USER]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.USERS,
+        AzureEvidence.DIRECTORY_ROLES,
+        AzureEvidence.USER_ROLE_MAP,
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "Privilege granted to an identity you do not control is privilege you cannot "
+        "withdraw at the speed of an incident. A partner's compromised account arrives here "
+        "already holding the role, and the joiner-mover-leaver process that would have "
+        "removed it runs in a directory that is not yours."
+    )
+    remediation = (
+        "Move the privilege onto an account this tenant controls.\n\n"
+        "Entra admin centre > Roles and administrators > select the role > Assignments > "
+        "remove the guest, then assign a member account belonging to this directory.\n\n"
+        "Azure CLI:\n"
+        "  az ad user list --filter \"userType eq 'Guest'\" -o table\n\n"
+        "Where a partner genuinely needs administrative access, prefer Entra ID Governance "
+        "access packages with an expiry date, or Privileged Identity Management with "
+        "time-bound eligible assignment, so the grant ends on its own rather than when "
+        "somebody remembers it."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        # Empty, because the fix is not a setting on this account: a guest
+        # cannot be turned into a member, and the thing that changes is which
+        # account holds the role. Declared rather than left absent so "no
+        # declaration written" and "no declaration possible" stay apart.
+        expected=(),
+        cli=("az ad user list --filter \"userType eq 'Guest'\" -o table",),
+        notes=(
+            "Fixed by moving the role onto an account this directory owns. No "
+            "policy is generated: role assignment is a directory operation "
+            "rather than a resource property, so no policyRule can express it."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["1.1.3", "1.21"],
+        "ISO_27001": ["A.5.15", "A.5.16", "A.5.18"],
+        "NIST_CSF": ["PR.AC-1", "PR.AC-4"],
+        "GDPR": ["32(1)(b)", "5(1)(f)"],
+        "NIST_800_53": ["AC-2", "AC-6"],
+        "SOC2": ["CC6.1", "CC6.2", "CC6.3"],
+        "PCI_DSS_4": ["7.2.1", "8.2.1"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Identity data unavailable: {failure}")
+
+        roles = resource.get("directory_roles")
+        if roles is None:
+            return RuleResult.unknown("Role membership missing from snapshot")
+        if not _is_privileged(resource):
+            return RuleResult.not_applicable("User holds no privileged role")
+
+        user_type = resource.get("user_type")
+        if user_type is None:
+            # The account was read and its type was not. Guessing "Member"
+            # because most accounts are one would be a pass nobody earned.
+            return RuleResult.unknown(
+                "The directory did not report whether this account is a guest"
+            )
+        if str(user_type).lower() != "guest":
+            return RuleResult.passed({"user_type": user_type, "privileged_roles": roles})
+
+        return RuleResult.failed(
+            evidence={
+                "user_type": user_type,
+                "privileged_roles": roles,
+                "user_principal_name": resource.get("user_principal_name"),
+                "account_enabled": resource.get("account_enabled"),
+            },
+            message=(
+                f"{resource.name} is a guest in this directory and holds "
+                + ", ".join(sorted(str(r) for r in roles))
+            ),
+        )
+
+
+class AzureDisabledPrivilegedUserRule(SecurityRule):
+    rule_id = "AZ-ID-012"
+    name = "Disabled account still holds a privileged role"
+    description = (
+        "An account that has been disabled still carries its privileged role assignment. "
+        "Disabling stops sign-in; it does not remove privilege, so re-enabling the account "
+        "— by a helpdesk request, a sync from an on-premises directory, or an attacker who "
+        "reaches the directory — restores administrative access in one step."
+    )
+    category = "identity"
+    severity = Severity.MEDIUM
+    exploitability = 2
+    scope = RuleScope.PER_RESOURCE
+    applies_to: ClassVar[list[ResourceType]] = [ResourceType.USER]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.USERS,
+        AzureEvidence.DIRECTORY_ROLES,
+        AzureEvidence.USER_ROLE_MAP,
+    )
+    estimated_effort_minutes = 15
+    rationale = (
+        "A disabled account with a live role is a leaver whose offboarding stopped halfway. "
+        "It is invisible to every review that looks at who can sign in, and it is one "
+        "checkbox away from being an administrator again."
+    )
+    remediation = (
+        "Remove the role assignment, then delete the account if nobody needs its history.\n\n"
+        "Entra admin centre > Roles and administrators > select the role > Assignments > "
+        "remove the disabled account.\n\n"
+        "Azure CLI:\n"
+        "  az role assignment delete --assignee <object-id> --scope <scope>\n\n"
+        "Disabling is the right first step during offboarding, because it is reversible "
+        "while questions are still being asked. Removing the privilege is the step that "
+        "makes it stick."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        # Empty for the same reason as the rule above: the fix is removing a
+        # role assignment, which is an operation on the directory rather than a
+        # value on the account. Re-enabling the account would satisfy any
+        # expectation written about ``account_enabled`` and is the opposite of
+        # the fix.
+        expected=(),
+        cli=("az role assignment delete --assignee <object-id> --scope <scope>",),
+        notes=(
+            "No policy is generated: directory role membership is not a "
+            "resource property, so no policyRule can express it."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["1.1.3"],
+        "ISO_27001": ["A.5.16", "A.5.18"],
+        "NIST_CSF": ["PR.AC-1", "PR.AC-4"],
+        "GDPR": ["32(1)(b)"],
+        "NIST_800_53": ["AC-2", "PS-4"],
+        "SOC2": ["CC6.2", "CC6.3"],
+        "PCI_DSS_4": ["7.2.1", "8.2.1"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Identity data unavailable: {failure}")
+
+        roles = resource.get("directory_roles")
+        if roles is None:
+            return RuleResult.unknown("Role membership missing from snapshot")
+        if not _is_privileged(resource):
+            return RuleResult.not_applicable("User holds no privileged role")
+
+        enabled = resource.get("account_enabled")
+        if enabled is None:
+            return RuleResult.unknown(
+                "The directory did not report whether this account is enabled"
+            )
+        if enabled is not False:
+            return RuleResult.passed({"account_enabled": True, "privileged_roles": roles})
+
+        return RuleResult.failed(
+            evidence={
+                "account_enabled": False,
+                "privileged_roles": roles,
+                "user_principal_name": resource.get("user_principal_name"),
+            },
+            message=(
+                f"{resource.name} is disabled and still holds "
+                + ", ".join(sorted(str(r) for r in roles))
+            ),
+        )

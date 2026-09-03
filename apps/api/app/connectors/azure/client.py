@@ -443,6 +443,26 @@ class ArmClient(_BaseClient):
             "/assessments?api-version=2020-01-01&$expand=metadata"
         )
 
+    async def list_sql_databases(self, server_id: str) -> list[dict[str, Any]]:
+        """The databases on one SQL server.
+
+        Needed to ask about anything held *in* a server rather than about the
+        server itself: encryption is a per-database setting, so there is no
+        server-level answer to read instead.
+        """
+        return await self.get_all(f"{server_id}/databases?api-version=2021-11-01")
+
+    async def get_database_encryption(self, database_id: str) -> dict[str, Any]:
+        """Whether this database's data is encrypted at rest.
+
+        Returned as a listing of one by the provider, which is why this reads
+        the collection endpoint rather than a singleton: the API models
+        transparent data encryption as a child resource named ``current``.
+        """
+        return await self.get(
+            f"{database_id}/transparentDataEncryption?api-version=2021-11-01"
+        )
+
     async def list_key_vaults(self, subscription_id: str) -> list[dict[str, Any]]:
         """Every key vault's configuration, not its contents.
 
@@ -656,8 +676,13 @@ class GraphClient(_BaseClient):
 
     async def list_users(self) -> list[dict[str, Any]]:
         return await self.get_all(
+            # ``userType`` distinguishes a member of this directory from a
+            # guest invited into it. A guest holding a privileged role is an
+            # account another tenant's administrator controls the lifecycle of,
+            # which is a different problem from a member holding the same role
+            # and cannot be told apart without this field.
             "/users?$select=id,displayName,userPrincipalName,accountEnabled,"
-            "createdDateTime&$top=999"
+            "userType,createdDateTime&$top=999"
         )
 
     async def list_directory_roles(self) -> list[dict[str, Any]]:

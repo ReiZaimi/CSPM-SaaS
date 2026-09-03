@@ -219,7 +219,7 @@ checked.
 
 ### The role is exactly what the scanner reads
 
-The custom role declares 17 read actions, and every one is exercised by a real
+The custom role declares 19 read actions, and every one is exercised by a real
 call in `app/connectors/azure/client.py`. Nothing is granted speculatively.
 
 It was briefly wider — 30 actions, with 17 declared ahead of the rules that
@@ -248,12 +248,14 @@ az provider operation show --namespace Microsoft.KeyVault \
   --query "resourceTypes[].operations[].name"
 ```
 
-`ROLE_VERSION` is `v5`, and `ROLE_HISTORY` records what every published version
+`ROLE_VERSION` is `v6`, and `ROLE_HISTORY` records what every published version
 granted. A version exists to flag a deployed role that is *insufficient* for a
 newer rule; narrowing is backward compatible and does not warrant a bump. `v2`
 added Resource Graph, which inventory needs since it moved off the ARM resource
 listing (`DECISIONS.md` §14); `v3` key vaults, `v4` SQL auditing settings, `v5`
-Defender for Cloud's assessments. A connection on an older role keeps every
+Defender for Cloud's assessments, and `v6` the two reads behind encryption at
+rest -- which databases a SQL server holds, and whether each one encrypts what
+it stores. A connection on an older role keeps every
 other category and loses exactly the checks the missing actions serve, which
 `degraded_categories` names in those terms rather than as a 403 — and those
 checks report UNKNOWN rather than passing.

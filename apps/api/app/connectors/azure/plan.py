@@ -108,6 +108,14 @@ SQL_FIREWALL_ENDPOINT = ProviderEndpoint(
 SQL_AUDITING_ENDPOINT = ProviderEndpoint(
     f"{ARM}/{{serverId}}/auditingSettings/default", "2021-11-01"
 )
+# The two calls behind encryption at rest, and the reason it is a task of its
+# own: encryption is a per-database setting, so answering it means listing what
+# a server holds and then asking each one -- a fan-out beneath a listing rather
+# than another field on it.
+SQL_DATABASES_ENDPOINT = ProviderEndpoint(f"{ARM}/{{serverId}}/databases", "2021-11-01")
+SQL_TDE_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/{{databaseId}}/transparentDataEncryption", "2021-11-01"
+)
 SECURITY_ASSESSMENTS_ENDPOINT = ProviderEndpoint(
     f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Security/assessments",
     "2020-01-01",
@@ -179,6 +187,22 @@ SIGN_IN_ACTIVITY_ENDPOINT = ProviderEndpoint(
 # remedy is a Global Administrator, or the customer is sent to fix a directory
 # that is already correct.
 _UNLICENSED_MARKERS = ("premium license", "premium licence")
+
+
+def _encryption_state(payload: dict[str, Any]) -> str | None:
+    """The state ARM reports for one database's encryption.
+
+    The provider models this as a collection holding a single member named
+    ``current``, so the answer arrives wrapped in a listing. ``None`` where the
+    response holds no state at all, which is not the same as "Disabled" and must
+    not be read as one.
+    """
+    values = payload.get("value")
+    entry = values[0] if isinstance(values, list) and values else payload
+    if not isinstance(entry, dict):
+        return None
+    state = (entry.get("properties") or {}).get("state")
+    return str(state) if state is not None else None
 
 
 class AzurePlanBuilder:
@@ -442,6 +466,7 @@ class AzurePlanBuilder:
             ),
             self._inventory_task(),
             self._sql_auditing_task(),
+            self._sql_tde_task(),
             self._diagnostics_task(),
         ]
         return tasks
@@ -502,6 +527,99 @@ class AzurePlanBuilder:
             depends_on=(AzureEvidence.SQL_SERVERS,),
             actions=("Microsoft.Sql/servers/auditingSettings/read",),
             endpoints=(SQL_AUDITING_ENDPOINT,),
+        )
+
+    def _sql_tde_task(self) -> CollectionTask:
+        """Whether what each database holds is encrypted where it sits.
+
+        A dependent task like the auditing read, and for the same two reasons:
+        it rests on the server listing, and it is separately deniable -- the
+        permissions behind it arrive in role v6, so a customer who has not
+        redeployed reads their servers and firewall rules perfectly well and is
+        refused exactly this.
+
+        The fan-out is two deep rather than one. Encryption is a property of a
+        database, not of the server holding it, so there is no server-level
+        answer to read instead: the databases are listed, then each is asked.
+
+        ``master`` is skipped. It is the system database Azure creates and
+        manages, it is always encrypted, and reporting it would put a row a
+        customer cannot act on beside the ones they can.
+        """
+
+        async def run(collected: dict[str, Any]) -> TaskData:
+            arm = ArmClient(self.tokens, self._http, limiter=self._limiter)
+            servers = [
+                server["id"]
+                for server in collected.get(AzureEvidence.SQL_SERVERS, [])
+                if server.get("id")
+            ]
+
+            failures = 0
+
+            async def for_database(database: dict[str, Any]) -> dict[str, Any]:
+                nonlocal failures
+                try:
+                    encryption = await arm.get_database_encryption(database["id"])
+                except Exception as exc:
+                    failures += 1
+                    # Named per database rather than dropped: a database whose
+                    # encryption state could not be read is not one known to be
+                    # encrypted, and the rule reports UNKNOWN for that database
+                    # alone rather than for the server.
+                    return {
+                        "database": database.get("name"),
+                        "id": database["id"],
+                        "state": None,
+                        "error": str(exc),
+                    }
+                return {
+                    "database": database.get("name"),
+                    "id": database["id"],
+                    "state": _encryption_state(encryption),
+                }
+
+            async def for_server(server_id: str) -> tuple[str, Any]:
+                nonlocal failures
+                try:
+                    databases = await arm.list_sql_databases(server_id)
+                except Exception as exc:
+                    failures += 1
+                    return server_id, f"error: {exc}"
+                wanted = [
+                    database
+                    for database in databases
+                    if database.get("id")
+                    and str(database.get("name", "")).lower() != "master"
+                ]
+                return server_id, await self._gather_limited(
+                    [for_database(database) for database in wanted]
+                )
+
+            pairs = await self._gather_limited([for_server(s) for s in servers])
+            data = {"sql_tde": dict(pairs)}
+
+            if failures:
+                return TaskData(
+                    data,
+                    partial_reason=(
+                        f"encryption state could not be read for {failures} "
+                        f"database(s) or server(s). A scanner role deployed "
+                        f"before {ROLE_VERSION} does not grant the permissions "
+                        f"this needs."
+                    ),
+                )
+            return TaskData(data)
+
+        return CollectionTask(
+            key=AzureEvidence.SQL_TDE,
+            run=run,
+            depends_on=(AzureEvidence.SQL_SERVERS,),
+            actions=(
+                "Microsoft.Sql/servers/databases/read",
+                "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+            ),
+            endpoints=(SQL_DATABASES_ENDPOINT, SQL_TDE_ENDPOINT),
         )
 
     def build_directory_plan(self) -> list[CollectionTask]:

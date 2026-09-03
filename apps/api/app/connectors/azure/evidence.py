@@ -45,6 +45,13 @@ class AzureEvidence(EvidenceKey):
     # which is the same mistake ``requires_evidence`` was introduced to stop
     # one layer up.
     SQL_AUDITING = "sql_auditing"
+    # Whether the data each database holds is encrypted where it sits. Its own
+    # key for the same reason auditing is: it arrives in role v6, it is a
+    # per-database fan-out beneath the server listing, and a customer who has
+    # not redeployed reads their servers perfectly well and is refused exactly
+    # this. Folded into the server listing, that refusal would cost the
+    # reachability rule its verdict over a call it never reads.
+    SQL_TDE = "sql_tde"
     POSTGRESQL_SERVERS = "postgresql_servers"
 
     # The vault's configuration. Never its contents -- reading a secret is a
@@ -121,6 +128,7 @@ _CATEGORIES: dict[AzureEvidence, EvidenceCategory] = {
     AzureEvidence.STORAGE_ACCOUNTS: EvidenceCategory.STORAGE,
     AzureEvidence.SQL_SERVERS: EvidenceCategory.DATABASE,
     AzureEvidence.SQL_AUDITING: EvidenceCategory.DATABASE,
+    AzureEvidence.SQL_TDE: EvidenceCategory.DATABASE,
     AzureEvidence.KEY_VAULTS: EvidenceCategory.SECRETS,
     AzureEvidence.SECURITY_ASSESSMENTS: EvidenceCategory.POSTURE,
     AzureEvidence.POSTGRESQL_SERVERS: EvidenceCategory.DATABASE,

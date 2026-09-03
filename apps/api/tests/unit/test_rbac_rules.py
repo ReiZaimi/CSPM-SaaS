@@ -18,6 +18,9 @@ from app.connectors.azure.evidence import AzureEvidence
 from app.core.enums import Level, Provider, ResourceType, RuleState
 from app.domain.resource import CloudResource
 from app.rules.azure.rbac.privilege import (
+    AzureBroadScopeAssignmentRule,
+    AzureDangerousCustomRoleRule,
+    AzureExcessiveOwnersRule,
     AzurePersonWithSubscriptionControlRule,
     AzureRoleGrantingIdentityRule,
     AzureWorkloadWithSubscriptionControlRule,
@@ -269,3 +272,198 @@ class TestRuleContract:
         for rule in self.RULES:
             result = rule.evaluate(None, context())
             assert result.state == RuleState.NOT_APPLICABLE
+
+
+# ---------------------------------------------- privilege above the subscription
+BROAD = AzureBroadScopeAssignmentRule()
+MANAGEMENT_GROUP = "/providers/Microsoft.Management/managementGroups/platform"
+
+
+class TestPrivilegeAboveTheSubscription:
+    """AZ-IAM-008. A subscription-scoped mistake is bounded by the subscription;
+    a management-group one grows on its own, because the subscriptions created
+    next inherit it and nobody granted them anything."""
+
+    def test_owner_at_a_management_group_fails(self) -> None:
+        holder = identity(
+            ResourceType.USER,
+            roles=[{"role": "Owner", "scope": MANAGEMENT_GROUP}],
+        )
+        result = BROAD.evaluate(holder, RuleContext(resources=[holder]))
+        assert result.state == RuleState.FAIL
+        assert result.evidence["inherited_full_control"][0]["scope"] == MANAGEMENT_GROUP
+
+    def test_owner_at_the_tenant_root_fails(self) -> None:
+        """The broadest scope Azure has, and the one an assignment reaches by
+        accident when somebody grants at the root to unblock themselves."""
+        holder = identity(ResourceType.USER, roles=[{"role": "Owner", "scope": "/"}])
+        result = BROAD.evaluate(holder, RuleContext(resources=[holder]))
+        assert result.state == RuleState.FAIL
+
+    def test_the_same_role_on_the_subscription_is_not_this_finding(self) -> None:
+        """AZ-IAM-001 reports that one. Failing both would raise two findings
+        for one assignment and charge the score twice for removing it."""
+        holder = identity(
+            ResourceType.USER, roles=[{"role": "Owner", "scope": SUBSCRIPTION}]
+        )
+        assert (
+            BROAD.evaluate(holder, RuleContext(resources=[holder])).state
+            is RuleState.PASS
+        )
+
+    def test_a_narrow_role_above_the_subscription_passes(self) -> None:
+        """Reader inherited by every subscription is a design, not a defect."""
+        holder = identity(
+            ResourceType.USER, roles=[{"role": "Reader", "scope": MANAGEMENT_GROUP}]
+        )
+        assert (
+            BROAD.evaluate(holder, RuleContext(resources=[holder])).state
+            is RuleState.PASS
+        )
+
+    def test_an_identity_with_no_recorded_assignments_is_unknown(self) -> None:
+        holder = identity(ResourceType.USER, roles=None)
+        assert (
+            BROAD.evaluate(holder, RuleContext(resources=[holder])).state
+            is RuleState.UNKNOWN
+        )
+
+
+# ------------------------------------------------------ how many hold Owner
+OWNERS = AzureExcessiveOwnersRule()
+
+
+def owners(count: int) -> list[CloudResource]:
+    return [
+        identity(
+            ResourceType.USER,
+            roles=[{"role": "Owner", "scope": SUBSCRIPTION}],
+            resource_id=f"/users/owner-{index}",
+            name=f"owner-{index}",
+        )
+        for index in range(count)
+    ]
+
+
+class TestHowManyHoldOwner:
+    """AZ-IAM-005. Not the same question as AZ-IAM-001, which reports each
+    holder: no single Owner is the one too many, so this cannot be asked per
+    identity."""
+
+    def test_a_small_number_of_owners_passes(self) -> None:
+        context = RuleContext(resources=owners(2))
+        assert OWNERS.evaluate(None, context).state is RuleState.PASS
+
+    def test_more_owners_than_a_team_needs_fails(self) -> None:
+        context = RuleContext(resources=owners(OWNERS.MAX_OWNERS + 1))
+        result = OWNERS.evaluate(None, context)
+        assert result.state == RuleState.FAIL
+        assert result.evidence["owner_count"] == OWNERS.MAX_OWNERS + 1
+
+    def test_owners_above_the_subscription_are_not_counted_here(self) -> None:
+        """AZ-IAM-008's answer. Counting them would make one assignment two
+        findings, and the fix for each is a different operation."""
+        inherited = [
+            identity(
+                ResourceType.USER,
+                roles=[{"role": "Owner", "scope": MANAGEMENT_GROUP}],
+                resource_id=f"/users/mg-{index}",
+            )
+            for index in range(OWNERS.MAX_OWNERS + 3)
+        ]
+        result = OWNERS.evaluate(None, RuleContext(resources=inherited))
+        assert result.state == RuleState.PASS
+
+    def test_a_tenant_whose_assignments_never_arrived_is_unknown(self) -> None:
+        """Nobody holding Owner is not a clean tenant if nothing was read."""
+        blind = [identity(ResourceType.USER, roles=None)]
+        assert (
+            OWNERS.evaluate(None, RuleContext(resources=blind)).state
+            is RuleState.UNKNOWN
+        )
+
+    def test_a_failed_role_listing_is_unknown_not_a_pass(self) -> None:
+        context = RuleContext(
+            resources=owners(1),
+            collection_errors={AzureEvidence.ROLE_ASSIGNMENTS.value: "403"},
+        )
+        assert OWNERS.evaluate(None, context).state is RuleState.UNKNOWN
+
+
+# ------------------------------------------------------ roles a tenant wrote
+CUSTOM = AzureDangerousCustomRoleRule()
+
+
+def subscription_with(*roles: dict[str, Any]) -> CloudResource:
+    return CloudResource(
+        provider=Provider.AZURE,
+        provider_resource_id=SUBSCRIPTION,
+        resource_type=ResourceType.SUBSCRIPTION,
+        name="subscription",
+        criticality=Level.HIGH,
+        data_sensitivity=Level.HIGH,
+        public_exposure=Level.LOW,
+        metadata={"custom_roles": list(roles)},
+    )
+
+
+class TestRolesATenantWroteItself:
+    """AZ-IAM-010. Whoever reviews privilege looks at who holds Owner; a custom
+    role granting the same actions passes that review under another name."""
+
+    def test_a_wildcard_role_fails(self) -> None:
+        subscription = subscription_with({"name": "Platform Support", "actions": ["*"]})
+        result = CUSTOM.evaluate(subscription, RuleContext(resources=[subscription]))
+        assert result.state == RuleState.FAIL
+        assert result.evidence["dangerous_roles"][0]["role"] == "Platform Support"
+
+    def test_a_role_that_can_hand_out_roles_fails(self) -> None:
+        subscription = subscription_with(
+            {
+                "name": "Access Manager",
+                "actions": ["Microsoft.Authorization/roleAssignments/write"],
+            }
+        )
+        assert (
+            CUSTOM.evaluate(subscription, RuleContext(resources=[subscription])).state
+            is RuleState.FAIL
+        )
+
+    def test_an_exclusion_is_read_the_way_arm_reads_it(self) -> None:
+        """What separates Contributor from Owner. A wildcard that takes the
+        authorization writes back in notActions has not granted them, and
+        calling it dangerous would report every Contributor-shaped custom role
+        on nearly every subscription in existence."""
+        subscription = subscription_with(
+            {
+                "name": "Almost Contributor",
+                "actions": ["Microsoft.Compute/*"],
+                "not_actions": ["Microsoft.Authorization/*/write"],
+            }
+        )
+        assert (
+            CUSTOM.evaluate(subscription, RuleContext(resources=[subscription])).state
+            is RuleState.PASS
+        )
+
+    def test_a_narrow_custom_role_passes(self) -> None:
+        subscription = subscription_with(
+            {"name": "Log Reader", "actions": ["Microsoft.Insights/*/read"]}
+        )
+        assert (
+            CUSTOM.evaluate(subscription, RuleContext(resources=[subscription])).state
+            is RuleState.PASS
+        )
+
+    def test_a_subscription_whose_definitions_never_arrived_is_unknown(self) -> None:
+        subscription = CloudResource(
+            provider=Provider.AZURE,
+            provider_resource_id=SUBSCRIPTION,
+            resource_type=ResourceType.SUBSCRIPTION,
+            name="subscription",
+            metadata={},
+        )
+        assert (
+            CUSTOM.evaluate(subscription, RuleContext(resources=[subscription])).state
+            is RuleState.UNKNOWN
+        )
