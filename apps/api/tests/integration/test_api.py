@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.main import app
+from app.rules.registry import RULE_REGISTRY
 
 pytestmark = pytest.mark.integration
 
@@ -479,7 +480,10 @@ class TestRuleCatalogue:
 
         body = (await client.get("/api/v1/rules", headers=auth_header(user))).json()
         rules = {r["rule_id"]: r for r in body["data"]}
-        assert len(rules) == 10
+        # Counted from the registry rather than written out. The mirror's job is
+        # to hold whatever the registry holds, and a literal here says nothing
+        # about that while going stale every time a rule is added.
+        assert len(rules) == len(RULE_REGISTRY)
         # Data-driven mappings, not hardcoded logic (requirement 15).
         assert "CIS_AZURE_2.0" in rules["AZ-NET-001"]["compliance_mappings"]
         assert rules["AZ-ID-002"]["scope"] == "aggregate"
@@ -524,8 +528,11 @@ class TestCompliance:
         org = await make_org(client, user, "Curious Ltd")
         cleanup_orgs.append(uuid.UUID(org))
 
+        # Not a framework this catalogue has ever held. SOC 2 used to serve as
+        # the example and stopped being one the day it was mapped, which is the
+        # failure mode of naming a real standard nobody has got to yet.
         response = await client.get(
-            "/api/v1/compliance/SOC2", headers=auth_header(user)
+            "/api/v1/compliance/NOT_A_FRAMEWORK", headers=auth_header(user)
         )
         assert response.status_code == 404
 

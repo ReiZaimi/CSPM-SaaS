@@ -33,12 +33,30 @@ pytestmark = pytest.mark.integration
 
 USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 TENANT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-# The one key Azure grants a reuse window. Chosen here rather than invented, so
-# this exercises the policy that actually ships.
-REUSABLE = AzureEvidence.ROLE_DEFINITIONS
-PAYLOAD = {"role_definitions": [{"id": "/x/reader", "name": "Reader"}]}
+# Azure grants no reuse window at all today: role definitions carried one until
+# AZ-IAM-003 began reading them, and a key a rule reads may never be answered
+# from a stale copy. The mechanism still has to work, and only a database can
+# hold its scoping shut -- so a window is granted here, on the inventory, which
+# is the one key no rule declares and therefore the one a window could ship for.
+REUSABLE = AzureEvidence.RESOURCES
+REUSE_WINDOW = timedelta(days=7)
+PAYLOAD = {"resources": [{"id": "/x/vm-1", "type": "Microsoft.Compute/virtualMachines"}]}
 CONTENT_HASH = "a" * 64
 NOW = datetime.now(UTC)
+
+
+@pytest.fixture(autouse=True)
+def _reusable_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give ``REUSABLE`` the window the shipping policy currently gives nothing.
+
+    Patched rather than asserted around, because the alternative is a file of
+    tests that pass by doing nothing: with no key carrying a window, every one
+    of these would agree that nothing was carried forward and prove none of the
+    scoping they exist for.
+    """
+    from app.connectors.azure import evidence as azure_evidence
+
+    monkeypatch.setitem(azure_evidence._REUSE_WINDOWS, REUSABLE, REUSE_WINDOW)
 
 
 async def make_tenant(name: str) -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]:

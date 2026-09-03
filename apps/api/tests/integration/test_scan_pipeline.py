@@ -44,6 +44,7 @@ from app.models.context import ContextDeclarationRecord
 from app.models.finding import Finding
 from app.models.scan import Scan, ScanStep
 from app.models.verification import RemediationVerification
+from app.rules.registry import RULE_REGISTRY
 from app.services import orchestrator
 from app.services import scanner as scanner_module
 from app.services import scans as scans_service
@@ -388,7 +389,7 @@ class TestFirstScan:
 
         assert scan.status == ScanStatus.COMPLETED
         assert scan.resource_count > 0
-        assert scan.rule_count == 10
+        assert scan.rule_count == len(RULE_REGISTRY)
 
         # A capture per scope, not one per scan. This scan read one
         # subscription and the tenant directory above it, and both are stored
@@ -510,7 +511,9 @@ class TestFirstScan:
             "not_applicable_count FROM scan_rule_results WHERE scan_id = :s",
             {"s": scan_id},
         )
-        assert len(rows) == 10, "one aggregate row per rule in the registry"
+        assert len(rows) == len(RULE_REGISTRY), (
+            "one aggregate row per rule in the registry"
+        )
 
 
 class TestUnknownHandling:
@@ -3028,11 +3031,19 @@ class TestScenarioRisk:
         await run_scan(org_id, account_id)
 
         scenarios = await self._risks(org_id, "ATTACK_PATH")
+        # The findings *this* scenario groups, reached through the junction it
+        # was linked with. Taking the maximum across every finding risk in the
+        # organization asked a different question -- whether the worst thing
+        # anywhere sits on this route -- which is not a property of the scorer
+        # and stopped being true the moment a rule outside the route outscored
+        # the ones on it.
         members = await fetch(
-            "SELECT max(r.risk_score) FROM risks r "
-            "JOIN risk_findings rf ON rf.risk_id = r.id "
-            "WHERE r.organization_id = :o AND r.kind = 'FINDING'",
-            {"o": org_id},
+            "SELECT max(member.risk_score) FROM risks scenario "
+            "JOIN risk_findings sf ON sf.risk_id = scenario.id "
+            "JOIN risk_findings mf ON mf.finding_id = sf.finding_id "
+            "JOIN risks member ON member.id = mf.risk_id "
+            "WHERE scenario.id = :s AND member.kind = 'FINDING'",
+            {"s": scenarios[0][0]},
         )
 
         assert float(scenarios[0][2]) >= float(members[0][0])
