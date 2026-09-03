@@ -71,6 +71,14 @@ class FakeGraph:
         self._check("list_conditional_access_policies")
         return []
 
+    async def list_applications(self) -> list[dict]:
+        self._check("list_applications")
+        return [{"id": "a1", "appId": "app-1", "displayName": "pipeline"}]
+
+    async def list_sign_in_activity(self) -> list[dict]:
+        self._check("list_sign_in_activity")
+        return [{"id": "u1", "signInActivity": {"lastSignInDateTime": "2026-08-01T00:00:00Z"}}]
+
 
 async def run_identity(monkeypatch: pytest.MonkeyPatch, denied: set[str]):
     """Execute just the identity tasks, with Graph faked out."""

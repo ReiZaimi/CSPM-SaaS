@@ -49,6 +49,17 @@ def _serialize(
     # plausible explanation for the silence.
     data["deploy_stalled"] = service.deploy_stalled(connection)
     data["role_upgrade_available"] = service.role_upgrade_available(connection)
+    # What to redeploy to, and what is lost until they do. The boolean above
+    # says a newer role exists; on its own it can only produce "something is
+    # out of date", which is a notification rather than a decision. These two
+    # turn it into a sentence a customer can act on -- "database and secrets
+    # checks report UNKNOWN until you redeploy" -- and the categories come from
+    # the same function the scanner uses to explain the gaps, so the screen and
+    # the scan cannot disagree about which checks are affected.
+    data["role_required_version"] = service.required_role_version(connection)
+    data["degraded_categories"] = sorted(
+        category.value for category in service.degraded_categories(connection)
+    )
     # Both grants proven is not the same as having something to scan, and the
     # card said "Ready to scan: Yes" over an empty connection because it read
     # ``is_verified``. Readiness needs a subscription CloudGuard can actually

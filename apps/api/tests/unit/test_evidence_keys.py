@@ -16,6 +16,7 @@ import httpx
 from app.connectors.azure.evidence import AzureEvidence, keys_in
 from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.evidence import EvidenceCategory
+from app.core.enums import ResourceType
 from app.rules.registry import RULE_REGISTRY
 
 
@@ -170,3 +171,79 @@ def test_no_rule_reads_evidence_that_may_be_carried_forward() -> None:
         "these keys may be carried forward and are also read by a rule, so a "
         f"verdict could be reached from stale evidence: {sorted(k.value for k in overlap)}"
     )
+
+
+# ------------------------------------- a reading no verdict rests on
+def test_no_rule_degrades_on_the_inventory() -> None:
+    """The inventory is collected for the product, not for a verdict.
+
+    Resource Graph answers "what is in this subscription" across every resource
+    type, including the many CloudGuard has no rule for. Every rule reads its
+    own service listing instead -- storage from the storage listing, SQL from
+    the SQL listing -- so a failed inventory query costs no check its answer.
+
+    Asserted rather than assumed, because the two keys that bit recently bit in
+    exactly this way: ``sql_servers`` covered three calls, so a refusal of one
+    took the verdict of rules reading the others. A key nothing declares cannot
+    do that, and this is what keeps it so -- the day a rule reads the inventory,
+    it declares it here and this test says so.
+    """
+    declaring = [
+        rule.rule_id
+        for rule in RULE_REGISTRY
+        if AzureEvidence.RESOURCES in rule.requires_evidence
+    ]
+    assert declaring == [], (
+        "these rules depend on the inventory, so a failed Resource Graph query "
+        f"now costs them their verdict: {declaring}"
+    )
+
+
+def test_the_inventory_payload_is_read_and_no_rule_judges_it() -> None:
+    """Both halves, and they are not in tension.
+
+    The inventory used to be collected on every scan, stored in every snapshot,
+    and read by nothing -- justified by a comment claiming the customer's asset
+    list was made of it, which it was not. It is read now: the resources no
+    service listing produced become assets carrying ``ResourceType.UNKNOWN``,
+    counted and listed as unchecked.
+
+    No rule declares it and none ever should. ``UNKNOWN`` appears in no rule's
+    ``applies_to``, so nothing judges these and none of them can become a PASS
+    nobody earned -- the point is that they are visibly *not* checked, which is
+    a fact about CloudGuard rather than about the customer.
+    """
+    from pathlib import Path
+
+    import app.connectors.azure.normalizer as normalizer
+
+    source = Path(normalizer.__file__).read_text()
+    assert 'data.get("resources", [])' in source, (
+        "nothing reads the inventory, so it is a query per subscription per "
+        "scan and a stored blob for a capability that does not exist"
+    )
+
+    judging = [
+        rule.rule_id
+        for rule in RULE_REGISTRY
+        if ResourceType.UNKNOWN in rule.applies_to
+    ]
+    assert judging == [], (
+        "these rules would judge a resource CloudGuard holds no configuration "
+        f"for, so their verdict rests on nothing: {judging}"
+    )
+
+
+def test_the_inventory_is_still_collected_though_no_rule_reads_it() -> None:
+    """And it must stay declared as baseline while it is.
+
+    A plan is derived from the rule set plus the baseline. The moment nothing
+    names the inventory it stops being collected -- silently, since no check
+    would fail. This is the pair to the test above: one says no verdict rests
+    on it, the other says it is gathered anyway and on purpose.
+    """
+    from app.connectors.azure.connector import AzureConnector
+
+    assert AzureEvidence.RESOURCES in AzureConnector.baseline_evidence()
+    assert AzureEvidence.RESOURCES in planned_keys()
+

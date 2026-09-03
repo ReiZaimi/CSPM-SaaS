@@ -70,6 +70,17 @@ export interface Asset extends ResourceSummary {
    * asset sits without a request per row.
    */
   provider_resource_id: string;
+  /**
+   * The provider's own type, for resources CloudGuard has no rule for.
+   *
+   * `resource_type` is the cloud-neutral one the rules match on, and it is
+   * `"unknown"` for anything the connector does not model. A row reading
+   * "Unknown" would be a worse answer than the omission it replaced -- the
+   * point of listing these is that the customer can see *what* is unchecked --
+   * so the real type travels beside it. Null for a modelled asset, whose
+   * neutral type is already the better label.
+   */
+  azure_type: string | null;
   open_findings: number;
   first_seen_at: string;
   last_seen_at: string;
@@ -438,6 +449,18 @@ export interface ControlRuleEvidence {
   severity: string;
   open_finding_count: number;
   unknown_count: number;
+  /**
+   * Why the rule could not tell, in its own words.
+   *
+   * INCONCLUSIVE is the one verdict on a control card a reader cannot act on
+   * from the verdict alone: failing points at findings, passing needs nothing,
+   * not-covered is a fact about CloudGuard. "Three could not be evaluated"
+   * points nowhere — and the answer is frequently a scanner role that needs
+   * redeploying, which is a thing they can do today.
+   *
+   * Several because one rule can fail differently on different resources.
+   */
+  unknown_reasons: string[];
   evaluated: boolean;
 }
 
@@ -484,6 +507,24 @@ export interface CloudConnection {
   scope_id: string | null;
   scope_path: string | null;
   role_version: string;
+  /**
+   * Whether the deployed role is older than the one CloudGuard now needs.
+   *
+   * The version has been stamped on every connection since connections
+   * existed; until the access panel read it back it was a label rather than a
+   * mechanism. Shipping a check that needs a new ARM permission would leave
+   * every existing customer collecting UNKNOWN for it, with the screen still
+   * painting the role green.
+   */
+  role_upgrade_available: boolean;
+  /** The role version CloudGuard needs today, to redeploy toward. */
+  role_required_version: string;
+  /**
+   * Which collection categories the deployed role cannot fully serve. Empty
+   * when it is current. Comes from the same function the scanner uses to
+   * explain its gaps, so this screen and the scan cannot disagree.
+   */
+  degraded_categories: string[];
   tenant_id: string | null;
   service_principal_object_id: string | null;
   consent_status: "PENDING" | "GRANTED" | "REVOKED";

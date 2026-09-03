@@ -60,7 +60,16 @@ def _inbound_allow_rules(resource: CloudResource) -> list[dict[str, Any]] | None
     ]
 
 
-def _find_public_port(resource: CloudResource, port: int, protocols: set[str]) -> dict | None:
+def _find_public_port(
+    resource: CloudResource, ports: tuple[int, ...], protocols: set[str]
+) -> tuple[dict, int] | None:
+    """The first rule opening any of these ports to the internet, and which one.
+
+    Several ports rather than one, because a service is not always a port.
+    WinRM listens on 5985 and 5986 and either is the same finding with the same
+    fix -- reporting them as two findings would ask a customer to close the
+    same door twice.
+    """
     rules = _inbound_allow_rules(resource)
     if rules is None:
         return None
@@ -71,8 +80,9 @@ def _find_public_port(resource: CloudResource, port: int, protocols: set[str]) -
         if not _is_public(rule.get("source")):
             continue
         for port_spec in rule.get("destination_ports", []) or []:
-            if _port_matches(port_spec, port):
-                return rule
+            for port in ports:
+                if _port_matches(port_spec, port):
+                    return rule, port
     return None
 
 
@@ -94,6 +104,9 @@ class _PublicPortRule(SecurityRule):
     """Shared logic for 'port X is open to the whole internet'."""
 
     port: int
+    # Further ports the same service listens on, judged as one finding. Empty
+    # for a single-port service, which is both existing rules.
+    also_ports: ClassVar[tuple[int, ...]] = ()
     protocols: ClassVar[set[str]] = {"tcp"}
     service: str = ""
     requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
@@ -102,6 +115,10 @@ class _PublicPortRule(SecurityRule):
     )
     applies_to: ClassVar[list[ResourceType]] = [ResourceType.NETWORK_SECURITY_GROUP]
 
+
+    @classmethod
+    def _ports(cls) -> tuple[int, ...]:
+        return (cls.port, *cls.also_ports)
 
     @classmethod
     def _spec(cls) -> RemediationSpec:
@@ -119,7 +136,8 @@ class _PublicPortRule(SecurityRule):
                     comparison=Comparison.NONE_MATCHING,
                     equals=None,
                     describes=(
-                        f"No inbound rule allows {cls.service} (TCP/{cls.port}) "
+                        f"No inbound rule allows {cls.service} "
+                        f"(TCP/{'/'.join(str(p) for p in cls._ports())}) "
                         "from the internet"
                     ),
                     # The witness: a rule of exactly this shape is what the
@@ -168,19 +186,24 @@ class _PublicPortRule(SecurityRule):
             # would be inventing evidence we do not have.
             return RuleResult.unknown("Security rule list missing from snapshot")
 
-        match = _find_public_port(resource, self.port, self.protocols)
-        if match is None:
+        found = _find_public_port(resource, self._ports(), self.protocols)
+        if found is None:
             return RuleResult.passed(
-                {"service": self.service, "port": self.port, "public_access": False}
+                {
+                    "service": self.service,
+                    "ports": list(self._ports()),
+                    "public_access": False,
+                }
             )
 
+        match, open_port = found
         attachment = _attachment_evidence(resource, context)
         return RuleResult.failed(
             evidence={
                 "service": self.service,
                 "source": match.get("source"),
                 "protocol": match.get("protocol"),
-                "port": self.port,
+                "port": open_port,
                 "nsg_rule_name": match.get("name"),
                 "priority": match.get("priority"),
                 **attachment,
@@ -194,7 +217,7 @@ class _PublicPortRule(SecurityRule):
             # ``ResourceRelationship``; this is where it reaches the score.
             exploitability=None if attachment["attached"] else 1,
             message=(
-                f"{self.service} on port {self.port} is reachable from the entire internet "
+                f"{self.service} on port {open_port} is reachable from the entire internet "
                 f"via NSG rule '{match.get('name')}'"
                 + ("" if attachment["attached"] else ", but the group protects nothing")
             ),
@@ -236,6 +259,9 @@ class AzurePublicRdpRule(_PublicPortRule):
         "ISO_27001": ["A.8.20", "A.8.23"],
         "NIST_CSF": ["PR.AC-5"],
         "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["AC-17", "SC-7"],
+        "SOC2": ["CC6.6"],
+        "PCI_DSS_4": ["1.3.1", "1.4.1"],
     }
 
 
@@ -270,6 +296,59 @@ class AzurePublicSshRule(_PublicPortRule):
         "ISO_27001": ["A.8.20"],
         "NIST_CSF": ["PR.AC-5"],
         "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["AC-17", "SC-7"],
+        "SOC2": ["CC6.6"],
+        "PCI_DSS_4": ["1.3.1", "1.4.1"],
+    }
+
+
+class AzurePublicWinRmRule(_PublicPortRule):
+    rule_id = "AZ-NET-004"
+    name = "WinRM exposed to the internet"
+    description = (
+        "A network security group permits inbound Windows Remote Management (TCP/5985 "
+        "or TCP/5986) from any source address. WinRM executes commands on the host as "
+        "the authenticating account, so an exposed listener is a remote shell waiting "
+        "for a credential."
+    )
+    category = "network"
+    severity = Severity.CRITICAL
+    # The same class as RDP, and for a stronger reason. RDP at least presents a
+    # session; WinRM is a scripted command channel, so a sprayed credential
+    # becomes code execution without a human at either end. 5985 carries the
+    # credential over unencrypted HTTP by default, which is why it is the
+    # primary port here rather than the secondary one.
+    exploitability = 5
+    port = 5985
+    also_ports: ClassVar[tuple[int, ...]] = (5986,)
+    service = "WinRM"
+    estimated_effort_minutes = 15
+    rationale = (
+        "WinRM is remote command execution by design. Exposed to the internet it is "
+        "sprayed by the same automation that finds RDP, and a success is a shell rather "
+        "than a login prompt -- with 5985 handing the credential over in the clear."
+    )
+    remediation = (
+        "Remove the public rule. WinRM should never be reachable from the internet.\n\n"
+        "Reach the host through Azure Bastion, or run commands through the VM agent "
+        "with `az vm run-command`, which needs no inbound port at all. Where a "
+        "management network genuinely must reach WinRM, narrow the source to that "
+        "range and use 5986 so the channel is encrypted.\n\n"
+        "Azure CLI:\n"
+        "  az network nsg rule delete --resource-group <rg> --nsg-name <nsg> \\\n"
+        "    --name <rule>\n"
+        "  az network nsg rule update --resource-group <rg> --nsg-name <nsg> \\\n"
+        "    --name <rule> --source-address-prefixes <management.range/24>"
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = None  # set below
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["6.5"],
+        "ISO_27001": ["A.8.20", "A.8.23"],
+        "NIST_CSF": ["PR.AC-5", "PR.PT-4"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["AC-17", "SC-7"],
+        "SOC2": ["CC6.6"],
+        "PCI_DSS_4": ["1.3.1", "1.4.1"],
     }
 
 
@@ -346,6 +425,9 @@ class AzureOpenNsgRule(SecurityRule):
         "ISO_27001": ["A.8.20", "A.8.22"],
         "NIST_CSF": ["PR.AC-5", "PR.PT-4"],
         "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["SC-7", "CM-7"],
+        "SOC2": ["CC6.6"],
+        "PCI_DSS_4": ["1.2.1", "1.3.1"],
     }
 
     # Ports whose exposure is a finding in its own right. 80/443 are absent on
@@ -430,3 +512,4 @@ class AzureOpenNsgRule(SecurityRule):
 # the values before the class is finished.
 AzurePublicRdpRule.remediation_spec = AzurePublicRdpRule._spec()
 AzurePublicSshRule.remediation_spec = AzurePublicSshRule._spec()
+AzurePublicWinRmRule.remediation_spec = AzurePublicWinRmRule._spec()

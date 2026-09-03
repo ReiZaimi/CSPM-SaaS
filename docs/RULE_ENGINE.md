@@ -87,20 +87,89 @@ When a later scan runs the same rule against the same resource and returns PASS 
 
 ---
 
-## 5. Initial Rule Set (10 rules, expand to 30–50 post-MVP)
+## 5. The Rule Set
 
 | Rule | Category | Severity | Exploitability |
 |---|---|---|---|
 | AZ-ID-001 — MFA missing for privileged user | Identity | CRITICAL | 4 |
 | AZ-ID-002 — Excessive privileged users (AGGREGATE) | Identity | HIGH | 3 |
+| AZ-ID-003 — Privileged account is dormant | Identity | HIGH | 3 |
+| AZ-APP-001 — Application credential valid for years | Identity | MEDIUM | 3 |
+| AZ-IAM-001 — Person holds full control of a subscription | Identity | HIGH | 3 |
+| AZ-IAM-002 — Workload identity holds full control of a subscription | Identity | HIGH | 3 |
+| AZ-IAM-003 — Identity can grant itself any role | Identity | CRITICAL | 3 |
 | AZ-NET-001 — RDP exposed to Internet (0.0.0.0/0 → TCP/3389) | Network | CRITICAL | 5 |
 | AZ-NET-002 — SSH exposed to Internet (0.0.0.0/0 → TCP/22) | Network | HIGH | 4 |
 | AZ-NET-003 — Unrestricted inbound NSG rule | Network | HIGH | 4 |
+| AZ-NET-004 — WinRM exposed to Internet (TCP/5985, TCP/5986) | Network | CRITICAL | 5 |
 | AZ-STO-001 — Storage account allows public access | Storage | HIGH | 5 |
 | AZ-STO-002 — Storage encryption/security config insufficient | Storage | HIGH | 2 |
+| AZ-STO-003 — Storage account accepts insecure connections | Storage | MEDIUM | 2 |
+| AZ-VULN-001 — Internet-facing machine has unpatched vulnerabilities | Posture | CRITICAL | 5 |
+| AZ-MAL-001 — Machine has no working endpoint protection | Posture | MEDIUM | 2 |
 | AZ-DB-001 — Database publicly accessible | Database | CRITICAL | 5 |
+| AZ-DB-002 — Sensitive database has no private connectivity | Database | MEDIUM | 2 |
+| AZ-DB-003 — Database server keeps no audit trail | Database | MEDIUM | 1 |
+| AZ-KV-001 — Key vault can be permanently destroyed | Secrets | HIGH | 2 |
+| AZ-KV-002 — Key vault answers the whole internet | Secrets | HIGH | 4 |
 | AZ-LOG-001 — Required activity/diagnostic logging not configured | Logging | MEDIUM | 1 |
+| AZ-LOG-002 — Subscription activity log is not exported | Logging | MEDIUM | 1 |
 | AZ-CMP-001 — Internet-exposed compute with admin service exposed | Compute | HIGH | 4 |
+| AZ-CMP-002 — Virtual machine governed by no security group | Compute | MEDIUM | 2 |
+
+### What bounds this list
+
+Not ambition. Every rule here reads evidence a collector actually produces, and
+the constraint is the collectors rather than the writing: there are 21 evidence
+keys, and a rule outside them could only ever return UNKNOWN.
+
+So the categories a CSPM is expected to cover and this list does not — backup
+configuration among them — are absent because the evidence is, and they arrive
+when a collector for them does. Two left that list together: application
+credentials and dormant privileged accounts, each with the collector its rule
+reads. Vulnerabilities and endpoint protection left that list
+the way the others will: by reading Microsoft Defender for Cloud's assessments,
+which are facts only the machine knows and only Defender is positioned to
+report. Key vault was the first to arrive that way: a v3 scanner role, one ARM
+listing, and the two rules it exists to serve.
+
+Not every gap costs a permission, and it is worth checking before assuming one
+does. The subscription activity log — the record of *who* changed what, as
+against what changed — needed no new action at all: a subscription is a scope
+diagnostic settings apply to like any other, so the collector asks about one
+more id under the permission every customer already granted in v1. The two
+identity gaps that closed last were the same story on the Graph side: admin
+consent has requested `Application.Read.All` and `AuditLog.Read.All` since
+onboarding existed, no collector had ever called anything needing them, and
+between them they reach application credentials and `signInActivity`. Neither
+was a re-consent; both were a collector (`DECISIONS.md` §63), and both now
+ship.
+
+Dormancy carries the one caveat that is not about permissions at all.
+`signInActivity` needs an Entra ID P1 or P2 licence, so a fully consented
+tenant on the free tier is refused exactly that reading and AZ-ID-003 reports
+UNKNOWN naming the licence. A licence is not something a Global Administrator
+can consent their way to, and saying "consent is missing" to a tenant whose
+consent is complete would send somebody to fix a directory that is already
+correct.
+
+And not every gap is worth closing. Transparent data encryption and managed
+disk encryption were both scoped and then dropped: TDE has been on by default
+for Azure SQL databases since 2017, and managed disks are always encrypted at
+rest and cannot be turned off. Checks for them would have cost a permission and
+a per-database fan-out to report PASS for very nearly everyone, which is how a
+catalogue grows in size and shrinks in signal. SQL auditing is the opposite —
+off by default, one call per server — so v4 carries that action and only that
+one. Adding the rule first would produce a
+catalogue that looks complete and answers UNKNOWN, which is worse than a shorter
+one that answers.
+
+The RBAC rules are the exception that proves it. They needed no new collection —
+role assignments were already read for the graph. What they needed was for the
+normalizer to record *which role* a directory user holds, rather than only that
+they reach a scope: an edge cannot say "Owner", so "this named person holds Owner
+over your subscription" was a fact CloudGuard collected, drew a line for, and
+could not state.
 
 Exploitability (0–5) is a proposed starting value for each rule — tune after testing against real environments, same as the risk-formula weights in `RISK_ENGINE.md`.
 

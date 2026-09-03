@@ -41,6 +41,7 @@ from app.connectors.azure.client import (
     ResourceGraphClient,
 )
 from app.connectors.azure.evidence import AzureEvidence
+from app.connectors.azure.rbac import ROLE_VERSION
 from app.connectors.collection import CollectionTask, TaskData
 from app.connectors.evidence import ProviderEndpoint
 from app.core.logging import get_logger
@@ -101,6 +102,20 @@ SQL_SERVERS_ENDPOINT = ProviderEndpoint(
 SQL_FIREWALL_ENDPOINT = ProviderEndpoint(
     f"{ARM}/{{serverId}}/firewallRules", "2021-11-01"
 )
+# The third call the SQL task makes, per server, and declared for the same
+# reason: a reading of servers whose auditing settings failed is a different
+# reading from one where all three succeeded.
+SQL_AUDITING_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/{{serverId}}/auditingSettings/default", "2021-11-01"
+)
+SECURITY_ASSESSMENTS_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.Security/assessments",
+    "2020-01-01",
+)
+KEY_VAULT_ENDPOINT = ProviderEndpoint(
+    f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.KeyVault/vaults",
+    "2023-07-01",
+)
 POSTGRES_ENDPOINT = ProviderEndpoint(
     f"{ARM}/subscriptions/{{subscriptionId}}/providers/Microsoft.DBforPostgreSQL"
     "/flexibleServers",
@@ -149,6 +164,21 @@ CONDITIONAL_ACCESS_ENDPOINT = ProviderEndpoint(
 GROUP_MEMBERS_ENDPOINT = ProviderEndpoint(
     f"{GRAPH}/groups/{{groupId}}/members", GRAPH_VERSION
 )
+APPLICATIONS_ENDPOINT = ProviderEndpoint(f"{GRAPH}/applications", GRAPH_VERSION)
+# The ``$select`` is part of the path here and nowhere else, because it is part
+# of the contract: ``/users`` alone returns no sign-in activity at all, and this
+# is not the same read as USERS_ENDPOINT above however similar the URL looks.
+SIGN_IN_ACTIVITY_ENDPOINT = ProviderEndpoint(
+    f"{GRAPH}/users?$select=id,signInActivity", GRAPH_VERSION
+)
+
+# What Graph says when the tenant is consented correctly and simply not
+# licensed for sign-in activity: "Neither tenant is B2C or tenant doesn't have
+# premium license". Matched on the durable half of that sentence -- a 403 whose
+# remedy is a licence rather than a consent has to be told apart from one whose
+# remedy is a Global Administrator, or the customer is sent to fix a directory
+# that is already correct.
+_UNLICENSED_MARKERS = ("premium license", "premium licence")
 
 
 class AzurePlanBuilder:
@@ -182,7 +212,7 @@ class AzurePlanBuilder:
         self,
         key: AzureEvidence,
         actions: tuple[str, ...],
-        call: Callable[[ArmClient], Awaitable[dict[str, Any]]],
+        call: Callable[[ArmClient], Awaitable[dict[str, Any] | TaskData]],
         depends_on: tuple[AzureEvidence, ...] = (),
         endpoints: tuple[ProviderEndpoint, ...] = (),
     ) -> CollectionTask:
@@ -192,20 +222,34 @@ class AzurePlanBuilder:
         to this task alone. Without that, a truncated listing during a
         concurrent wave could be attributed to the wrong task, and a PARTIAL
         pointing at the wrong data is worse than no PARTIAL at all.
+
+        A call may return ``TaskData`` rather than a plain dict when it knows
+        something about its own completeness that the wrapper cannot see. The
+        SQL task does: it makes two further calls per server, and a role that
+        cannot read one of them produces a full listing of servers whose
+        settings are missing. Both reasons are reported when both apply, since
+        a truncated listing of partially-read servers is two problems.
         """
 
         async def run(collected: dict[str, Any]) -> TaskData:
             arm = ArmClient(self.tokens, self._http, limiter=self._limiter)
-            data = await call(arm)
-            if arm.truncated:
-                return TaskData(
-                    data,
-                    partial_reason=(
-                        "the listing was longer than CloudGuard reads in one scan, "
-                        "so these results are incomplete and cannot support a pass"
-                    ),
-                )
-            return TaskData(data)
+            result = await call(arm)
+            outcome = result if isinstance(result, TaskData) else TaskData(result)
+            if not arm.truncated:
+                return outcome
+
+            truncation = (
+                "the listing was longer than CloudGuard reads in one scan, "
+                "so these results are incomplete and cannot support a pass"
+            )
+            return TaskData(
+                outcome.data,
+                partial_reason=(
+                    f"{truncation}; and {outcome.partial_reason}"
+                    if outcome.partial_reason
+                    else truncation
+                ),
+            )
 
         return CollectionTask(
             key=key,
@@ -253,6 +297,12 @@ class AzurePlanBuilder:
         async def storage(arm: ArmClient) -> dict[str, Any]:
             return {"storage_accounts": await arm.list_storage_accounts(sub)}
 
+        async def security_assessments(arm: ArmClient) -> dict[str, Any]:
+            return {"security_assessments": await arm.list_security_assessments(sub)}
+
+        async def key_vaults(arm: ArmClient) -> dict[str, Any]:
+            return {"key_vaults": await arm.list_key_vaults(sub)}
+
         async def postgres(arm: ArmClient) -> dict[str, Any]:
             return {"postgresql_servers": await arm.list_postgresql_servers(sub)}
 
@@ -276,7 +326,7 @@ class AzurePlanBuilder:
             """
             return {"role_definitions": await arm.list_role_definitions(sub)}
 
-        async def sql(arm: ArmClient) -> dict[str, Any]:
+        async def sql(arm: ArmClient) -> TaskData:
             servers = await arm.list_sql_servers(sub)
 
             # Firewall rules are a per-server call; without them AZ-DB-001
@@ -292,9 +342,32 @@ class AzurePlanBuilder:
                     server["_firewall_rules_error"] = str(exc)
                 return server
 
-            return {"sql_servers": await self._gather_limited(
-                [with_rules(s) for s in servers]
-            )}
+            read = await self._gather_limited([with_rules(s) for s in servers])
+
+            # A server whose firewall rules or auditing settings could not be
+            # read is a server CloudGuard listed and did not finish reading, and
+            # the reading has to say so. It used to come back COMPLETE: the
+            # per-server failure was recorded on the server for the rules to
+            # degrade on, and the collection panel -- the one screen whose job
+            # is saying what was and was not read -- reported the whole task as
+            # read in full.
+            #
+            # That gap is exactly what a role upgrade produces. A customer on a
+            # role predating v4 gets a 403 on every auditing call while the
+            # server listing and firewall rules succeed, so every SQL server
+            # they own reports UNKNOWN against a task claiming it read
+            # everything.
+            data = {"sql_servers": read}
+            unread = sum(1 for s in read if "_firewall_rules_error" in s)
+            if not unread:
+                return TaskData(data)
+            return TaskData(
+                data,
+                partial_reason=(
+                    f"firewall rules could not be read for {unread} of "
+                    f"{len(read)} servers"
+                ),
+            )
 
 
         tasks = [
@@ -338,6 +411,18 @@ class AzurePlanBuilder:
                 endpoints=(SQL_SERVERS_ENDPOINT, SQL_FIREWALL_ENDPOINT),
             ),
             self._arm_task(
+                AzureEvidence.SECURITY_ASSESSMENTS,
+                ("Microsoft.Security/assessments/read",),
+                security_assessments,
+                endpoints=(SECURITY_ASSESSMENTS_ENDPOINT,),
+            ),
+            self._arm_task(
+                AzureEvidence.KEY_VAULTS,
+                ("Microsoft.KeyVault/vaults/read",),
+                key_vaults,
+                endpoints=(KEY_VAULT_ENDPOINT,),
+            ),
+            self._arm_task(
                 AzureEvidence.POSTGRESQL_SERVERS,
                 ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
                 postgres,
@@ -356,9 +441,68 @@ class AzurePlanBuilder:
                 endpoints=(ROLE_DEFINITIONS_ENDPOINT,),
             ),
             self._inventory_task(),
+            self._sql_auditing_task(),
             self._diagnostics_task(),
         ]
         return tasks
+
+    def _sql_auditing_task(self) -> CollectionTask:
+        """Whether each SQL server records who queried it.
+
+        A dependent task rather than a third call inside the server listing,
+        and the reason is what a key means. A rule declares the evidence its
+        verdict rests on, and these two rest on different things: AZ-DB-001
+        judges reachability from the servers and their firewall rules, AZ-DB-003
+        judges the audit trail from this. Folded into one key, a 403 here --
+        which is exactly what a role predating v4 produces -- cost the
+        reachability rule its verdict too, over a call it never reads. That is
+        the gap CloudGuard invents rather than finds, and it is the same mistake
+        ``requires_evidence`` was introduced to stop one layer up.
+
+        Keyed per server like the diagnostics task, and for the same reason: a
+        server whose settings failed is one server's audit posture unknown, not
+        every server's.
+        """
+
+        async def run(collected: dict[str, Any]) -> TaskData:
+            arm = ArmClient(self.tokens, self._http, limiter=self._limiter)
+            servers = [
+                server["id"]
+                for server in collected.get(AzureEvidence.SQL_SERVERS, [])
+                if server.get("id")
+            ]
+
+            failures = 0
+
+            async def for_server(server_id: str) -> tuple[str, dict | str]:
+                nonlocal failures
+                try:
+                    return server_id, await arm.get_sql_auditing_settings(server_id)
+                except Exception as exc:
+                    failures += 1
+                    return server_id, f"error: {exc}"
+
+            pairs = await self._gather_limited([for_server(s) for s in servers])
+            data = {"sql_auditing": dict(pairs)}
+
+            if failures:
+                return TaskData(
+                    data,
+                    partial_reason=(
+                        f"auditing settings could not be read for {failures} of "
+                        f"{len(servers)} servers. A scanner role deployed before "
+                        f"{ROLE_VERSION} does not grant the permission this needs."
+                    ),
+                )
+            return TaskData(data)
+
+        return CollectionTask(
+            key=AzureEvidence.SQL_AUDITING,
+            run=run,
+            depends_on=(AzureEvidence.SQL_SERVERS,),
+            actions=("Microsoft.Sql/servers/auditingSettings/read",),
+            endpoints=(SQL_AUDITING_ENDPOINT,),
+        )
 
     def build_directory_plan(self) -> list[CollectionTask]:
         """Everything that is a reading of the tenant directory.
@@ -443,6 +587,15 @@ class AzurePlanBuilder:
                 for item in collected.get(key, [])
                 if item.get("id")
             ]
+            # The subscription itself, which is where the activity log is
+            # exported from. Every other target here is a resource whose own
+            # logging is in question; this one is the record of who did what
+            # across all of them, and it is the log an investigation starts
+            # from. Read through the same action and the same endpoint -- a
+            # subscription is a scope diagnostic settings apply to like any
+            # other -- so it costs no customer a new permission.
+            if self.subscription_id:
+                targets.insert(0, f"/subscriptions/{self.subscription_id}")
 
             failures = 0
 
@@ -515,6 +668,30 @@ class AzurePlanBuilder:
                 raise
             raise AzureApiError(f"{exc}{named}", status_code=403) from exc
 
+    async def _licence_aware_call(self, call: Awaitable[Any]) -> Any:
+        """Await a Graph call whose 403 may be about a licence, not a grant.
+
+        Wraps ``_graph_call`` rather than replacing it: a tenant that never
+        consented gets the same list of missing permissions here as everywhere
+        else, and only a refusal Graph itself attributes to the licence is
+        renamed. The two are indistinguishable by status code and lead to
+        entirely different people.
+        """
+        try:
+            return await self._graph_call(call)
+        except AzureApiError as exc:
+            if exc.azure_status_code != 403:
+                raise
+            if not any(m in str(exc).lower() for m in _UNLICENSED_MARKERS):
+                raise
+            raise AzureApiError(
+                "Sign-in activity requires a Microsoft Entra ID P1 or P2 licence, "
+                "which this tenant does not have. Admin consent cannot grant it, "
+                "so dormant accounts cannot be assessed until the tenant is "
+                "licensed.",
+                status_code=403,
+            ) from exc
+
     def _identity_tasks(self) -> list[CollectionTask]:
         """Directory state. Graph, so no ARM action grants any of it."""
 
@@ -582,6 +759,48 @@ class AzurePlanBuilder:
                 )
             return TaskData(data)
 
+        async def applications(collected: dict[str, Any]) -> TaskData:
+            graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
+            found = await self._graph_call(graph.list_applications())
+            if graph.truncated:
+                return TaskData(
+                    {"application_credentials": found},
+                    partial_reason=(
+                        "there are more application registrations than one scan "
+                        "reads, so an expired credential may be missing from this "
+                        "list"
+                    ),
+                )
+            return TaskData({"application_credentials": found})
+
+        async def sign_in_activity(collected: dict[str, Any]) -> TaskData:
+            graph = GraphClient(self.tokens, self._http, limiter=self._limiter)
+            found = await self._licence_aware_call(graph.list_sign_in_activity())
+
+            # Keyed by user id, because that is how it is read: the normalizer
+            # merges each account's activity onto the account itself, and a
+            # list would make that a scan of the whole directory per user.
+            #
+            # Accounts Graph returned with no ``signInActivity`` at all are kept
+            # as None rather than dropped. An account that has never signed in
+            # has no activity object, and that is the strongest form of the
+            # thing this task exists to find -- dropping it would leave the
+            # normalizer unable to tell it from an account this read missed.
+            activity = {
+                str(user["id"]): user.get("signInActivity")
+                for user in found
+                if user.get("id")
+            }
+            if graph.truncated:
+                return TaskData(
+                    {"user_sign_in_activity": activity},
+                    partial_reason=(
+                        "the directory is larger than one scan reads, so an "
+                        "account's last sign-in may be missing from this list"
+                    ),
+                )
+            return TaskData({"user_sign_in_activity": activity})
+
         return [
             CollectionTask(
                 key=AzureEvidence.USERS,
@@ -614,6 +833,27 @@ class AzurePlanBuilder:
                 key=AzureEvidence.CONDITIONAL_ACCESS_POLICIES,
                 run=conditional_access,
                 endpoints=(CONDITIONAL_ACCESS_ENDPOINT, GROUP_MEMBERS_ENDPOINT),
+            ),
+            # Both under permissions admin consent has requested since
+            # onboarding existed and nothing has ever called
+            # (``DECISIONS.md`` section 63): ``Application.Read.All`` for the
+            # first, ``AuditLog.Read.All`` with ``User.Read.All`` for the
+            # second. Neither costs a customer a redeploy or a re-consent.
+            CollectionTask(
+                key=AzureEvidence.APPLICATION_CREDENTIALS,
+                run=applications,
+                endpoints=(APPLICATIONS_ENDPOINT,),
+            ),
+            # Independent of USERS rather than dependent on it, though the
+            # normalizer joins the two. A dependency would mean a licence this
+            # task cannot have costs nothing extra -- but the reverse, a
+            # directory listing that failed, already costs every identity rule
+            # its verdict through its own key, and skipping this task would add
+            # a second gap saying the same thing.
+            CollectionTask(
+                key=AzureEvidence.USER_SIGN_IN_ACTIVITY,
+                run=sign_in_activity,
+                endpoints=(SIGN_IN_ACTIVITY_ENDPOINT,),
             ),
         ]
 

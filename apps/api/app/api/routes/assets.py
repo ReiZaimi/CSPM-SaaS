@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import case, func, select
 
 from app.core.deps import DbSession, Tenant
-from app.core.enums import ContextSource, FindingStatus, Level
+from app.core.enums import ContextSource, FindingStatus, Level, ResourceType
 from app.core.errors import NotFound, envelope
 from app.models.cloud_account import CloudAccount
 from app.models.finding import Finding
@@ -114,9 +114,25 @@ async def list_assets(
         # a link that says `prod` name the same place.
         stmt = stmt.where(func.lower(RESOURCE_GROUP) == resource_group.lower())
 
+    scoped = stmt.subquery()
     total = (
+        await session.execute(select(func.count()).select_from(scoped))
+    ).scalar_one()
+    # How many of those CloudGuard has no rule for. Counted over the filtered
+    # set rather than the page, because the honest sentence is about the estate
+    # the customer is looking at: "CloudGuard checks 12 of these 47" is a fact
+    # about their subscription, and the same number computed over one page of a
+    # hundred would be a fact about the pagination.
+    #
+    # These exist at all because the inventory reading is now read. Before it,
+    # the asset list showed the ten-odd types the connector models and silently
+    # omitted everything else -- which read as coverage rather than as an
+    # inventory of what CloudGuard happens to understand.
+    unchecked_total = (
         await session.execute(
-            select(func.count()).select_from(stmt.subquery())
+            select(func.count())
+            .select_from(scoped)
+            .where(scoped.c.resource_type == ResourceType.UNKNOWN)
         )
     ).scalar_one()
 
@@ -138,6 +154,11 @@ async def list_assets(
                 # an inventory by scope without a second request per row.
                 "provider_resource_id": r.provider_resource_id,
                 "resource_type": r.resource_type,
+                # What it actually is, for the ones CloudGuard does not model.
+                # A list row reading "Unknown" would be a worse answer than the
+                # omission it replaced: the point of showing these is that the
+                # customer can see *what* is unchecked, not merely how many.
+                "azure_type": (r.resource_metadata or {}).get("azure_type"),
                 "region": r.region,
                 "environment": r.environment,
                 "criticality": r.criticality,
@@ -149,7 +170,12 @@ async def list_assets(
             }
             for r, count in rows
         ],
-        {"total": total, "limit": limit, "offset": offset},
+        {
+            "total": total,
+            "unchecked": int(unchecked_total),
+            "limit": limit,
+            "offset": offset,
+        },
     )
 
 

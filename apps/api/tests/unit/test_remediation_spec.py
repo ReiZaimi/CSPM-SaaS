@@ -46,16 +46,28 @@ def resource_meeting(rule, satisfied: bool) -> CloudResource:
     rule should fail unless the declaration says what such a rule looks like,
     and a declaration that says so is one a customer can read too.
     """
-    metadata = dict(rule.remediation_spec.applies_when)
+    # ``applies_when`` may name a classification the asset carries as a field
+    # rather than as metadata. AZ-DB-002 expects private connectivity *of a
+    # database holding sensitive data*, and sensitivity is what the normalizer
+    # computed about the asset, not a key inside it -- so a builder that could
+    # only write metadata would hand every such rule an asset it declines to
+    # judge, and the agreement below would pass by never being tested.
+    classification = {"criticality": Level.MEDIUM, "data_sensitivity": Level.MEDIUM}
+    metadata = {}
+    for key, value in rule.remediation_spec.applies_when.items():
+        if key in classification:
+            classification[key] = value
+        else:
+            metadata[key] = value
+
     for state in rule.remediation_spec.expected:
         metadata[state.field] = _value_for(state, satisfied)
     return CloudResource(
         provider_resource_id="/x/asset",
         resource_type=rule.applies_to[0],
         name="asset",
-        criticality=Level.MEDIUM,
-        data_sensitivity=Level.MEDIUM,
         metadata=metadata,
+        **classification,
     )
 
 

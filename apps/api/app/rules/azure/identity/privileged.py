@@ -77,6 +77,9 @@ class AzurePrivilegedUserRule(SecurityRule):
         "ISO_27001": ["A.5.15", "A.5.18"],
         "NIST_CSF": ["PR.AC-4"],
         "GDPR": ["25", "32(1)(b)"],
+        "NIST_800_53": ["AC-2", "AC-6"],
+        "SOC2": ["CC6.2", "CC6.3"],
+        "PCI_DSS_4": ["7.2.1", "8.2.1"],
     }
 
     # Below this, "too many admins" is not a meaningful claim -- a two-person

@@ -191,8 +191,20 @@ def test_every_collection_task_declares_what_it_calls() -> None:
     )
 
 
-def test_a_task_reading_two_things_declares_both() -> None:
-    """A record naming one call describes a narrower read than the one made."""
+def test_a_task_reading_several_things_declares_all_of_them() -> None:
+    """A record naming one call describes a narrower read than the one made.
+
+    The SQL listing makes two: the servers, then each server's firewall rules.
+    Its auditing settings are a third call and a *different* reading, because a
+    role predating v4 answers that one with a 403 while these two succeed -- so
+    it carries its own key and its own declared contract.
+    """
     by_key = {t.key.value: t for t in _plan()}
-    assert len(by_key["sql_servers"].endpoints) == 2
+    assert {e.path.rsplit("/", 1)[-1] for e in by_key["sql_servers"].endpoints} == {
+        "servers",
+        "firewallRules",
+    }
+    assert {e.path.rsplit("/", 1)[-1] for e in by_key["sql_auditing"].endpoints} == {
+        "default"
+    }
     assert len(by_key["user_role_map"].endpoints) == 2

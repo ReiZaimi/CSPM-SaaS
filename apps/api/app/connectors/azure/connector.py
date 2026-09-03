@@ -193,13 +193,20 @@ class AzureConnector(CloudConnector):
 
     @staticmethod
     def baseline_evidence() -> frozenset[EvidenceKey]:
-        """Inventory and the authorization listings the asset graph is built from.
+        """What the product needs that no rule judges.
 
-        No rule names any of the three, so a plan derived from the rule set
-        alone would stop collecting them -- and the customer would lose their
-        asset list and every privilege path in the graph, with every check
-        still passing and nothing to explain where the rest of the product
-        went.
+        A plan is derived from the rule set, so a key nothing declares stops
+        being collected -- silently, since no check would fail. The
+        authorization listings are what the asset graph's identity edges are
+        built from, and losing them would cost every privilege path with every
+        check still passing and nothing to explain where the rest of the
+        product went.
+
+        The inventory is the honest exception, and ``BASELINE_EVIDENCE`` says
+        why at length: it is stored and read by nothing today. It is not what
+        the customer's asset list is made of -- that comes from the per-service
+        listings -- and keeping it is a bet on a capability that has not been
+        built.
         """
         return frozenset(BASELINE_EVIDENCE)
 

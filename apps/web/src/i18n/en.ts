@@ -212,6 +212,15 @@ export const en = {
     accessTitle: "Access",
     readerRole: "Reader role",
     verifiedOn: "verified",
+    roleBehind: "behind",
+    roleUpgradeTitle: "Some checks cannot run until the role is redeployed",
+    roleUpgradeBody:
+      "CloudGuard's scanner role gained permissions this connection was not "
+      + "granted. The checks that need them report \u201cnot known\u201d "
+      + "rather than passing \u2014 CloudGuard will not tell you something is "
+      + "fine when it could not look.",
+    roleUpgradeAffects: "Affected checks",
+    roleUpgradeAction: "Redeploy the role",
     writePermission: "Write permission",
     noneByDesign: "None, by design",
     recheckAccess: "Re-check access",
@@ -457,7 +466,16 @@ export const en = {
     scoreBreakdown: "How this score was calculated",
     compliance: "Related controls",
   },
-  assets: { title: "Assets", empty: "No assets discovered yet.", openFindings: "Open findings" },
+  assets: {
+    title: "Assets",
+    empty: "No assets discovered yet.",
+    openFindings: "Open findings",
+    // CloudGuard reporting its own limits. Phrased as what it does not
+    // check rather than as a coverage percentage: a percentage invites the
+    // reader to feel good about a high one, and the useful question is
+    // which resources are unexamined, not what share of them are.
+    unchecked: "{count} with no checks yet",
+  },
   risks: {
     title: "Risks",
     empty: "No risks recorded yet.",
@@ -623,6 +641,12 @@ export const en = {
     outcomeSkipped: "Not attempted",
     partialHint:
       "An incomplete listing cannot support a pass, so the checks that needed it report unknown rather than clean.",
+    // The same invariant for the readings that produced nothing at all. It
+    // used to be stated only for PARTIAL, so a scan where storage failed
+    // outright showed a badge, a count, and no word about what it cost --
+    // leaving "could not read" to be read as "nothing to report".
+    unreadHint:
+      "A reading that produced nothing supports nothing: the checks that needed it report unknown, never passed.",
     partial: "Some data could not be collected — affected checks are marked unknown, not passed.",
   },
   rules: {

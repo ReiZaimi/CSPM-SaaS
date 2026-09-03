@@ -48,6 +48,41 @@ REQUIRED_GRAPH_PERMISSIONS = [
     "AuditLog.Read.All",
 ]
 
+# Which collector call exercises each permission above, by name on
+# ``GraphClient``. The Graph half of what ``rbac.py`` does for ARM, and added
+# for what its absence cost: three permissions sat on the consent screen for
+# months with nothing calling them, so the collector's reach was read off the
+# code rather than off the grant, and two checks were assumed to need a
+# re-consent that had already happened (``DECISIONS.md`` section 63).
+#
+# A permission with no call is not forbidden -- it is reserved below, with a
+# reason. What is forbidden is one that is neither.
+GRAPH_PERMISSION_USE: dict[str, tuple[str, ...]] = {
+    "Directory.Read.All": ("list_users", "list_directory_roles", "list_role_members"),
+    "User.Read.All": ("list_users", "list_sign_in_activity"),
+    "RoleManagement.Read.Directory": ("list_directory_roles", "list_role_members"),
+    "UserAuthenticationMethod.Read.All": ("list_authentication_methods",),
+    "Policy.Read.All": ("get_security_defaults", "list_conditional_access_policies"),
+    "Application.Read.All": ("list_applications", "find_service_principal"),
+    "Group.Read.All": ("list_group_members",),
+    "AuditLog.Read.All": ("list_sign_in_activity",),
+}
+
+# Requested, granted, and deliberately not used yet.
+#
+# Kept rather than trimmed because of what section 63 established: a permission
+# already on the consent screen is one a future collector can use without
+# sending every existing customer back to a Global Administrator, and dropping
+# it would spend that. Named here so "not used yet" stays a decision somebody
+# made rather than something nobody noticed.
+RESERVED_GRAPH_PERMISSIONS: dict[str, str] = {
+    "IdentityRiskyUser.Read.All": (
+        "Entra ID Protection's own risk verdicts on an account. No collector "
+        "reads them; the shape they would arrive in is Defender's -- somebody "
+        "else's conclusion, read as evidence rather than repeated as a finding."
+    ),
+}
+
 # Microsoft Graph's own application id, and the app role id behind each
 # permission above. Entra's manifest and ``az ad app`` both address permissions
 # by id, never by name, so a reproducible registration needs these.

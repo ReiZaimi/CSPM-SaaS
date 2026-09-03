@@ -500,8 +500,20 @@ class ResourceType(StrEnum):
     # remediation differs entirely -- a person gets MFA, a workload identity
     # gets a narrower role.
     SERVICE_PRINCIPAL = "service_principal"
+    # An Entra application registration: the object a tenant creates to let
+    # something authenticate as itself. Distinct from SERVICE_PRINCIPAL, which
+    # is the identity that registration has *in one tenant* -- the credentials
+    # a scan reads live on the registration, and the two are separately
+    # deletable, so folding them together would name the wrong object in a
+    # remediation.
+    APPLICATION = "application"
     ROLE_ASSIGNMENT = "role_assignment"
     DIAGNOSTIC_SETTING = "diagnostic_setting"
+    # The vault itself, as an asset. Its contents are not modelled and never
+    # will be: CloudGuard holds no data-plane permission, so a key or a secret
+    # is a thing it knows exists only in the sense that a vault exists to hold
+    # them.
+    KEY_VAULT = "key_vault"
     UNKNOWN = "unknown"
 
 

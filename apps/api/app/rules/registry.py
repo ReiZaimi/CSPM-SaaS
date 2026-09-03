@@ -5,33 +5,77 @@ Adding a rule means adding it here and writing its tests; it never means
 inserting a database row (RULE_ENGINE.md section 4).
 """
 
-from app.rules.azure.compute.exposure import AzureExposedComputeRule
-from app.rules.azure.database.public_access import AzurePublicDatabaseRule
+from app.rules.azure.compute.exposure import (
+    AzureExposedComputeRule,
+    AzureUnguardedVmRule,
+)
+from app.rules.azure.database.public_access import (
+    AzureDatabaseAuditingRule,
+    AzureDatabasePrivateConnectivityRule,
+    AzurePublicDatabaseRule,
+)
+from app.rules.azure.identity.credentials import (
+    AzureLongLivedApplicationCredentialRule,
+)
+from app.rules.azure.identity.dormant import AzureDormantPrivilegedAccountRule
 from app.rules.azure.identity.mfa import AzureMfaRule
 from app.rules.azure.identity.privileged import AzurePrivilegedUserRule
-from app.rules.azure.logging.diagnostics import AzureLoggingRule
+from app.rules.azure.logging.diagnostics import (
+    AzureActivityLogExportRule,
+    AzureLoggingRule,
+)
 from app.rules.azure.network.exposure import (
     AzureOpenNsgRule,
     AzurePublicRdpRule,
     AzurePublicSshRule,
+    AzurePublicWinRmRule,
+)
+from app.rules.azure.posture.defender import (
+    AzureExposedVulnerableMachineRule,
+    AzureMissingEndpointProtectionRule,
+)
+from app.rules.azure.rbac.privilege import (
+    AzurePersonWithSubscriptionControlRule,
+    AzureRoleGrantingIdentityRule,
+    AzureWorkloadWithSubscriptionControlRule,
+)
+from app.rules.azure.secrets.key_vault import (
+    AzureKeyVaultDeletionRule,
+    AzureKeyVaultNetworkRule,
 )
 from app.rules.azure.storage.public_access import (
     AzurePublicStorageRule,
     AzureStorageEncryptionRule,
+    AzureStorageTransportRule,
 )
 from app.rules.base import SecurityRule
 
 RULE_REGISTRY: list[SecurityRule] = [
     AzureMfaRule(),
     AzurePrivilegedUserRule(),
+    AzureDormantPrivilegedAccountRule(),
+    AzureLongLivedApplicationCredentialRule(),
     AzurePublicRdpRule(),
     AzurePublicSshRule(),
+    AzurePublicWinRmRule(),
     AzureOpenNsgRule(),
     AzurePublicStorageRule(),
     AzureStorageEncryptionRule(),
+    AzureStorageTransportRule(),
     AzurePublicDatabaseRule(),
+    AzureDatabasePrivateConnectivityRule(),
+    AzureDatabaseAuditingRule(),
     AzureLoggingRule(),
+    AzureActivityLogExportRule(),
     AzureExposedComputeRule(),
+    AzureUnguardedVmRule(),
+    AzurePersonWithSubscriptionControlRule(),
+    AzureWorkloadWithSubscriptionControlRule(),
+    AzureRoleGrantingIdentityRule(),
+    AzureKeyVaultDeletionRule(),
+    AzureKeyVaultNetworkRule(),
+    AzureExposedVulnerableMachineRule(),
+    AzureMissingEndpointProtectionRule(),
 ]
 
 

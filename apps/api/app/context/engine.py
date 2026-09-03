@@ -56,6 +56,12 @@ DATA_HOLDING_TYPES = {
     ResourceType.SQL_DATABASE,
     ResourceType.POSTGRESQL_SERVER,
     ResourceType.STORAGE_ACCOUNT,
+    # A vault holds the credentials to everything else, so an untagged one is
+    # not an unclassified asset -- it is the most sensitive asset in the
+    # subscription with nobody having said so. CloudGuard cannot read what is
+    # inside it and does not need to: the floor is a fact about what a vault
+    # is for.
+    ResourceType.KEY_VAULT,
 }
 
 class ContextFields(TypedDict):

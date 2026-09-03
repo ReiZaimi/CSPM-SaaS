@@ -176,3 +176,27 @@ def test_status_counts_include_absent_statuses() -> None:
     assert counts["PASSING"] == 1
     assert counts["FAILING"] == 0
     assert set(counts) == {s.value for s in ControlStatus}
+
+
+def test_no_framework_text_carries_markup_the_page_renders_literally() -> None:
+    """These strings are shown as text, not parsed.
+
+    ``ComplianceFramework.tsx`` renders ``{data.scope_note}`` straight into
+    JSX, so a ``**`` written for emphasis reaches the customer as two
+    asterisks. Caught here rather than by eye, because the place a caveat most
+    wants emphasis -- PCI's, about scope it cannot know -- is exactly where
+    somebody reaches for markdown, and where a stray asterisk reads as sloppy
+    on the page that most needs to be believed.
+    """
+    offenders = []
+    for framework in FRAMEWORKS:
+        text = f"{framework.summary} {framework.scope_note} {framework.name}"
+        text += " " + " ".join(c.title for c in framework.controls)
+        for markup in ("**", "__", "`", "<"):
+            if markup in text:
+                offenders.append(f"{framework.id}: {markup!r}")
+    assert offenders == [], (
+        "these render as literal characters rather than formatting: "
+        f"{offenders}"
+    )
+

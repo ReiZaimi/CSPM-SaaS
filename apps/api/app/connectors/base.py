@@ -13,6 +13,7 @@ The pipeline is fixed and each stage is separately testable:
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from app.connectors.evidence import EvidenceCategory, EvidenceKey
@@ -57,6 +58,13 @@ class RawSnapshot:
     # because replay has to know which it is holding and an absent id is a
     # weaker signal than a declared scope.
     scope: CollectionScope = CollectionScope.ACCOUNT
+    # When this capture was taken, and therefore the moment every age in it is
+    # measured from. Carried on the snapshot rather than read from the clock
+    # during normalization, because "this credential expired eleven days ago"
+    # has to mean the same thing on replay as it did on the day of the scan --
+    # a rule is a deterministic function of the capture, and an age computed
+    # from ``now()`` would quietly make it a function of when it was asked.
+    collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: str = "1.0"
     # category -> provider payload, e.g. {"network_security_groups": [...]}
     data: dict[str, Any] = field(default_factory=dict)
@@ -97,6 +105,7 @@ class RawSnapshot:
             "tenant_id": self.tenant_id,
             "subscription_id": self.subscription_id,
             "scope": self.scope.value,
+            "collected_at": self.collected_at.isoformat(),
             "version": self.version,
             "data": self.data,
             "errors": self.errors,
@@ -123,6 +132,12 @@ class RawSnapshot:
             # to the tenant. Every one of those was a subscription capture, so
             # ACCOUNT is not a default here so much as the fact about them.
             scope=CollectionScope(payload.get("scope", CollectionScope.ACCOUNT.value)),
+            # Absent on captures taken before anything in a snapshot had an
+            # age. Falling back to now is safe for exactly those: none of them
+            # carries sign-in activity or a credential expiry, so nothing reads
+            # this value, and a stored moment cannot be invented for a capture
+            # that never recorded one.
+            collected_at=cls._collected_at(payload),
             version=payload.get("version", "1.0"),
             data=dict(payload.get("data") or {}),
             errors=dict(payload.get("errors") or {}),
@@ -136,6 +151,17 @@ class RawSnapshot:
             # the field was added to prevent.
             coverage=dict(payload.get("coverage") or {}),
         )
+
+    @staticmethod
+    def _collected_at(payload: dict[str, Any]) -> datetime:
+        raw = payload.get("collected_at")
+        if not raw:
+            return datetime.now(UTC)
+        try:
+            moment = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return datetime.now(UTC)
+        return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
     @staticmethod
     def _gaps_from_coverage(payload: dict[str, Any]) -> dict[str, str]:

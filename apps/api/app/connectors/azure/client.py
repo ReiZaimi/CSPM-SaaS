@@ -412,6 +412,51 @@ class ArmClient(_BaseClient):
     async def list_sql_firewall_rules(self, server_id: str) -> list[dict[str, Any]]:
         return await self.get_all(f"{server_id}/firewallRules?api-version=2021-11-01")
 
+    async def get_sql_auditing_settings(self, server_id: str) -> dict[str, Any]:
+        """Whether this server records who queried what.
+
+        A single settings object rather than a listing, so this uses ``get``
+        directly: ``auditingSettings/default`` is the one that applies, and
+        paging a collection to find it would be pretending there is a choice.
+        """
+        return await self.get(
+            f"{server_id}/auditingSettings/default?api-version=2021-11-01"
+        )
+
+    async def list_security_assessments(
+        self, subscription_id: str
+    ) -> list[dict[str, Any]]:
+        """What Defender for Cloud has already concluded about this subscription.
+
+        One listing for every assessed resource, rather than a call per
+        resource: Defender holds the results centrally and this is the cheap
+        way to read them.
+
+        ``$expand=metadata`` carries each assessment's severity and category
+        with the result. Without it a finding is a GUID and a status, and a rule
+        would have to decide how bad "unhealthy" is by matching on display
+        names -- which is how a check ends up silently missing a finding
+        Microsoft renamed.
+        """
+        return await self.get_all(
+            f"/subscriptions/{subscription_id}/providers/Microsoft.Security"
+            "/assessments?api-version=2020-01-01&$expand=metadata"
+        )
+
+    async def list_key_vaults(self, subscription_id: str) -> list[dict[str, Any]]:
+        """Every key vault's configuration, not its contents.
+
+        The management plane. This returns whether the vault can be purged,
+        whether it answers the public internet, and which principals hold which
+        permissions on it -- and returns nothing about the keys, secrets and
+        certificates inside, which live behind a separate permission model
+        CloudGuard does not request.
+        """
+        return await self.get_all(
+            f"/subscriptions/{subscription_id}/providers/Microsoft.KeyVault"
+            "/vaults?api-version=2023-07-01"
+        )
+
     async def list_postgresql_servers(self, subscription_id: str) -> list[dict[str, Any]]:
         return await self.get_all(
             f"/subscriptions/{subscription_id}/providers/Microsoft.DBforPostgreSQL"
@@ -601,7 +646,8 @@ class GraphClient(_BaseClient):
 
     async def list_users(self) -> list[dict[str, Any]]:
         return await self.get_all(
-            "/users?$select=id,displayName,userPrincipalName,accountEnabled&$top=999"
+            "/users?$select=id,displayName,userPrincipalName,accountEnabled,"
+            "createdDateTime&$top=999"
         )
 
     async def list_directory_roles(self) -> list[dict[str, Any]]:
@@ -649,6 +695,39 @@ class GraphClient(_BaseClient):
         account it is judging is the excluded one.
         """
         return await self.get_all(f"/groups/{group_id}/members?$select=id&$top=999")
+
+    async def list_applications(self) -> list[dict[str, Any]]:
+        """This tenant's own application registrations, with their credentials.
+
+        ``$select`` rather than the whole object on purpose: an application
+        carries its API permissions, its reply URLs and its optional claims,
+        none of which any rule reads, and all of which would be stored verbatim
+        in every snapshot for ever.
+
+        Registrations only. A service principal can carry credentials of its
+        own, and reading them would mean listing every service principal in the
+        tenant -- several hundred of them Microsoft's, in a directory dump for
+        the handful a customer created. What a customer rotates, and what a
+        rule can name in a remediation, is the registration.
+        """
+        return await self.get_all(
+            "/applications?$select=id,appId,displayName,createdDateTime,"
+            "passwordCredentials,keyCredentials&$top=999"
+        )
+
+    async def list_sign_in_activity(self) -> list[dict[str, Any]]:
+        """When each account last signed in, interactively or otherwise.
+
+        Both timestamps, because only one of them is about people. A service
+        account that authenticates nightly has no interactive sign-in at all,
+        and judging it on that alone would report the tenant's most active
+        credentials as its most dormant.
+
+        Needs an Entra ID P1 or P2 licence as well as the consent every other
+        directory read runs under -- see ``plan.py`` for what a tenant without
+        one is told.
+        """
+        return await self.get_all("/users?$select=id,signInActivity&$top=999")
 
     async def find_service_principal(self, app_id: str) -> dict[str, Any] | None:
         """CloudGuard's own service principal, as it exists in this tenant.

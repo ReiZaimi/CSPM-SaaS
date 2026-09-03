@@ -92,8 +92,10 @@ wrong together". The graph answers the second question from the same normalized
 state the rules already read, so it cost a traversal rather than a second
 collection path (`app/graph/`, `DECISIONS.md` §44, §49).
 
-*Compliance* is partly built rather than absent — CIS Azure 2.0, ISO 27001, GDPR
-and NIST CSF map to a coverage view, driven entirely by `rules.compliance_mappings`
+*Compliance* is partly built rather than absent — CIS Azure 2.0, ISO 27001, GDPR,
+NIST CSF, NIST SP 800-53, SOC 2 and PCI DSS map to a coverage view, driven
+entirely by
+`rules.compliance_mappings`
 data with no rule branching on a framework name. Still a non-goal is the rest of
 a compliance *engine*: per-control evidence export for auditors, per-organization
 framework selection, NIS2. See `ROADMAP.md`.

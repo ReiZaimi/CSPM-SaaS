@@ -40,9 +40,11 @@ apps/api/app/
     registry.py
     azure/           auth client collector connector normalizer plan rbac
   rules/      base engine registry
-              azure/{compute,database,identity,logging,network,storage} — 10 rules
+              azure/{compute,database,identity,logging,network,posture,rbac,secrets,storage}
+              — 23 rules
   risk/       config.py (weights) scorer.py (weighted sum, bands, priority)
-  compliance/ catalog.py coverage.py — CIS Azure 2.0, ISO 27001, GDPR, NIST CSF
+  compliance/ catalog.py coverage.py — CIS Azure 2.0, ISO 27001, GDPR,
+                                       NIST CSF, NIST 800-53, SOC 2, PCI DSS
   services/   scanner.py cloud_connections.py scans dashboard findings ...
   models/     organization cloud_connection cloud_account resource scan finding
               risk remediation rule

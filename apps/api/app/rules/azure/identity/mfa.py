@@ -188,6 +188,9 @@ class AzureMfaRule(SecurityRule):
         "ISO_27001": ["A.5.15", "A.5.17"],
         "NIST_CSF": ["PR.AC-1", "PR.AC-7"],
         "GDPR": ["25", "32(1)(b)"],
+        "NIST_800_53": ["IA-2", "AC-2"],
+        "SOC2": ["CC6.1", "CC6.2"],
+        "PCI_DSS_4": ["8.3.1", "8.4.2"],
     }
 
     def evaluate(

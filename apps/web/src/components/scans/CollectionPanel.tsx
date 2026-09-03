@@ -68,6 +68,19 @@ export function CollectionPanel({ scanId }: { scanId: string }) {
         <p className="mt-1 text-xs leading-relaxed text-medium">{t.scans.partialHint}</p>
       )}
 
+      {/* Stated for these too, and it was not. A scan where storage failed
+          outright showed a badge, a count, and nothing about the consequence --
+          which leaves "could not read" free to be read as "nothing to report",
+          the one inference this product exists to prevent.
+
+          Two sentences rather than one covering both, because the reasons
+          differ: an incomplete listing cannot support a pass, and an absent one
+          supports nothing at all. A single vaguer line would have said less
+          about each. */}
+      {failed + skipped > 0 && (
+        <p className="mt-1 text-xs leading-relaxed text-medium">{t.scans.unreadHint}</p>
+      )}
+
       <div className="mt-2 flex flex-col gap-3">
         {[...bySubscription.entries()].map(([subscription, readings]) => (
           <div key={subscription}>

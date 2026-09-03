@@ -36,7 +36,7 @@ from app.connectors.evidence import EvidenceCategory
 from app.core.enums import ConnectionScope
 
 # Bump when the action list changes.
-ROLE_VERSION = "v2"
+ROLE_VERSION = "v5"
 
 ROLE_NAME = "CloudGuard Security Scanner"
 
@@ -78,6 +78,11 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     # SQL
     "Microsoft.Sql/servers/read",
     "Microsoft.Sql/servers/firewallRules/read",
+    # Whether the server keeps a record of who queried what. Off by default on
+    # every Azure SQL server, which is what makes it worth a role bump: unlike
+    # transparent data encryption, this is a setting most customers genuinely
+    # do not have.
+    "Microsoft.Sql/servers/auditingSettings/read",
     # PostgreSQL -- flexible servers only; single-server is not collected.
     "Microsoft.DBforPostgreSQL/flexibleServers/read",
     # Monitoring & diagnostics
@@ -85,6 +90,23 @@ ARM_READ_ACTIONS: tuple[str, ...] = (
     # Authorization -- who already has access, and under which definitions
     "Microsoft.Authorization/roleAssignments/read",
     "Microsoft.Authorization/roleDefinitions/read",
+    # Key vaults. The *management-plane* read: the vault's own configuration --
+    # whether it can be purged, whether it answers the public internet, which
+    # principals hold which permissions on it. It grants nothing over the keys,
+    # secrets and certificates inside, which are the data plane and a separate
+    # permission model entirely (``Microsoft.KeyVault/vaults/secrets/read``,
+    # and never requested). A customer reading this role definition should be
+    # able to see that CloudGuard can tell them their vault is deletable
+    # without being able to read a single secret in it.
+    "Microsoft.KeyVault/vaults/read",
+    # Microsoft Defender for Cloud's assessments. A read of conclusions the
+    # customer's own security service has already reached -- vulnerability
+    # findings, endpoint protection state, patch level -- which CloudGuard
+    # cannot produce itself and will not pretend to.
+    #
+    # Grants nothing beyond reading them. There is no Defender action here that
+    # enables a plan, dismisses a finding, or changes what is assessed.
+    "Microsoft.Security/assessments/read",
 )
 
 # Which ARM action each collector call needs. This is the link between the code
@@ -111,11 +133,14 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_storage_accounts": ("Microsoft.Storage/storageAccounts/read",),
     "list_sql_servers": ("Microsoft.Sql/servers/read",),
     "list_sql_firewall_rules": ("Microsoft.Sql/servers/firewallRules/read",),
+    "get_sql_auditing_settings": ("Microsoft.Sql/servers/auditingSettings/read",),
     "list_postgresql_servers": ("Microsoft.DBforPostgreSQL/flexibleServers/read",),
     "list_diagnostic_settings": ("Microsoft.Insights/diagnosticSettings/read",),
     "list_role_assignments": ("Microsoft.Authorization/roleAssignments/read",),
     "list_role_assignments_at_scope": ("Microsoft.Authorization/roleAssignments/read",),
     "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
+    "list_key_vaults": ("Microsoft.KeyVault/vaults/read",),
+    "list_security_assessments": ("Microsoft.Security/assessments/read",),
 }
 
 # Which collection category each ARM action serves, for the categories the
@@ -146,6 +171,7 @@ COLLECTION_ACTIONS: dict[EvidenceCategory, tuple[str, ...]] = {
     EvidenceCategory.DATABASE: (
         "Microsoft.Sql/servers/read",
         "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.Sql/servers/auditingSettings/read",
         "Microsoft.DBforPostgreSQL/flexibleServers/read",
     ),
     EvidenceCategory.LOGGING: ("Microsoft.Insights/diagnosticSettings/read",),
@@ -153,6 +179,8 @@ COLLECTION_ACTIONS: dict[EvidenceCategory, tuple[str, ...]] = {
         "Microsoft.Authorization/roleAssignments/read",
         "Microsoft.Authorization/roleDefinitions/read",
     ),
+    EvidenceCategory.SECRETS: ("Microsoft.KeyVault/vaults/read",),
+    EvidenceCategory.POSTURE: ("Microsoft.Security/assessments/read",),
 }
 
 # What each published role version granted. Frozen once shipped: a customer's
@@ -205,6 +233,82 @@ ROLE_HISTORY: dict[str, tuple[str, ...]] = {
         "Microsoft.Insights/diagnosticSettings/read",
         "Microsoft.Authorization/roleAssignments/read",
         "Microsoft.Authorization/roleDefinitions/read",
+    ),
+    # v3 adds the key vault management-plane read. A v2 role keeps every other
+    # category working and loses only the vault checks, which then report
+    # UNKNOWN rather than PASS -- the drift prompt is what turns that into
+    # something the customer can act on.
+    #
+    # Worth being precise about what this grants, because a customer approving
+    # it will ask: it reads the vault's *configuration*, not its contents. Purge
+    # protection, soft delete, network access, access policies. Reading a secret
+    # needs a data-plane permission this role does not request and never will.
+    "v3": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+        "Microsoft.KeyVault/vaults/read",
+    ),
+    # v4 adds SQL auditing. Batched deliberately rather than shipped alone:
+    # three role versions in a quarter is three redeploy prompts, and a
+    # customer who ignores the second has also ignored the third. It is the
+    # only new action because the two others considered -- transparent data
+    # encryption and managed disk encryption -- are on by default in Azure and
+    # cannot be turned off for disks at all, so checks for them would have cost
+    # a permission and a per-database fan-out to report PASS for nearly
+    # everyone.
+    "v4": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.Sql/servers/auditingSettings/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+        "Microsoft.KeyVault/vaults/read",
+    ),
+    # v5 adds Defender for Cloud's assessments. A v4 role keeps every other
+    # category and loses only the checks that combine a provider finding with
+    # CloudGuard's own view of exposure -- which then report UNKNOWN, because a
+    # subscription whose assessments could not be read is not one with no
+    # vulnerabilities.
+    "v5": (
+        "Microsoft.Resources/subscriptions/read",
+        "Microsoft.Resources/subscriptions/resources/read",
+        "Microsoft.ResourceGraph/resources/read",
+        "Microsoft.Network/networkSecurityGroups/read",
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/publicIPAddresses/read",
+        "Microsoft.Compute/virtualMachines/read",
+        "Microsoft.Storage/storageAccounts/read",
+        "Microsoft.Sql/servers/read",
+        "Microsoft.Sql/servers/firewallRules/read",
+        "Microsoft.Sql/servers/auditingSettings/read",
+        "Microsoft.DBforPostgreSQL/flexibleServers/read",
+        "Microsoft.Insights/diagnosticSettings/read",
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+        "Microsoft.KeyVault/vaults/read",
+        "Microsoft.Security/assessments/read",
     ),
 }
 

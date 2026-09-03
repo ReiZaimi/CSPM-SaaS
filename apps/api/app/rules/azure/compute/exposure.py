@@ -80,6 +80,9 @@ class AzureExposedComputeRule(SecurityRule):
         "ISO_27001": ["A.8.20", "A.8.22"],
         "NIST_CSF": ["PR.AC-3", "PR.AC-5"],
         "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["AC-17", "SC-7"],
+        "SOC2": ["CC6.6"],
+        "PCI_DSS_4": ["1.3.1", "1.4.1"],
     }
 
     def evaluate(
@@ -112,8 +115,9 @@ class AzureExposedComputeRule(SecurityRule):
         exposed: list[dict] = []
         for nsg in guarding_nsgs:
             for port, service in ADMIN_SERVICES.items():
-                match = _find_public_port(nsg, port, {"tcp"})
-                if match:
+                found = _find_public_port(nsg, (port,), {"tcp"})
+                if found:
+                    match, _ = found
                     exposed.append(
                         {
                             "service": service,
@@ -139,5 +143,119 @@ class AzureExposedComputeRule(SecurityRule):
             evidence=evidence,
             message=(
                 f"{resource.name} is internet-facing with {services} open to any source address"
+            ),
+        )
+
+
+class AzureUnguardedVmRule(SecurityRule):
+    rule_id = "AZ-CMP-002"
+    name = "Virtual machine governed by no network security group"
+    description = (
+        "No network security group applies to this machine, at its network interface or "
+        "at its subnet. Nothing filters what may reach it from elsewhere in the virtual "
+        "network, so anything that gets a foothold on the network reaches it directly."
+    )
+    category = "compute"
+    severity = Severity.MEDIUM
+    # A position on the network first, which is what separates this from
+    # AZ-CMP-001. That rule is about a machine the internet can already reach;
+    # this one is about how far an attacker travels once inside.
+    exploitability = 2
+    applies_to: ClassVar[list[ResourceType]] = [ResourceType.VIRTUAL_MACHINE]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.VIRTUAL_MACHINES,
+        AzureEvidence.NETWORK_INTERFACES,
+        AzureEvidence.NETWORK_SECURITY_GROUPS,
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "Segmentation is what turns one compromised machine into one compromised "
+        "machine. Without a security group, an attacker who reaches any host on this "
+        "network reaches this one too -- every port, from every peer -- and the lateral "
+        "movement that follows is the difference between an incident and a breach."
+    )
+    remediation = (
+        "Apply a network security group, preferably at the subnet so every machine in "
+        "it inherits the same rules.\n\n"
+        "Start by denying inbound from the virtual network and allowing back only the "
+        "ports this workload actually serves. Azure's default rules already permit all "
+        "traffic within the virtual network, which is what this finding is about.\n\n"
+        "Azure CLI:\n"
+        "  az network nsg create --resource-group <rg> --name <nsg>\n"
+        "  az network vnet subnet update --resource-group <rg> --vnet-name <vnet> \\\n"
+        "    --name <subnet> --network-security-group <nsg>\n\n"
+        "Use NSG flow logs first if you are unsure what currently talks to this machine."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(),
+        cli=(
+            "az network nsg create --resource-group <rg> --name <nsg>",
+            "az network vnet subnet update --resource-group <rg> --vnet-name <vnet> "
+            "--name <subnet> --network-security-group <nsg>",
+        ),
+        notes=(
+            "No expected state and no policy. What must change is the existence of a "
+            "relationship -- a security group attached to this machine's subnet or "
+            "interface -- rather than a field on the machine, and the check reads that "
+            "relationship from the graph. A policy could require an NSG on new subnets "
+            "and would say nothing about the ones already deployed, which are the ones "
+            "this finding is about."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["6.5"],
+        "ISO_27001": ["A.8.20", "A.8.22"],
+        "NIST_CSF": ["PR.AC-5", "PR.PT-4"],
+        "GDPR": ["5(1)(f)", "32(1)(b)"],
+        "NIST_800_53": ["SC-7", "CM-7"],
+        "SOC2": ["CC6.6"],
+        "PCI_DSS_4": ["1.2.1"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Network configuration unavailable: {failure}")
+
+        # The normalizer sets this to None when the machine names interfaces
+        # that were never collected. Its security groups hang off those
+        # interfaces, so "no groups found" and "we could not look" are the same
+        # observation here and only one of them is a finding.
+        if resource.get("has_public_ip") is None:
+            return RuleResult.unknown(
+                "This machine's network interfaces were not collected, so the "
+                "security groups attached to them could not be resolved"
+            )
+
+        guarding = context.get_related_inverse(resource, "protects")
+        if guarding:
+            return RuleResult.passed(
+                {"guarding_nsgs": [n.name for n in guarding]}
+            )
+
+        return RuleResult.failed(
+            evidence={
+                "guarding_nsgs": [],
+                "has_public_ip": resource.get("has_public_ip"),
+                "network_interfaces": resource.get("network_interfaces", []),
+            },
+            # Already reachable from the internet, so an attacker needs no
+            # foothold on the network to start with. AZ-CMP-001 names the open
+            # port; this names the absence of anything that would have stopped
+            # it, and at that point the missing segmentation is not a
+            # second-order problem.
+            exploitability=4 if resource.get("has_public_ip") else None,
+            message=(
+                f"No network security group governs {resource.name}"
+                + (
+                    ", which also holds a public IP address"
+                    if resource.get("has_public_ip")
+                    else ""
+                )
             ),
         )

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { BoxesIcon, ListIcon, NetworkIcon, SearchIcon, XIcon } from "lucide-react";
@@ -98,10 +98,19 @@ export function AssetsPage() {
       page,
     ],
     queryFn: () =>
-      api.get<Asset[]>(`/api/v1/assets?${params.toString()}`).then((r) => ({
-        assets: r.data,
-        total: (r.meta as { total?: number } | undefined)?.total ?? r.data.length,
-      })),
+      api
+        .get<Asset[]>(`/api/v1/assets?${params.toString()}`)
+        .then((r) => {
+          const meta = r.meta as
+            | { total?: number; unchecked?: number }
+            | undefined;
+          return {
+            assets: r.data,
+            total: meta?.total ?? r.data.length,
+            // Counted over the whole filtered set by the API, not this page.
+            unchecked: meta?.unchecked ?? 0,
+          };
+        }),
     // Paging without this blanks the table on every page turn, which reads as
     // the data having gone rather than as a page loading.
     placeholderData: keepPreviousData,
@@ -112,6 +121,7 @@ export function AssetsPage() {
   // the whole page on every keystroke.
   const assets = useMemo(() => data?.assets ?? [], [data]);
   const total = data?.total ?? 0;
+  const unchecked = data?.unchecked ?? 0;
 
   /** Types present in this page, so the filter offers only real options. */
   const types = useMemo(
@@ -369,10 +379,17 @@ export function AssetsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
+                  {/* A keyed Fragment rather than the `<>` shorthand, which
+                      cannot take one. Each group renders a heading row and its
+                      assets as siblings, so the wrapper is what sits in the
+                      list -- and a keyless list child is how React ends up
+                      reusing one group's rows under another's heading when the
+                      grouping changes. The inner rows were keyed all along,
+                      which is what made this look fine. */}
                   {groups.map(([groupName, rows]) => (
-                    <>
+                    <Fragment key={groupName}>
                       {groupName && (
-                        <TableRow key={`group-${groupName}`} className="hover:bg-transparent">
+                        <TableRow className="hover:bg-transparent">
                           <TableCell
                             colSpan={7}
                             className="bg-muted/50 py-1.5 text-xs font-medium text-muted-foreground"
@@ -393,7 +410,7 @@ export function AssetsPage() {
                             </Link>
                           </TableCell>
                           <TableCell className="text-muted-foreground">
-                            {resourceTypeLabel(asset.resource_type)}
+                            {asset.azure_type ?? resourceTypeLabel(asset.resource_type)}
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {asset.environment ?? "—"}
@@ -419,7 +436,7 @@ export function AssetsPage() {
                           </TableCell>
                         </TableRow>
                       ))}
-                    </>
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>
@@ -430,6 +447,21 @@ export function AssetsPage() {
             <p className="text-xs text-muted-foreground">
               {page * PAGE_SIZE + 1}–{page * PAGE_SIZE + assets.length} of {total} asset
               {total === 1 ? "" : "s"}
+              {/* Said here rather than left to be inferred from the table. This
+                  list used to show only the types the connector models and
+                  silently omit the rest, so a subscription full of App Services
+                  looked like a tidy inventory of storage and virtual machines --
+                  an absence that read as coverage. The number is CloudGuard
+                  reporting its own limits, which is the one thing a customer
+                  cannot work out for themselves. */}
+              {unchecked > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-medium">
+                    {t.assets.unchecked.replace("{count}", String(unchecked))}
+                  </span>
+                </>
+              )}
             </p>
             {pages > 1 && (
               <div className="flex items-center gap-2">

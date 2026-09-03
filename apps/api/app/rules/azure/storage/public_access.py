@@ -73,6 +73,9 @@ class AzurePublicStorageRule(SecurityRule):
         "ISO_27001": ["A.5.10", "A.8.3"],
         "NIST_CSF": ["PR.AC-3", "PR.DS-5"],
         "GDPR": ["5(1)(f)", "25", "32(1)(b)"],
+        "NIST_800_53": ["AC-3", "SC-7"],
+        "SOC2": ["CC6.1", "CC6.6"],
+        "PCI_DSS_4": ["1.3.1", "7.2.1"],
     }
 
     def evaluate(
@@ -191,6 +194,9 @@ class AzureStorageEncryptionRule(SecurityRule):
         "ISO_27001": ["A.8.24"],
         "NIST_CSF": ["PR.DS-2"],
         "GDPR": ["5(1)(f)", "32(1)(a)"],
+        "NIST_800_53": ["SC-28"],
+        "SOC2": ["CC6.7"],
+        "PCI_DSS_4": ["3.5.1"],
     }
 
     ACCEPTABLE_TLS: ClassVar[set[str]] = {"tls1_2", "tls1_3"}
@@ -232,4 +238,131 @@ class AzureStorageEncryptionRule(SecurityRule):
         return RuleResult.failed(
             evidence={**evidence, "problems": problems},
             message=f"{resource.name} transport security is insufficient: {'; '.join(problems)}",
+        )
+
+
+class AzureStorageTransportRule(SecurityRule):
+    rule_id = "AZ-STO-003"
+    name = "Storage account accepts insecure connections"
+    description = (
+        "A storage account accepts plain HTTP, or negotiates TLS below 1.2. Credentials "
+        "and data on those connections are readable by anything positioned on the "
+        "network path."
+    )
+    category = "storage"
+    severity = Severity.MEDIUM
+    # Not 5, and the difference is the word "positioned". Anonymous blob access
+    # hands data to anyone who asks; this hands it to whoever is already on the
+    # path -- a compromised network appliance, a hostile Wi-Fi, a peered network
+    # somebody else controls. Real, and it needs a position first.
+    exploitability = 2
+    applies_to: ClassVar[list[ResourceType]] = [ResourceType.STORAGE_ACCOUNT]
+    requires_evidence: ClassVar[tuple[AzureEvidence, ...]] = (
+        AzureEvidence.STORAGE_ACCOUNTS,
+    )
+    estimated_effort_minutes = 10
+    rationale = (
+        "The shared key that authenticates a storage request is the whole account: it "
+        "grants read and write to every container, it does not expire, and it is sent "
+        "with each request. Over HTTP, or under TLS 1.0, that key is recoverable by "
+        "anyone on the path -- and a recovered key is not a session that can be revoked."
+    )
+    remediation = (
+        "Require HTTPS and set the minimum TLS version to 1.2.\n\n"
+        "Azure Portal: Storage account > Settings > Configuration > set 'Secure "
+        "transfer required' to Enabled and 'Minimum TLS version' to Version 1.2.\n\n"
+        "Azure CLI:\n"
+        "  az storage account update --name <account> --resource-group <rg> \\\n"
+        "    --https-only true --min-tls-version TLS1_2\n\n"
+        "Both settings reject connections rather than upgrading them, so check for "
+        "clients still using HTTP or an old TLS stack before changing this on an "
+        "account with live traffic."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="https_traffic_only",
+                equals=True,
+                describes="The account accepts HTTPS connections only",
+                arm_alias="Microsoft.Storage/storageAccounts/supportsHttpsTrafficOnly",
+                terraform_attribute="https_traffic_only_enabled",
+            ),
+            ExpectedState(
+                field="min_tls_version",
+                equals="TLS1_2",
+                describes="The account negotiates TLS 1.2 or better",
+                arm_alias="Microsoft.Storage/storageAccounts/minimumTlsVersion",
+                terraform_attribute="min_tls_version",
+            ),
+        ),
+        cli=(
+            "az storage account update --name <account> --resource-group <rg> "
+            "--https-only true --min-tls-version TLS1_2",
+        ),
+        policy_resource_type="Microsoft.Storage/storageAccounts",
+        # Deny: an account created without secure transfer is exposed from its
+        # first request, and no deployment needs to pass through unencrypted
+        # first.
+        policy_effect="Deny",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AZURE_2.0": ["3.1", "3.15"],
+        "ISO_27001": ["A.5.10", "A.8.24"],
+        "NIST_CSF": ["PR.DS-2"],
+        "GDPR": ["32(1)(a)", "32(1)(b)"],
+        "NIST_800_53": ["SC-8"],
+        "SOC2": ["CC6.7"],
+        "PCI_DSS_4": ["4.2.1"],
+    }
+
+    # Anything below this is either broken outright or trivially downgraded.
+    ACCEPTABLE_TLS: ClassVar[frozenset[str]] = frozenset({"tls1_2", "tls1_3"})
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Storage configuration unavailable: {failure}")
+
+        https_only = resource.get("https_traffic_only")
+        min_tls = resource.get("min_tls_version")
+
+        if https_only is None and min_tls is None:
+            return RuleResult.unknown(
+                "Storage account transport configuration missing from snapshot"
+            )
+
+        problems = []
+        if https_only is False:
+            problems.append("Plain HTTP connections are accepted")
+        # Only where it was actually read. An absent value is not TLS 1.0 --
+        # Azure's own default has moved over time, and guessing it would be
+        # inventing the evidence this rule exists to report.
+        if min_tls is not None and str(min_tls).lower() not in self.ACCEPTABLE_TLS:
+            problems.append(f"Minimum TLS version is {min_tls}")
+
+        evidence = {
+            "https_traffic_only": https_only,
+            "min_tls_version": min_tls,
+            "allow_shared_key_access": resource.get("allow_shared_key_access"),
+        }
+
+        if not problems:
+            return RuleResult.passed(evidence)
+
+        # A key on the wire is worth more to an attacker than a session, so an
+        # account that still accepts shared-key auth loses the mitigation an
+        # identity-only account would have had.
+        keyless = resource.get("allow_shared_key_access") is False
+        return RuleResult.failed(
+            evidence={**evidence, "problems": problems},
+            exploitability=1 if keyless else None,
+            message=(
+                f"{resource.name} accepts insecure connections: "
+                + "; ".join(problems)
+            ),
         )

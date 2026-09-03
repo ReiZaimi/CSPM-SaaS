@@ -292,6 +292,17 @@ which names neither the permission nor who can grant it. `consent_status` stays
 GRANTED either way -- the subscription half of the connection is separate and
 unaffected.
 
+One Graph 403 is not about consent at all. `signInActivity` -- the reading
+behind AZ-ID-003 -- additionally requires an Entra ID P1 or P2 licence, and a
+fully consented tenant on the free tier is refused it with the same status code
+a missing permission produces. That refusal is recognised from Microsoft's own
+wording and reported as a licence, because sending a Global Administrator to a
+consent screen that cannot grant it wastes the one action they were asked for.
+Which permissions each collector call actually exercises is declared in
+`GRAPH_PERMISSION_USE`, and a test refuses any requested permission that is
+neither used nor deliberately reserved -- the Graph counterpart of the ARM
+role's `ROLE_ONLY_ACTIONS`.
+
 **Validation probes both.** `validate_connection` proves ARM access by
 listing, and Resource Graph access by querying a single row. A Resource Graph
 failure is recorded as a *note* rather than a problem: it costs inventory and

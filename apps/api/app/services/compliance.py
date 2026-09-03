@@ -31,7 +31,7 @@ from app.compliance.coverage import (
 from app.core.enums import FindingStatus, ScanStatus
 from app.models.finding import Finding
 from app.models.rule import Rule
-from app.models.scan import Scan, ScanRuleResult
+from app.models.scan import Scan, ScanEvaluationGap, ScanRuleResult
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
@@ -49,11 +49,13 @@ class _Snapshot:
         rules: list[Rule],
         open_findings: dict[str, int],
         rule_results: dict[str, int],
+        unknown_reasons: dict[str, tuple[str, ...]],
         has_completed_scan: bool,
     ) -> None:
         self.rules = rules
         self.open_findings = open_findings
         self.rule_results = rule_results
+        self.unknown_reasons = unknown_reasons
         self.has_completed_scan = has_completed_scan
 
     def evidence_for(self, framework_id: str, control_id: str) -> list[RuleEvidence]:
@@ -71,6 +73,7 @@ class _Snapshot:
                 open_finding_count=self.open_findings.get(rule.rule_id, 0),
                 unknown_count=self.rule_results.get(rule.rule_id, 0),
                 evaluated=rule.rule_id in self.rule_results,
+                unknown_reasons=self.unknown_reasons.get(rule.rule_id, ()),
             )
             for rule in matched
         ]
@@ -123,8 +126,54 @@ async def _snapshot(session: AsyncSession, organization_id: UUID) -> _Snapshot:
         rules=rules,
         open_findings=open_findings,
         rule_results=rule_results,
+        unknown_reasons=await _unknown_reasons(session, organization_id, last_scan),
         has_completed_scan=last_scan is not None,
     )
+
+
+# How many distinct explanations to carry per rule. One covers nearly every
+# case; the cap exists because a rule can fail differently per resource and a
+# control card is not the place for forty sentences. Anything past this is a
+# scan-level question, and the collection panel answers it in full.
+MAX_REASONS_PER_RULE = 3
+
+
+async def _unknown_reasons(
+    session: AsyncSession, organization_id: UUID, last_scan: Scan | None
+) -> dict[str, tuple[str, ...]]:
+    """Why each rule could not tell, from the coverage ledger.
+
+    ``scan_evaluation_gaps`` has held these sentences since UNKNOWN became a
+    recorded outcome, and the compliance view never read them: a control
+    resolved to INCONCLUSIVE and said so, and the reason it was inconclusive
+    stayed in the database. That is the one verdict on this page a customer
+    cannot act on from the verdict alone, and since the scanner role started
+    gaining permissions the answer is often "redeploy the role" -- which is a
+    thing they can do this afternoon, if anybody tells them.
+
+    Distinct per rule, because the ledger holds one row per resource and forty
+    storage accounts that failed for one reason are one sentence.
+    """
+    if last_scan is None:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(ScanEvaluationGap.rule_id, ScanEvaluationGap.reason)
+            .where(
+                ScanEvaluationGap.organization_id == organization_id,
+                ScanEvaluationGap.scan_id == last_scan.id,
+            )
+            .distinct()
+        )
+    ).all()
+
+    reasons: dict[str, list[str]] = {}
+    for rule_id, reason in rows:
+        held = reasons.setdefault(rule_id, [])
+        if reason and reason not in held and len(held) < MAX_REASONS_PER_RULE:
+            held.append(reason)
+    return {rule_id: tuple(held) for rule_id, held in reasons.items()}
 
 
 def _framework_header(framework: Framework) -> dict:
@@ -162,6 +211,7 @@ def _resolve(framework: Framework, snapshot: _Snapshot) -> list[tuple[dict, Cont
                             "open_finding_count": e.open_finding_count,
                             "unknown_count": e.unknown_count,
                             "evaluated": e.evaluated,
+                            "unknown_reasons": list(e.unknown_reasons),
                         }
                         for e in evidence
                     ],

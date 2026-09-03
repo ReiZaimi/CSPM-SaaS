@@ -57,3 +57,33 @@ Element.prototype.scrollIntoView ??= function scrollIntoView() {};
 class PointerEventStub extends MouseEvent {}
 
 globalThis.PointerEvent ??= PointerEventStub as unknown as typeof PointerEvent;
+
+/**
+ * A React key warning fails the test that produced it.
+ *
+ * These are warnings rather than errors, so they scroll past in a green run --
+ * which is how a keyless list wrapper on the assets page survived long enough
+ * for somebody to notice it in passing. React also de-duplicates them per
+ * call site, so a test written to assert on the console catches the warning
+ * only if it happens to run before every other test that renders the same
+ * component. That is not a guarantee worth resting on; this is.
+ *
+ * Narrow on purpose. Failing every `console.error` would fail tests that
+ * deliberately exercise error paths, and the point here is one specific class
+ * of bug: a list child React cannot identify, which it answers by reusing the
+ * wrong DOM under a changed key -- rows appearing under the wrong heading
+ * after a regrouping, and no test asserting on first paint would see it.
+ */
+const reactError = console.error;
+
+console.error = (...args: unknown[]) => {
+  if (String(args[0] ?? "").includes('unique "key" prop')) {
+    throw new Error(
+      "React reported a list child with no key. Give the element returned by "
+      + "the .map() a key -- a `<>` fragment cannot take one, so use "
+      + `<Fragment key={...}>.\n\n${String(args[0])}`,
+    );
+  }
+  reactError(...args);
+};
+

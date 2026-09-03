@@ -169,3 +169,31 @@ export function formatEffort(minutes: number): string {
 
 export const resourceTypeLabel = (type: string) =>
   type.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * A collection category, as a customer would name it.
+ *
+ * The backend's categories are the divisions a cloud's read permissions
+ * actually fall along, which makes them the right unit for "these checks
+ * cannot run" -- and the wrong words for a screen. "secrets" is what the
+ * permission model calls a key vault; "Key vault" is what the customer went
+ * looking for.
+ *
+ * Unknown values fall through to the generic tidy-up rather than being
+ * dropped. A category this map has not caught up with is still a category
+ * whose checks are not running, and saying it awkwardly beats not saying it.
+ */
+const COLLECTION_CATEGORY_LABELS: Record<string, string> = {
+  resources: "Inventory",
+  authorization: "Role assignments",
+  network: "Network",
+  compute: "Virtual machines",
+  storage: "Storage",
+  database: "Databases",
+  logging: "Logging",
+  identity: "Directory",
+  secrets: "Key vaults",
+};
+
+export const collectionCategoryLabel = (category: string) =>
+  COLLECTION_CATEGORY_LABELS[category] ?? resourceTypeLabel(category);

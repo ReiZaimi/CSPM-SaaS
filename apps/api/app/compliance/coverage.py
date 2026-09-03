@@ -45,6 +45,21 @@ class RuleEvidence:
     open_finding_count: int
     unknown_count: int
     evaluated: bool
+    # Why the rule could not tell, in the words the rule itself used. Empty
+    # unless something went unevaluated.
+    #
+    # A control resolving to INCONCLUSIVE is the one verdict a customer cannot
+    # act on from the verdict alone: FAILING points at findings, PASSING needs
+    # nothing, NOT_COVERED is a fact about CloudGuard. "Three could not be
+    # evaluated" points nowhere -- and since the scanner role gained
+    # permissions, the answer is frequently "redeploy the role", which is a
+    # thing they can do this afternoon.
+    #
+    # A tuple because one rule can fail differently on different resources: a
+    # storage account whose listing timed out and another whose configuration
+    # never arrived are two reasons, and collapsing them to one would name the
+    # wrong cause for half the assets.
+    unknown_reasons: tuple[str, ...] = ()
 
 
 def resolve_control_status(

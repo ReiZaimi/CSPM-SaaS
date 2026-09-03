@@ -15,8 +15,10 @@ import jwt
 
 from app.connectors.azure.auth import (
     GRAPH_APP_ROLES,
+    GRAPH_PERMISSION_USE,
     GRAPH_RESOURCE_APP_ID,
     REQUIRED_GRAPH_PERMISSIONS,
+    RESERVED_GRAPH_PERMISSIONS,
     app_registration_manifest,
     granted_permissions,
     missing_permissions,
@@ -123,3 +125,57 @@ def test_the_manifest_covers_the_permissions_the_collector_needs() -> None:
         # Probes name alternatives ("A or B"); at least one must be declared.
         options = {p.strip() for p in permission.split(" or ")}
         assert options & declared, f"nothing in the registration grants {permission}"
+
+
+# ------------------------------------- a permission nothing uses, on the screen
+def test_every_requested_permission_is_used_or_reserved() -> None:
+    """The Graph half of ``ROLE_ONLY_ACTIONS``.
+
+    ARM has asserted for a long time that the scanner role requests no action
+    no collector reaches. Graph asserted nothing, and it cost: three
+    permissions sat on the consent screen with nothing calling them, so what
+    CloudGuard could already read was read off the collector rather than off
+    the grant -- and application credentials and dormant accounts were both
+    filed as needing a second admin consent that every connected tenant had
+    already given (``DECISIONS.md`` section 63).
+
+    Reserved is a permitted answer. Silence is not.
+    """
+    unexplained = [
+        permission
+        for permission in REQUIRED_GRAPH_PERMISSIONS
+        if not GRAPH_PERMISSION_USE.get(permission)
+        and permission not in RESERVED_GRAPH_PERMISSIONS
+    ]
+    assert unexplained == [], (
+        "requested on a customer's consent screen with nothing calling it and "
+        f"no reason recorded: {unexplained}"
+    )
+
+
+def test_a_reserved_permission_says_why_it_is_there() -> None:
+    for permission, reason in RESERVED_GRAPH_PERMISSIONS.items():
+        assert permission in REQUIRED_GRAPH_PERMISSIONS
+        assert reason.strip(), f"{permission} is reserved for no stated reason"
+        assert not GRAPH_PERMISSION_USE.get(permission), (
+            f"{permission} is both used and reserved"
+        )
+
+
+def test_every_declared_use_names_a_call_that_exists() -> None:
+    """The declaration is only worth having if it cannot drift.
+
+    A method renamed out from under this map would leave a permission looking
+    used while nothing calls it -- the exact state this map exists to make
+    impossible.
+    """
+    from app.connectors.azure.client import GraphClient
+
+    for permission, methods in GRAPH_PERMISSION_USE.items():
+        assert permission in REQUIRED_GRAPH_PERMISSIONS, (
+            f"{permission} is declared as used and never requested"
+        )
+        for method in methods:
+            assert callable(getattr(GraphClient, method, None)), (
+                f"{permission} names {method}, which GraphClient does not have"
+            )

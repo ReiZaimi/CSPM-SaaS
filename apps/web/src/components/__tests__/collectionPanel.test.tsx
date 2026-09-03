@@ -7,7 +7,7 @@
  * spans every subscription and every scan that ever read it.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,7 +32,7 @@ const READING = {
   ],
 };
 
-function mount(tasks: object[]) {
+function mount(tasks: object[], counts: Record<string, number> = {}) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => ({
@@ -47,6 +47,7 @@ function mount(tasks: object[]) {
           failed: 0,
           skipped: 0,
           degraded_categories: [],
+          ...counts,
         },
         error: null,
         meta: {},
@@ -141,4 +142,63 @@ describe("the collection panel", () => {
       await screen.findByRole("link", { name: "1 finding rests on this" }),
     ).toBeInTheDocument();
   });
+
+  it("says what an unread reading cost, not only that it happened", async () => {
+    /** The invariant was stated for PARTIAL and nowhere else, so a scan where
+     * storage failed outright showed a badge, a count, and no word about the
+     * consequence -- leaving "could not read" free to be read as "nothing to
+     * report", which is the one inference this product exists to prevent. */
+    mount([{ ...READING, outcome: "FAILED", finding_count: 0 }], {
+      complete: 0,
+      failed: 1,
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/report unknown, never passed/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("says it for a skipped reading too", async () => {
+    /** Never attempted and attempted-and-failed are different causes with the
+     * same consequence, and the consequence is what this line is about. */
+    mount([{ ...READING, outcome: "SKIPPED", finding_count: 0 }], {
+      complete: 0,
+      skipped: 1,
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/report unknown, never passed/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the two sentences apart", async () => {
+    /** An incomplete listing cannot support a pass; an absent one supports
+     * nothing at all. One vaguer line covering both would say less about
+     * each. */
+    mount([{ ...READING, outcome: "PARTIAL" }], { complete: 0, partial: 1 });
+
+    await waitFor(() =>
+      expect(screen.getByText(/cannot support a pass/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/report unknown, never passed/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says neither when everything was read", async () => {
+    /** A panel that warns on a clean scan is one nobody reads on a dirty
+     * one. */
+    mount([READING]);
+
+    await waitFor(() => expect(screen.getByText("Read in full")).toBeInTheDocument());
+    expect(screen.queryByText(/cannot support a pass/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/report unknown, never passed/i),
+    ).not.toBeInTheDocument();
+  });
+
 });

@@ -75,6 +75,19 @@ class EvidenceCategory(StrEnum):
     DATABASE = "database"
     LOGGING = "logging"
     IDENTITY = "identity"
+    # Where a tenant keeps the things that unlock everything else: keys,
+    # secrets, certificates. Its own category rather than part of STORAGE
+    # because the permission to read it is granted separately by every cloud,
+    # which is the line these divisions follow -- and because losing visibility
+    # of a key store is a different sentence to a customer than losing
+    # visibility of a blob container.
+    SECRETS = "secrets"
+    # What the cloud's own security service has already assessed. Its own
+    # category because it is granted separately by every cloud, and because
+    # losing it costs a different sentence: not "we could not read your
+    # configuration" but "we could not read what your provider already
+    # concluded about it".
+    POSTURE = "posture"
 
 
 class EvidenceKey(StrEnum):

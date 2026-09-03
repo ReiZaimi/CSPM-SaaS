@@ -164,8 +164,19 @@ describe("the finding detail page", () => {
     ).toBeInTheDocument();
     // The route itself, not just the fact of one: naming the links is what
     // makes it something somebody can go and cut.
-    expect(screen.getByText("jump-01 runs as mi-jump")).toBeInTheDocument();
-    expect(screen.getByText(/Cutting this link severs the route/)).toBeInTheDocument();
+    //
+    // Awaited rather than read synchronously, and that is what stopped this
+    // test failing about one run in three. The page draws on three independent
+    // queries -- the finding, its attack paths, its provenance -- which settle
+    // in whatever order they settle in. Waiting for the first sentence proves
+    // nothing about the second, so a synchronous read of it was a race that the
+    // suite lost whenever the machine was busy.
+    expect(
+      await screen.findByText("jump-01 runs as mi-jump"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Cutting this link severs the route/),
+    ).toBeInTheDocument();
   });
 
   it("does not report an empty result as an all-clear", async () => {

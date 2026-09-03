@@ -2022,6 +2022,597 @@ security product.
 
 ---
 
+## 56. Rules are bounded by collectors, not by ambition
+
+The catalogue went from 10 rules to 17, and what decided *which* seven is worth
+recording, because the obvious approach produces a worse product.
+
+A CSPM is expected to check key vault configuration, database auditing, disk
+encryption, activity logs, credential expiry, vulnerabilities and backups.
+CloudGuard collects none of those. A rule for each would have been quick to
+write and would have answered UNKNOWN for every customer for ever — a catalogue
+that looks complete and says nothing, which is the same overclaim as a PASS
+nobody earned wearing different clothes. So the rule set is bounded by the 16
+evidence keys that exist, and grows when a collector does.
+
+**The RBAC family needed no new collection, and that is why it went first.**
+Role assignments were already read for the graph. What was missing was smaller
+and stranger: the normalizer recorded a role's *name* only on principals it
+minted, never on directory users, on the stated grounds that a traversal reads
+the edges anyway. True of a traversal, false of a rule — an edge says a
+principal reaches a scope and cannot say as what. "This named person holds Owner
+over your subscription" was therefore a fact CloudGuard collected, drew a line
+for, and could not state. Three rules fell out of fixing that one line.
+
+`AZ-IAM-003` reads the role *definition's permissions* rather than its name,
+because Owner and Contributor both carry `actions: ["*"]` and only Contributor
+excludes the assignment write. A name-based check would flag every Contributor
+on nearly every subscription in existence, which is how a whole feature gets
+switched off.
+
+**Three guard tests caught omissions in this work, and each was fixed in the
+code rather than in the test.** `ROLE_DEFINITIONS` carried a seven-day reuse
+window justified by "no rule reads them"; `AZ-IAM-003` made that false, so a
+customer editing a custom role to remove escalation and rescanning would have
+been answered from last week's catalogue — `_REUSE_WINDOWS` is now empty. Every
+rule must carry a machine-readable remediation, and the RBAC rules legitimately
+have no expected state, so they take the documented empty form that owes a
+reason and a command. And `applies_when` could only express metadata, so
+`AZ-DB-002` — whose expectation is about a database *holding sensitive data* —
+was handed a synthetic asset it declined to judge, and its round-trip test
+passed by never running. It now accepts the classification fields the normalizer
+computes.
+
+**Scoping is a design decision, not a filter.** `AZ-DB-002` returns
+NOT_APPLICABLE below HIGH sensitivity, and a shared-key-access rule was written
+and then not shipped: shared key is on by default, so it would have fired on
+essentially every storage account in existence. A rule that fires everywhere
+teaches people to stop reading, and the cost lands on the finding next to it.
+
+---
+
+## 57. The scanner role reads a vault's configuration and none of its contents
+
+Key vault was the largest gap in the catalogue and the first one closed by
+adding collection rather than by writing rules against evidence that already
+existed. It is worth recording as a shape, because every remaining gap —
+database auditing, disk encryption, activity logs — is the same shape.
+
+**One action, and precisely one.** `Microsoft.KeyVault/vaults/read` is the
+management plane: whether the vault can be purged, whether it answers the
+public internet, which authorization model it uses. It grants nothing over the
+keys, secrets and certificates inside, which live behind
+`Microsoft.KeyVault/vaults/secrets/read` and a separate permission model that
+CloudGuard does not request and should never request. A product that can tell a
+customer their vault is destroyable *without being able to read a single secret
+in it* is making a stronger claim than one that can do both, and a test asserts
+the role holds no other `Microsoft.KeyVault/` action so that stays true.
+
+**The role is versioned, so the cost lands as a prompt rather than a 403.**
+`ROLE_HISTORY` gains a `v3` entry written out literally beside v1 and v2 — never
+by reference, for the reason recorded in that file. A customer still on v2 keeps
+every other category and loses only the vault checks, which then report UNKNOWN;
+`categories_behind("v2")` is exactly `{SECRETS}`, and a test says so, because an
+upgrade that quietly cost them an unrelated category would be worse than the gap
+it closed.
+
+**Absent and false are different answers, and Azure means different things by
+them.** `enableSoftDelete` comes back as a value; `enablePurgeProtection` is
+omitted when it has never been set. So AZ-KV-001 reads a missing purge
+protection as off and a missing soft delete as missing — reversed, the rule
+would either report nothing for the overwhelming majority of vaults that
+genuinely lack purge protection, or report a gap CloudGuard invented.
+
+**Sensitivity comes from the context engine, not from the normalizer.** A vault
+holds the credentials to everything else, so an untagged one is not an
+unclassified asset. That is expressed by adding `KEY_VAULT` to
+`DATA_HOLDING_TYPES`, which carries the `TYPE_FLOOR` source with it — a first
+attempt overrode criticality inside the normalizer instead, which would have
+produced a HIGH nobody could trace to a reason.
+
+**And check whether the gap costs a permission before assuming it does.** The
+subscription activity log looked like the next role bump and was not. A
+subscription is a scope diagnostic settings apply to like any other, so
+`Microsoft.Insights/diagnosticSettings/read` — granted since v1 — already
+reaches it, and the collector simply asks about one more id. AZ-LOG-002 is
+therefore live for every existing customer with no redeploy, which is worth more
+than the two vault rules that need one.
+
+The two logging rules divide cleanly and must keep doing so. AZ-LOG-001 asks
+whether a resource records what happens *to* it; AZ-LOG-002 asks whether the
+subscription records *who did it*, across every resource including the ones that
+no longer exist. A test asserts AZ-LOG-002 applies to subscriptions and nothing
+else — if both claimed the same asset, one problem would be raised twice with
+two different fixes.
+
+---
+
+## 58. v4 grants one action, because two of the three candidates were not worth one
+
+The plan going into v4 was SQL auditing, transparent data encryption and
+managed disk encryption, batched into a single redeploy prompt rather than
+three. Two of the three did not survive being looked at.
+
+**Transparent data encryption has been on by default since 2017**, and
+**managed disks are always encrypted at rest and cannot be turned off**. Checks
+for either would have cost a permission, a per-database fan-out, and a place in
+the catalogue, to report PASS for very nearly every customer. That is how a rule
+set grows in size and shrinks in signal — the failure mode ROADMAP.md warns
+about, arrived at through diligence rather than laziness.
+
+**SQL auditing is the opposite and is the whole of v4.** It is off by default on
+every Azure SQL server, so it is a setting most customers have never turned on
+rather than one they turned off. It costs one call per server, folded into the
+task that already lists them, and it pairs with AZ-DB-001: a publicly reachable
+database with no audit trail is the worst combination this catalogue can
+describe, and the auditing finding carries `public_network_access` in its
+evidence so the two read together.
+
+**The rule declares no expected state, and that is the honest form.**
+`Comparison` offers three checks and says in its own docstring that anything
+they cannot express stays undeclared rather than half-declared. AZ-DB-003 checks
+two things about one nested setting — auditing is on, and it writes somewhere —
+which none of the three express. A declaration saying only "state is Enabled"
+would have a customer satisfy exactly what they were shown, still be auditing to
+nowhere, and watch the finding stay open. So the spec is the empty form, with
+the reason in `notes` and the commands still handed over.
+
+**Two failure modes, reported apart.** Off is a switch; on-with-no-destination
+is the setting people believe they have. The fix differs, so the finding says
+which it found.
+
+**And the UNKNOWN names the role.** A customer still on v3 gets a 403 on this
+one call while the server listing and firewall rules succeed, so every SQL
+server they own reports UNKNOWN. The message says the deployed role may predate
+the permission, because an unexplained UNKNOWN on every database is worse than
+the gap it describes.
+
+---
+
+## 59. The access panel stopped calling a stale role verified
+
+`role_upgrade_available` has been on the connection payload since role versions
+existed, computed correctly, and read by nothing. So bumping the role to ship a
+check — twice in a week, v3 for key vaults and v4 for SQL auditing — left every
+existing customer collecting UNKNOWN across whole categories while the access
+panel printed their role in the same green as a current one, next to the word
+"verified".
+
+That is the failure `role_upgrade_available`'s own docstring says the mechanism
+exists to prevent, reached anyway because the last step was never taken. A
+backend that knows and a screen that does not is indistinguishable from a
+backend that does not know.
+
+**Three states, not two.** The role is now green when current, red when never
+granted, and amber when behind. Behind is not a failure — most checks are
+running on it — and painting it red would send somebody to fix an outage they do
+not have.
+
+**Named, not counted.** "Two categories are degraded" is a notification;
+"Databases, Key vaults" is a decision. The categories come from
+`degraded_categories`, the same function the scanner uses to explain its own
+gaps, so the screen and the scan cannot disagree about which checks are
+affected. The customer-facing labels live in the frontend — `secrets` is what
+the permission model calls a key vault, and "Key vault" is what the customer
+went looking for.
+
+**The panel states the invariant where it is felt.** The affected checks report
+"not known" rather than passing, and the alert says so: a customer who assumed
+silence meant a pass would draw exactly the wrong conclusion, and this is the
+one screen where that assumption is most tempting.
+
+**The redeploy link is the setup wizard's link.** Redeploying is deploying again
+— the template carries the current role definition — so a second route would be
+inventing one, and it is omitted entirely when there is no template URL to point
+at, because a dead button is worse than none.
+
+**And the seam test earned its keep.** The first attempt imported
+`rbac.ROLE_VERSION` straight into the route to report which version to redeploy
+toward. The route layer is provider-neutral and a role version is not, so it now
+asks `required_role_version`, which returns `None` for a provider with no such
+notion.
+
+**The collection panel was not the liar; the SQL task was.** The panel reports
+each reading's outcome, and the SQL reading came back COMPLETE while every
+auditing verdict was UNKNOWN. That task makes three calls -- the servers, then
+each server's firewall rules and auditing settings -- and a per-server failure
+was recorded on the server for the rules to degrade on and nowhere else. So the
+one screen whose job is saying what was and was not read said everything was.
+A role predating v4 produces exactly this: a 403 on every auditing call while
+the listing and firewall rules succeed. `_arm_task` now accepts a `TaskData`
+from a call that knows something about its own completeness the wrapper cannot
+see, and reports both reasons when a truncated listing and a half-read server
+apply at once.
+
+**And the invariant was stated for PARTIAL and nowhere else.** A scan where
+storage failed outright showed a badge, a count, and no word about what it cost
+-- leaving "could not read" free to be read as "nothing to report", which is the
+one inference this product exists to prevent. Two sentences rather than one
+covering both, because the reasons differ: an incomplete listing cannot support
+a pass, and an absent one supports nothing at all.
+
+`degraded_categories` on the collection payload is deliberately still not
+rendered. It rolls up the same per-reading outcomes the list underneath already
+shows one by one, and a summary that repeats the thing below it adds a place for
+the two to disagree rather than a fact.
+
+**And making that PARTIAL truthful exposed the next layer of the same
+mistake.** A rule degrades on the evidence *keys* it declares, and the SQL
+listing was one key covering three calls -- the servers, their firewall rules,
+and their auditing settings. So the moment a refused auditing read correctly
+made the reading PARTIAL, it also took AZ-DB-001's verdict, over a call that
+rule never reads. That is the gap CloudGuard invents rather than finds, and it
+is precisely what `requires_evidence` was introduced to stop when rules named
+whole categories instead of keys. The same error, one layer down: a key naming
+three calls is a category wearing a key's name.
+
+Auditing is now its own key and its own dependent task, keyed per server the
+way diagnostics is. AZ-DB-001 declares `SQL_SERVERS`; AZ-DB-003 declares both,
+because without the listing there are no servers to judge and without the
+auditing read there is no posture to judge them on. A role predating v4 now
+costs exactly one rule its verdict, and the reading's detail names the role as
+the likely cause rather than leaving a v3 customer with an unexplained partial
+on every scan.
+
+The general form, worth stating because there will be a next one: **an evidence
+key is the unit a rule depends on, so two calls belong under one key only when
+no rule could depend on one without the other.** Separately deniable means
+separately keyed.
+
+**`RESOURCES` was checked for the same defect and does not have it — it has a
+different one.** No rule declares the inventory, so a failed Resource Graph
+query costs no check its verdict; every rule reads its own service listing
+instead. Two tests now hold that, and hold the pair to it: the key stays in
+`baseline_evidence`, because a plan derived from the rule set would otherwise
+stop collecting it silently.
+
+What was wrong was the justification. `BASELINE_EVIDENCE` claimed the customer's
+asset list was made of the inventory, and it is not — every asset CloudGuard
+shows comes from the per-service listings, normalized into `cloud_resources`.
+The Resource Graph payload is stored verbatim in every snapshot and read by
+nothing, anywhere. Both docstrings also said "these three" for a set of five,
+the two control readings having been added without updating the count.
+
+So the honest statement got written down — and then built. The inventory is the
+one reading that covers resource types no rule has been written for, and the
+asset list now says so.
+
+**Resources no service listing produced become assets carrying
+`ResourceType.UNKNOWN`.** That type is the load-bearing part: no rule's
+`applies_to` names it, so nothing judges them and none can become a PASS nobody
+earned. They are counted, listed, and reported as unchecked — which is a fact
+about CloudGuard's limits rather than about the customer's estate, and the one
+thing a customer cannot work out for themselves.
+
+**Nothing is counted twice.** The inventory covers the same storage accounts the
+storage listing already produced, in far less detail, so it is filtered against
+the assets already normalized — including against itself, since a repeated
+Resource Graph row would otherwise be a repeated asset. Two rows for one asset
+would be an inventory that miscounts and a graph holding the same thing twice.
+
+**The real Azure type travels with them.** A list row reading "Unknown" would be
+a worse answer than the omission it replaced: the point of showing these is that
+the customer can see *what* is unchecked, not merely how many. `azure_type` is
+null for a modelled asset, whose cloud-neutral label is the better one.
+
+**Exposure stays UNKNOWN rather than LOW.** Resource Graph's projection excludes
+`properties` deliberately, so there is no configuration here to establish
+exposure from, and LOW would be reassurance CloudGuard did not earn.
+
+**The count is phrased as a limit, not a percentage.** "35 with no checks yet"
+rather than "74% coverage": a percentage invites the reader to feel good about a
+high one, and the useful question is which resources are unexamined.
+
+---
+
+## 60. A control says why it is inconclusive, not only that it is
+
+The compliance page already distinguished the five verdicts properly — labels,
+dashed styling for INCONCLUSIVE so a control CloudGuard could not evaluate never
+looks like one it cleared, and NOT_COVERED quieter still. That part was right and
+stays.
+
+What it could not answer was the question INCONCLUSIVE raises and the other four
+do not. FAILING points at findings. PASSING needs nothing. NOT_COVERED is a fact
+about CloudGuard with no action behind it. NOT_ASSESSED resolves itself on the
+next scan. "Three rules could not be evaluated" points nowhere — and the
+sentence that answers it has been sitting in `scan_evaluation_gaps` since
+UNKNOWN became a recorded outcome, written by the rule that gave up, and never
+read by this view.
+
+It matters more than it did. Since the scanner role started gaining permissions,
+the answer is frequently "your deployed role predates the permission this
+needs", which is a thing a customer can act on this afternoon — and the access
+panel now says the same thing one screen over, so the two agree.
+
+**Distinct per rule, and capped at three.** The ledger holds one row per
+resource, so forty storage accounts that failed for one reason are one sentence.
+A tuple rather than a single string because one rule can fail differently on
+different resources — a listing that timed out and a configuration that never
+arrived are two causes, and collapsing them would name the wrong one for half
+the assets. Past the cap it is a scan-level question, and the collection panel
+answers it in full.
+
+**The explanation never softens the verdict.** Knowing why CloudGuard could not
+look is not the same as having looked, and a test says so explicitly: an
+explained UNKNOWN is still INCONCLUSIVE, and a failing rule still outranks it.
+This is the one screen somebody might put in front of an auditor.
+
+The page had no test at all before this. It has five now, including the one that
+matters most: a control nothing checks and a control that could not tell must
+never render the same.
+
+**And one flaky test found on the way, fixed rather than tolerated.** The
+finding detail page draws on three independent queries — the finding, its attack
+paths, its provenance — which settle in whatever order they settle in. A test
+awaited the first sentence and then read two more synchronously, which proves
+nothing about the second and third, and lost the race whenever the machine was
+busy. Every assertion awaits now.
+
+Worth recording how it was nearly missed: the suite had been run as
+`npx vitest run … | tail`, and a pipeline reports the exit code of its *last*
+stage, so vitest's failure read as a pass. A verification command that cannot
+fail is not a verification command.
+
+**And a React key warning that had been scrolling past in green runs.** The
+assets table renders each group as a heading row plus its assets, wrapped in a
+`<>` fragment returned from a `.map()`. The rows inside were keyed all along,
+which is what made it look fine — but the *wrapper* is what sits in the list,
+and the shorthand fragment cannot take a key. React answers a list child it
+cannot identify by reusing the wrong DOM under a changed key: rows appearing
+under the wrong heading after a regrouping, invisible to any test asserting on
+first paint.
+
+The instance is a one-line fix, `<Fragment key={groupName}>`. The interesting
+part is that a test asserting on the console does **not** hold it: React
+de-duplicates these per call site, so such a test catches the warning only if it
+happens to run before every other test that renders the same component. Written
+that way it passed with the fix reverted — which is worse than no test, because
+it reports a guarantee it does not provide.
+
+So the guard is in the shared test setup instead, and fails any test that
+produces one. Narrow on purpose: failing every `console.error` would fail tests
+deliberately exercising error paths, and the class worth catching here is
+specific. Verified the honest way — with the fix reverted, the suite fails; with
+it in place, it passes.
+
+---
+
+## 61. Three more frameworks, and no new scanning
+
+NIST SP 800-53 Rev. 5, the SOC 2 Trust Services Criteria and PCI DSS v4.0.1 are
+now catalogued. None of them cost a rule. That is the whole point of the mapping layer: a rule is the
+reusable unit, a framework is a set of references to it, and a seventh catalogue
+is a data change rather than a scanning engine. A test asserts every rule maps
+to all three, and that no rule was written *for* any of them — a rule named after a
+standard would be the same technical check duplicated per standard, which is the
+failure the compliance layer exists to prevent.
+
+**800-53 is a US Government work and could be quoted; SOC 2's criteria are
+AICPA's and cannot.** Both are described in CloudGuard's own words anyway, so
+the two pages read alike and the rule at the top of the catalogue holds without
+exception. The identifiers are the durable part; `url` points at the
+authoritative text.
+
+**SOC 2 is the easiest page in this product to overreach on**, and the catalogue
+is shaped to make that hard. Its criteria are mostly about whether an
+organization *has* a control and operates it — CC1 through CC5 are control
+environment, communication, risk assessment, monitoring and control activities,
+and a scanner reads none of them. Nine of twenty-seven criteria are technically
+assessable and the rest are listed unassessable rather than omitted, so the page
+reports honest partial coverage instead of implying a SOC 2 report is a
+configuration problem. The scope note says in as many words that only a licensed
+firm can issue the opinion.
+
+A test asserts fewer than half of SOC 2's criteria are assessable, and the first
+version of the catalogue failed it at exactly half — because the catalogue was
+understating how organizational the standard is, not because the assertion was
+wrong. Seven more of the organizational criteria were named. That is the right
+direction to resolve that failure in: the honest ratio is a fact about SOC 2,
+and a catalogue that flattered CloudGuard's reach would be the thing at fault.
+
+**Both list controls no rule covers**, as every framework here does — 800-53
+covers 16 of 24, SOC 2 8 of 27. The uncovered ones are the backlog and the
+never: `RA-5` and `SI-2` want vulnerability data CloudGuard does not collect,
+`CC6.8` wants anti-malware status, and `PE-3` wants somebody to walk into a
+building.
+
+**PCI DSS v4.0.1 followed, and it carries the caveat that matters most.** The
+standard applies to the cardholder data environment, and CloudGuard does not
+know which resources are in it — scope is a decision a QSA makes with the
+merchant about segmentation and data flows, and every figure on that page is
+computed over the whole subscription instead. A resource group holding no card
+data is counted exactly like the one that does.
+
+That caveat is more consequential than SOC 2's, because PCI is contractual
+rather than advisory: a merchant assessed against it can lose the ability to
+take payments, so a page implying it had assessed them would be doing harm
+rather than merely overreaching. The scope note says so first, before anything
+else, and a test asserts it.
+
+PCI's uncovered controls also divide cleanly in a way worth keeping visible.
+`9.1.1`, `11.4.1`, `12.1.1` and `12.10.1` — physical access, penetration
+testing, policy, incident response — are marked unassessable because no scanner
+reaches them. `5.2.1`, `6.3.3` and `11.3.1` — anti-malware, patching,
+vulnerability scanning — stay *assessable* and uncovered, because a scanner
+could report them and this one does not collect the evidence. Backlog and never
+are different answers and the catalogue distinguishes them.
+
+**One bug I introduced and caught before it shipped.** The PCI scope note was
+written with markdown emphasis around the scope caveat.
+`ComplianceFramework.tsx` renders `{data.scope_note}` straight into JSX, so it
+would have reached the customer as two literal asterisks — on the page that
+most needs to be believed. A test now rejects markup in any framework's
+customer-facing text, because the place a caveat most wants emphasis is exactly
+where the next person will reach for it.
+
+The frontend needed no change at all, which is the property worth noting: no
+page branches on a framework id, so the compliance views rendered three new
+catalogues the moment the API listed them.
+
+---
+
+## 62. Defender's findings are evidence, not verdicts to repeat
+
+Six controls across four frameworks wanted the same thing — NIST `RA-5` and
+`SI-2`, SOC 2 `CC6.8`, PCI `5.2.1`, `6.3.3` and `11.3.1` — and no ARM
+configuration answers any of them. Whether a machine is patched, and whether an
+agent is installed and healthy, are facts only the machine knows. Microsoft
+Defender for Cloud is what knows the machine, so v5 of the scanner role reads
+its assessments.
+
+**The line worth holding is what a rule does with them.** Defender has already
+reached a verdict on every asset it assesses. Mirroring those as CloudGuard
+rules would turn two hundred assessments into two hundred findings, none of
+which a customer could not already see in the Azure portal — a product that adds
+a second inbox rather than a decision.
+
+What CloudGuard has and Defender does not is the graph. So an assessment is read
+as evidence: `AZ-VULN-001` fires only where Defender's vulnerability finding
+meets CloudGuard's own knowledge that the machine answers the internet, and
+returns NOT_APPLICABLE otherwise — explicitly, because Defender raises the
+vulnerability on its own terms and there is nothing there CloudGuard knows that
+Defender did not say better. The finding is the pairing, which neither says
+alone.
+
+**Severity stays Microsoft's, under Microsoft's name.** `provider_severity`
+rather than mapped onto CloudGuard's scale: the two were tuned by different
+people for different purposes, and quietly equating them would put somebody
+else's judgement inside this product's risk formula.
+
+**Only unhealthy assessments are kept.** A healthy one is Defender's verdict
+rather than CloudGuard's evidence, and several hundred per subscription in every
+snapshot would store a great deal to say nothing. `NotApplicable` is dropped for
+a stronger reason: it frequently means the assessment could not run, and reading
+it as a pass is the overclaim this engine refuses everywhere.
+
+**And the absence is the case to get right.** A subscription with no Defender
+plan returns no assessments. `security_assessments` is therefore absent on an
+asset nothing assessed and an empty list on one Defender looked at and cleared —
+None is UNKNOWN, `[]` is a PASS somebody earned. Reading the first as clean
+would be an absence of evidence reported as evidence of absence, on the class of
+finding a customer is most likely to believe.
+
+**One catalogue correction fell out of it.** Mapping these rules gave NIST CSF
+100% coverage, which `test_catalogue_lists_controls_no_rule_covers` refused —
+correctly, and the fault was the catalogue rather than a mapping. CSF holds over
+a hundred subcategories and this catalogue listed thirteen, all from Protect and
+Detect, while its own scope note said Identify, Respond and Recover were out of
+reach without naming any of them. Five are named now. The same correction as SOC
+2's: a framework that reports full coverage is a catalogue understating the
+framework.
+
+---
+
+## 63. The last two identity gaps cost a collector, not a consent
+
+Application credential expiry and dormant privileged accounts are the two
+categories `RULE_ENGINE.md` names as absent because the evidence is. Both were
+assumed to be blocked behind a second Global Administrator consent — a per-tenant
+ask heavier than anything CloudGuard has needed since onboarding, and worth
+deciding deliberately. Checked rather than assumed, the ask is not there.
+
+**The consent screen is already wider than the collector.**
+`REQUIRED_GRAPH_PERMISSIONS` has carried `Application.Read.All` and
+`AuditLog.Read.All` since the two-click redesign, alongside
+`IdentityRiskyUser.Read.All`. No collector calls anything that needs any of the
+three. So every tenant that has ever consented to this application granted them
+at the moment they clicked, and the two gaps are collector work under permissions
+already in hand — no redeploy, no re-consent, nothing to ask a customer for.
+
+* Credential expiry reads `/applications` and `/servicePrincipals` for
+  `passwordCredentials` and `keyCredentials`, which `Application.Read.All`
+  covers.
+* Dormancy needs no new object at all: role members are already collected. The
+  missing field is `signInActivity` on `/users`, which Graph gates on
+  `AuditLog.Read.All` *and* `User.Read.All` — both granted.
+
+A tenant that consented against an older registration would be the exception,
+and needs no campaign to find: `missing_permissions` reads the granted
+permissions out of the token's `roles` claim and names exactly what is absent,
+per tenant, on every scan.
+
+**The real gate on dormancy is a licence, and it is not consent's problem.**
+`signInActivity` requires Microsoft Entra ID P1 or P2. A Free tenant with
+complete consent still gets a 403, and the fix is a licence its administrator may
+have decided against on purpose. That has to degrade as its own reason: this
+scan could not read sign-in activity because the tenant is not licensed for it —
+UNKNOWN with a sentence, like every other gap here. Reporting it as a permission
+problem would send a Global Administrator to a consent screen that cannot fix it,
+which is the failure `client.py`'s access-denied hints exist to prevent.
+
+**Why the mistake was available to make is worth fixing too.** The ARM half of
+the grant asserts this exact thing: `ROLE_ONLY_ACTIONS` derives every action the
+role requests that no client call reaches, and a test asserts it empty, so a
+permission on a customer's consent screen that nothing uses cannot survive a
+build. The Graph half has no equivalent — which is how three unused permissions
+sat there long enough for the collector's reach to be read off the code rather
+than off the consent screen. The same derivation belongs on the Graph side, and
+it turns green as these two collectors land rather than before.
+
+---
+
+## 64. Both collectors landed, and an expiry date is not a finding
+
+§63 established that application credentials and dormant accounts were a
+collector rather than a consent. Building them settled four things that were
+not obvious from the outside.
+
+**An expired credential is an outage, not an exposure.** The gap was named
+"application credential expiry", and the obvious rule — this secret has expired,
+or expires next week — is one CloudGuard should not ship. An expired secret
+grants nobody anything; an application has stopped working, which the customer's
+own alerting is better placed to notice than a security tool is. What an
+attacker actually gets from an expiry date is its *remaining* life: a secret
+copied out of a pipeline log today keeps working until the day it was issued
+for. So AZ-APP-001 asks how long a stolen credential would keep working, fails
+above a year, and passes an expired one explicitly.
+
+The registration is the asset rather than each credential. One application with
+four long-lived secrets is one thing to fix, and four findings for it would be
+the score charged four times for a single rotation.
+
+Service principal credentials are deliberately not read. They exist, and reading
+them means listing every service principal in the tenant — several hundred of
+them Microsoft's — for the handful a customer created. That is the trade the
+Conditional Access collector already made when it read back only the groups a
+policy names: a directory dump for a few ids is worse than the narrower answer,
+and what a customer rotates is the registration. AZ-APP-001's finding says so rather than claiming to cover
+every credential in the tenant.
+
+**A licence is not a consent, and must not be reported as one.**
+`signInActivity` needs Entra ID P1 or P2 on top of the grant every tenant
+already has. A free-tier tenant with complete consent is refused it with a 403 —
+the same status code a missing permission produces, from the same endpoint. The
+collector reads Graph's own explanation and rewrites only that case, so the
+tenant is told about a licence its administrator may have declined on purpose,
+rather than being sent to a consent screen that cannot fix it. Everything else
+keeps the existing behaviour of naming the permissions consent did not grant.
+
+**An age has to be measured from the capture.** Days remaining on a credential
+and days since a sign-in are the first evidence in this product that is a
+duration rather than a value, and a duration computed against `now()` would make
+a rule a function of when it was asked instead of what it read — so a replayed
+snapshot would reach a different verdict from the same JSON, and "CloudGuard
+verified the fix" would mean nothing. `RawSnapshot` carries `collected_at`, it
+round-trips through `to_json`, and the normalizer measures every age from it.
+The rules see plain numbers and stay pure.
+
+**And the Graph side now asserts what ARM already did.** `ROLE_ONLY_ACTIONS`
+has long derived every ARM action the scanner role requests that no collector
+reaches, and a test keeps it empty. Graph had no equivalent, which is exactly
+how three requested-and-unused permissions went unnoticed long enough for §63's
+mistake to be available. `GRAPH_PERMISSION_USE` names the call behind each
+permission and a test refuses any that is neither used nor reserved.
+
+`IdentityRiskyUser.Read.All` is the one reserved entry. Trimming it would be the
+tidier-looking move and the wrong one: §63's whole point is that a permission
+already on the consent screen is one a future collector spends nothing to use,
+and dropping it would sell that for a shorter list. Reserved with a reason keeps
+it a decision rather than an oversight.
+
+---
+
 ## 55. A payload is stored as compressed bytes, not as JSONB
 
 §54 removed the copies. This removes the size of what is left.

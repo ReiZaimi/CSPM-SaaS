@@ -14,6 +14,8 @@ which is read off the configuration in the capture rather than inferred from
 labels — a public IP is attached or it is not.
 """
 
+import re
+from datetime import UTC, datetime
 from fnmatch import fnmatch
 from typing import Any
 
@@ -35,6 +37,41 @@ def _context(item: dict[str, Any], resource_type: ResourceType) -> AssetContext:
         name=str(item.get("name", "")),
         resource_type=resource_type,
     )
+
+
+def _graph_time(raw: Any) -> datetime | None:
+    """One of Graph's timestamps, or None if it is not one.
+
+    Tolerant of the fractional second because Graph is not consistent about it:
+    the same field comes back as ``...T12:00:00Z`` from one endpoint and
+    ``...T12:00:00.1234567Z`` from another, and ``fromisoformat`` accepts at
+    most six digits. A credential whose expiry could not be parsed is treated as
+    an expiry CloudGuard does not know rather than as one that has not passed.
+    """
+    if not raw:
+        return None
+    # The fraction is the part that actually breaks: Graph writes up to seven
+    # digits and fromisoformat parses at most six. The trailing Z is spelled
+    # out alongside it because the two are one normalization, not because
+    # anything here refuses a Z.
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6], str(raw).strip())
+    text = text.replace("Z", "+00:00")
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _days_between(earlier: datetime, later: datetime) -> int:
+    """Whole days from ``earlier`` to ``later``, truncated downwards.
+
+    Truncation is the safe direction for both readers: a credential that
+    expired six hours ago reports -1 day remaining rather than 0, and an
+    account last seen 89.9 days ago reports 89 rather than 90 -- so a threshold
+    is crossed when it has genuinely been crossed.
+    """
+    return (later - earlier).days
 
 
 def _resource_group_of(resource_id: str) -> str | None:
@@ -145,6 +182,7 @@ class AzureNormalizer:
         data = snapshot.data
 
         diagnostics = data.get("diagnostic_settings", {}) or {}
+        assessments = self._assessments_by_resource(data)
 
         # Index NIC -> public IP and NIC -> NSG before walking VMs, so a VM's
         # exposure can be resolved by following its interfaces.
@@ -154,12 +192,23 @@ class AzureNormalizer:
         state.resources.extend(self._normalize_nsgs(data, diagnostics))
         state.resources.extend(self._normalize_storage(data, diagnostics))
         state.resources.extend(self._normalize_databases(data, diagnostics))
+        state.resources.extend(self._normalize_key_vaults(data, diagnostics))
 
         vms, vm_edges = self._normalize_vms(data, nics, public_ips)
         state.resources.extend(vms)
         state.relationships.extend(vm_edges)
 
-        state.resources.extend(self._normalize_users(data))
+        state.resources.extend(self._normalize_users(data, snapshot.collected_at))
+        state.resources.extend(
+            self._normalize_applications(data, snapshot.collected_at)
+        )
+
+        # Everything else the subscription holds. Added after the service
+        # listings and filtered against them, because the inventory covers the
+        # same storage accounts and virtual machines those listings already
+        # produced in far more detail -- and two rows for one asset would be an
+        # inventory that miscounts and a graph with the same thing in it twice.
+        state.resources.extend(self._normalize_inventory(data, state.resources))
 
         # --- the graph ------------------------------------------------------
         # Everything above describes assets one at a time. What follows says how
@@ -167,7 +216,9 @@ class AzureNormalizer:
         # composes into a path: a rule can tell you a VM is internet-facing and
         # that an identity is over-privileged, and no rule can tell you they are
         # the same VM.
-        scopes, scope_edges = self._normalize_scopes(snapshot, state.resources)
+        scopes, scope_edges = self._normalize_scopes(
+            snapshot, state.resources, diagnostics
+        )
         state.resources.extend(scopes)
         state.relationships.extend(scope_edges)
 
@@ -183,11 +234,174 @@ class AzureNormalizer:
         # it in the asset list would inflate every inventory count with rows a
         # customer never asked to own (``rules/controls.py``).
         state.controls = self._normalize_controls(data)
+
+        # Defender's findings, attached last so every asset exists to attach
+        # them to. Written onto the resources rather than kept beside them,
+        # because what makes them worth reading is the asset they are about --
+        # a critical vulnerability is one sentence on a development box and a
+        # different one on an internet-facing machine holding an identity that
+        # can act across the subscription, and only the asset knows which.
+        self._attach_assessments(state.resources, assessments)
         return state
+
+    # --------------------------------------------------------------- posture
+    def _assessments_by_resource(
+        self, data: dict[str, Any]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Defender's unhealthy findings, indexed by the resource they are about.
+
+        Only the unhealthy ones are kept. A healthy assessment says Defender
+        looked and was satisfied, which is Defender's verdict rather than
+        CloudGuard's evidence -- and carrying several hundred of them per
+        subscription into every snapshot would store a great deal to say
+        nothing. What a rule needs is what is wrong and how bad Microsoft
+        thinks it is.
+
+        ``NotApplicable`` is dropped for the same reason and a stronger one: it
+        frequently means the assessment could not run, and reading it as a pass
+        would be exactly the overclaim this engine refuses everywhere else.
+        """
+        by_resource: dict[str, list[dict[str, Any]]] = {}
+
+        for assessment in data.get("security_assessments", []) or []:
+            props = assessment.get("properties", {}) or {}
+            status = (props.get("status", {}) or {}).get("code")
+            if str(status).lower() != "unhealthy":
+                continue
+
+            target = _first(props, "resourceDetails", "Id") or _first(
+                props, "resourceDetails", "id"
+            )
+            if not target:
+                continue
+
+            metadata = props.get("metadata", {}) or {}
+            by_resource.setdefault(str(target).lower(), []).append(
+                {
+                    # The stable identifier. ``displayName`` is what a person
+                    # reads and what Microsoft rewords; the name is the GUID a
+                    # rule can match on years later.
+                    "assessment_id": assessment.get("name"),
+                    "title": props.get("displayName") or metadata.get("displayName"),
+                    # Microsoft's severity, kept under their name rather than
+                    # mapped onto CloudGuard's. The two scales were tuned by
+                    # different people for different purposes, and silently
+                    # equating them would put somebody else's judgement inside
+                    # this product's risk formula.
+                    "provider_severity": metadata.get("severity"),
+                    "categories": metadata.get("categories") or [],
+                    "cause": (props.get("status", {}) or {}).get("cause"),
+                    "description": (props.get("status", {}) or {}).get("description"),
+                }
+            )
+        return by_resource
+
+    def _attach_assessments(
+        self,
+        resources: list[CloudResource],
+        assessments: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """Put each asset's findings on the asset.
+
+        Matched case-insensitively because ARM ids are: Defender reports a
+        resource group as ``resourceGroups`` and the resource listing may
+        return ``resourcegroups``, and a case-sensitive join would silently
+        attach nothing at all -- which reads as an estate with no findings.
+
+        Absent entirely rather than an empty list where nothing matched, so a
+        rule can tell "Defender assessed this and found nothing unhealthy" from
+        "no assessment reached this asset". Only the second is UNKNOWN.
+        """
+        answered = bool(assessments)
+        for resource in resources:
+            key = resource.provider_resource_id.lower()
+            if key in assessments:
+                resource.metadata["security_assessments"] = assessments[key]
+            elif answered:
+                # Defender answered for this subscription and said nothing
+                # about this asset. That is a reading, and an empty one.
+                resource.metadata["security_assessments"] = []
+
+    # ------------------------------------------------------------- inventory
+    def _normalize_inventory(
+        self, data: dict[str, Any], modelled: list[CloudResource]
+    ) -> list[CloudResource]:
+        """The resources CloudGuard does not check, said out loud.
+
+        For a long time this payload was collected on every scan, stored in
+        every snapshot, and read by nothing -- while the asset list showed only
+        the ten-odd types the connector models in detail. A customer with a
+        subscription full of App Services and Cosmos accounts saw a tidy
+        inventory of storage and virtual machines and no indication that most of
+        what they own was missing from it. Silence read as coverage, which is
+        the one inference this product exists to prevent.
+
+        These carry ``ResourceType.UNKNOWN`` and that is the load-bearing part.
+        No rule's ``applies_to`` names it, so none of them is ever judged, and
+        none can quietly become a PASS: they are counted, listed, and reported
+        as unchecked. The Azure type is kept in metadata, which is what turns
+        "23 resources are unchecked" into "23, and here is what they are".
+
+        Nothing is invented about them. Resource Graph's projection excludes
+        ``properties`` deliberately, so there is no configuration here to judge
+        even if a rule wanted to -- context comes from tags alone, the same way
+        it does for a modelled asset.
+        """
+        known = {resource.provider_resource_id for resource in modelled}
+        resources: list[CloudResource] = []
+
+        for row in data.get("resources", []):
+            resource_id = row.get("id")
+            if not resource_id or resource_id in known:
+                continue
+            # Guards a duplicate inside the payload itself. Resource Graph pages
+            # a stable ordered query, and a repeated row would otherwise become
+            # a repeated asset.
+            known.add(resource_id)
+
+            azure_type = str(row.get("type") or "").strip()
+            context = _context(row, ResourceType.UNKNOWN)
+
+            resources.append(
+                CloudResource(
+                    provider_resource_id=resource_id,
+                    resource_type=ResourceType.UNKNOWN,
+                    name=row.get("name") or "unnamed",
+                    provider=Provider.AZURE,
+                    region=row.get("location"),
+                    **context.fields(),
+                    # Not UNKNOWN-as-caution and not LOW-as-reassurance. Exposure
+                    # is something CloudGuard establishes by looking at a
+                    # resource's configuration, and there is no configuration
+                    # here -- so it stays the honest absence, which the risk
+                    # engine already treats as "not established" rather than
+                    # "safe".
+                    public_exposure=Level.UNKNOWN,
+                    metadata={
+                        # The real type, which is the whole content of the
+                        # finding this asset represents: CloudGuard has no rule
+                        # for a Microsoft.Web/sites and the customer should know
+                        # that rather than infer it from an absence.
+                        "azure_type": azure_type,
+                        "kind": row.get("kind"),
+                        "sku": row.get("sku"),
+                        "managed_by": row.get("managedBy"),
+                        # True for every one of these by construction, and
+                        # recorded rather than derived so a consumer does not
+                        # have to know that UNKNOWN means unchecked.
+                        "unchecked": True,
+                        "tags": row.get("tags") or {},
+                    },
+                )
+            )
+        return resources
 
     # ------------------------------------------------------------ containment
     def _normalize_scopes(
-        self, snapshot: RawSnapshot, resources: list[CloudResource]
+        self,
+        snapshot: RawSnapshot,
+        resources: list[CloudResource],
+        diagnostics: dict[str, Any],
     ) -> tuple[list[CloudResource], list[tuple[str, RelationshipType, str]]]:
         """The subscription and resource groups every asset sits inside.
 
@@ -214,7 +428,17 @@ class AzureNormalizer:
                 # A subscription is exactly as exposed and as sensitive as
                 # whatever it contains, and the graph is what works that out.
                 # Claiming a level here would double-count it.
-                metadata={"subscription_id": subscription_id},
+                metadata={
+                    "subscription_id": subscription_id,
+                    # Where the activity log goes, if anywhere. Carried on the
+                    # subscription rather than derived per resource, because
+                    # the activity log is one record of what was done across
+                    # the whole subscription -- not a property of anything
+                    # inside it.
+                    "diagnostic_settings": self._diagnostics_for(
+                        subscription_node, diagnostics
+                    ),
+                },
             )
         ]
         edges: list[tuple[str, RelationshipType, str]] = []
@@ -278,7 +502,8 @@ class AzureNormalizer:
             for definition in (data.get("role_definitions", []) or [])
             if definition.get("id")
         }
-        known = {r.provider_resource_id for r in resources}
+        by_id = {r.provider_resource_id: r for r in resources}
+        known = set(by_id)
 
         nodes: dict[str, CloudResource] = {}
         edges: list[tuple[str, RelationshipType, str]] = []
@@ -321,12 +546,18 @@ class AzureNormalizer:
                         (principal_node, RelationshipType.CAN_GRANT_ROLES, scope)
                     )
 
-            # Recorded on the node where there is one to record it on. A
-            # principal that is also a directory user already has a node built
-            # by the directory pass, and that one is immutable -- its roles are
-            # carried by the edges instead, which is where a traversal reads
-            # them anyway.
-            existing = nodes.get(principal_node)
+            # Recorded on whichever node holds this principal -- one minted
+            # here, or the directory user the ``known`` lookup found.
+            #
+            # It used to be recorded only on the minted ones, on the grounds
+            # that a traversal reads the edges anyway. That is true of a
+            # traversal and false of a rule: an edge says a principal reaches a
+            # scope and cannot say *as what*, so "this person holds Owner over
+            # your subscription" was a fact CloudGuard collected, drew a line
+            # for, and then could not state. The directory node is the one case
+            # where it matters most, because a named human with Owner is worse
+            # than an unnamed principal with it, not better.
+            existing = nodes.get(principal_node) or by_id.get(principal_node)
             if existing is not None:
                 roles = list(existing.metadata.get("roles", []))
                 roles.append(
@@ -499,11 +730,68 @@ class AzureNormalizer:
             )
         return resources
 
+    # ---------------------------------------------------------------- secrets
+    def _normalize_key_vaults(
+        self, data: dict[str, Any], diagnostics: dict[str, Any]
+    ) -> list[CloudResource]:
+        """Vault configuration. Never vault contents."""
+        resources = []
+        for vault in data.get("key_vaults", []):
+            props = vault.get("properties", {}) or {}
+            network_acls = props.get("networkAcls", {}) or {}
+            context = _context(vault, ResourceType.KEY_VAULT)
+
+            public_access = props.get("publicNetworkAccess")
+            default_action = network_acls.get("defaultAction")
+
+            resources.append(
+                CloudResource(
+                    provider_resource_id=vault["id"],
+                    resource_type=ResourceType.KEY_VAULT,
+                    name=vault.get("name", "unnamed"),
+                    provider=Provider.AZURE,
+                    region=vault.get("location"),
+                    # Sensitivity comes from the context engine's type floor
+                    # rather than from anything set here: a vault holds the
+                    # credentials to everything else, tagged or not.
+                    **context.fields(),
+                    public_exposure=(
+                        Level.HIGH
+                        if str(public_access).lower() == "enabled"
+                        and str(default_action).lower() != "deny"
+                        else Level.LOW
+                        if str(public_access).lower() == "disabled"
+                        or str(default_action).lower() == "deny"
+                        else Level.UNKNOWN
+                    ),
+                    metadata={
+                        "purge_protection": props.get("enablePurgeProtection"),
+                        "soft_delete": props.get("enableSoftDelete"),
+                        "soft_delete_retention_days": props.get(
+                            "softDeleteRetentionInDays"
+                        ),
+                        "public_network_access": public_access,
+                        "network_default_action": default_action,
+                        "ip_rules": network_acls.get("ipRules") or [],
+                        "virtual_network_rules": network_acls.get("virtualNetworkRules")
+                        or [],
+                        "rbac_authorization": props.get("enableRbacAuthorization"),
+                        "access_policy_count": len(props.get("accessPolicies") or []),
+                        "diagnostic_settings": self._diagnostics_for(
+                            vault["id"], diagnostics
+                        ),
+                        "tags": vault.get("tags") or {},
+                    },
+                )
+            )
+        return resources
+
     # --------------------------------------------------------------- database
     def _normalize_databases(
         self, data: dict[str, Any], diagnostics: dict[str, Any]
     ) -> list[CloudResource]:
         resources = []
+        auditing = data.get("sql_auditing", {}) or {}
 
         for server in data.get("sql_servers", []):
             props = server.get("properties", {}) or {}
@@ -529,6 +817,7 @@ class AzureNormalizer:
                         "version": props.get("version"),
                         "administrator_login": props.get("administratorLogin"),
                         "minimal_tls_version": props.get("minimalTlsVersion"),
+                        "auditing": self._auditing(server["id"], auditing),
                         "diagnostic_settings": self._diagnostics_for(server["id"], diagnostics),
                         "tags": server.get("tags") or {},
                     },
@@ -591,6 +880,36 @@ class AzureNormalizer:
             }
             for r in raw
         ]
+
+    def _auditing(
+        self, server_id: str, auditing: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """What this server records about who queried it.
+
+        Read from its own task's output rather than off the server, because it
+        is its own evidence key: a rule that judges the audit trail depends on
+        this and a rule that judges reachability does not.
+
+        None (not a dict of falsey values) when the call failed or was never
+        made, which is the same distinction ``_firewall_rules`` draws: a server
+        whose auditing setting could not be read is not a server without
+        auditing, and only one of those is a finding.
+        """
+        raw = auditing.get(server_id)
+        if not isinstance(raw, dict):
+            # Absent, or the string 'error: ...' the collector records per
+            # server it could not read.
+            return None
+        props = raw.get("properties", {}) or {}
+        return {
+            "state": props.get("state"),
+            "retention_days": props.get("retentionDays"),
+            # Where the records go. A server auditing to nowhere keeps nothing,
+            # so the destination is part of the answer rather than detail.
+            "storage_endpoint": props.get("storageEndpoint"),
+            "log_analytics_enabled": props.get("isAzureMonitorTargetEnabled"),
+            "audit_actions": props.get("auditActionsAndGroups") or [],
+        }
 
     def _database_exposure(
         self, props: dict[str, Any], firewall_rules: list[dict[str, Any]] | None
@@ -699,9 +1018,12 @@ class AzureNormalizer:
         return resources, edges
 
     # --------------------------------------------------------------- identity
-    def _normalize_users(self, data: dict[str, Any]) -> list[CloudResource]:
+    def _normalize_users(
+        self, data: dict[str, Any], collected_at: datetime
+    ) -> list[CloudResource]:
         role_map = data.get("user_role_map", {}) or {}
         auth_methods = data.get("authentication_methods", {}) or {}
+        sign_in = data.get("user_sign_in_activity", {}) or {}
         resources = []
 
         for user in data.get("users", []):
@@ -717,6 +1039,9 @@ class AzureNormalizer:
                 "account_enabled": user.get("accountEnabled"),
                 "directory_roles": roles,
             }
+            metadata.update(
+                self._sign_in_state(user, sign_in, collected_at)
+            )
             # Only set mfa_methods when we actually read them. Absent means the
             # rule reports UNKNOWN; empty list means "read it, found nothing".
             if methods_raw != "__absent__" and methods_raw is not None:
@@ -737,6 +1062,146 @@ class AzureNormalizer:
                 )
             )
         return resources
+
+    @staticmethod
+    def _sign_in_state(
+        user: dict[str, Any],
+        sign_in: dict[str, Any],
+        collected_at: datetime,
+    ) -> dict[str, Any]:
+        """What this capture knows about when the account was last used.
+
+        Three states, and keeping them apart is the whole job:
+
+        * The read did not cover this account -- nothing is set, and a rule
+          asking about dormancy reports UNKNOWN for it.
+        * It covered the account and Entra holds no activity -- the account has
+          never signed in, which is the strongest form of dormant rather than a
+          missing reading.
+        * It covered the account and holds a date -- the age is measured from
+          the moment of capture, so a replay of this snapshot reaches the same
+          verdict a year later.
+
+        Interactive and non-interactive sign-ins are both read, and the more
+        recent one wins. A service account that authenticates nightly has no
+        interactive sign-in at all, and judging it on that alone would report
+        the tenant's busiest credentials as its most dormant.
+        """
+        user_id = str(user.get("id"))
+        if user_id not in sign_in:
+            return {}
+
+        activity = sign_in.get(user_id) or {}
+        moments = [
+            _graph_time(activity.get(field))
+            for field in (
+                "lastSignInDateTime",
+                "lastNonInteractiveSignInDateTime",
+                "lastSuccessfulSignInDateTime",
+            )
+        ]
+        seen = [m for m in moments if m is not None]
+
+        state: dict[str, Any] = {"sign_in_activity_read": True}
+        created = _graph_time(user.get("createdDateTime"))
+        if created is not None:
+            # How long the account has existed, so a rule can tell an account
+            # nobody uses from one nobody has had time to use yet.
+            state["account_age_days"] = _days_between(created, collected_at)
+
+        if not seen:
+            state["last_sign_in"] = None
+            state["days_since_sign_in"] = None
+            return state
+
+        last = max(seen)
+        state["last_sign_in"] = last.isoformat()
+        state["days_since_sign_in"] = _days_between(last, collected_at)
+        return state
+
+    # ----------------------------------------------------------- applications
+    def _normalize_applications(
+        self, data: dict[str, Any], collected_at: datetime
+    ) -> list[CloudResource]:
+        """Application registrations, reduced to when their credentials stop.
+
+        The registration is the asset rather than each credential, because the
+        registration is what a customer owns, names and rotates -- a finding
+        per secret would report one application with four expired secrets as
+        four problems with one fix.
+
+        Public exposure is HIGH for the same reason a directory user's is:
+        these credentials are presented to a token endpoint on the internet,
+        and no network control stands in front of that.
+        """
+        resources = []
+
+        for app in data.get("application_credentials", []):
+            app_object_id = app.get("id")
+            if not app_object_id:
+                continue
+
+            credentials = [
+                credential
+                for kind, field in (
+                    ("secret", "passwordCredentials"),
+                    ("certificate", "keyCredentials"),
+                )
+                for credential in self._credentials_of(app, kind, field, collected_at)
+            ]
+
+            resources.append(
+                CloudResource(
+                    provider_resource_id=f"/applications/{app_object_id}",
+                    resource_type=ResourceType.APPLICATION,
+                    name=app.get("displayName") or str(app_object_id),
+                    provider=Provider.AZURE,
+                    # An application registration holds no data and runs in no
+                    # environment, so there is nothing here for the context
+                    # engine to read and nothing a tag could say. What it is
+                    # worth depends entirely on what its service principal has
+                    # been granted, which the authorization graph answers and
+                    # this object does not.
+                    criticality=Level.UNKNOWN,
+                    data_sensitivity=Level.UNKNOWN,
+                    public_exposure=Level.HIGH,
+                    metadata={
+                        "app_id": app.get("appId"),
+                        "credentials": credentials,
+                        "credential_count": len(credentials),
+                    },
+                )
+            )
+        return resources
+
+    @staticmethod
+    def _credentials_of(
+        app: dict[str, Any], kind: str, field: str, collected_at: datetime
+    ) -> list[dict[str, Any]]:
+        """One application's secrets or certificates, dated against the capture.
+
+        ``days_remaining`` is None when Graph gave an expiry this cannot read,
+        which is deliberately not zero: an unparseable date is a credential
+        CloudGuard knows nothing about, and reporting it as expired would be a
+        finding invented out of a parsing failure.
+        """
+        found = []
+        for credential in app.get(field) or []:
+            expires = _graph_time(credential.get("endDateTime"))
+            found.append(
+                {
+                    "kind": kind,
+                    "key_id": credential.get("keyId"),
+                    "display_name": credential.get("displayName"),
+                    "end_date": expires.isoformat() if expires else None,
+                    "days_remaining": (
+                        _days_between(collected_at, expires)
+                        if expires is not None
+                        else None
+                    ),
+                }
+            )
+        return found
 
     # ------------------------------------------------------ compensating controls
     def _normalize_controls(self, data: dict[str, Any]) -> dict[str, Any]:

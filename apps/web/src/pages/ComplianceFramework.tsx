@@ -218,6 +218,29 @@ function ControlRow({ control }: { control: ComplianceControl }) {
                       did not run in the last scan
                     </span>
                   )}
+                  {/* And why, which is the half that was missing. This is the
+                      one verdict on the page a reader cannot act on from the
+                      verdict alone -- failing points at findings, passing needs
+                      nothing, not-covered is a fact about CloudGuard. "Three
+                      could not be evaluated" points nowhere, and the sentence
+                      that answers it has been in the coverage ledger since
+                      UNKNOWN became a recorded outcome.
+
+                      On its own line: these are sentences rather than labels,
+                      and wrapping them into the badge row would push the rule
+                      name off the end on the narrow column this sits in. */}
+                  {rule.unknown_reasons?.length > 0 && (
+                    <ul className="w-full flex flex-col gap-0.5 pl-1">
+                      {rule.unknown_reasons.map((reason) => (
+                        <li
+                          key={reason}
+                          className="border-l-2 border-unknown-border pl-2 text-[11px] leading-relaxed text-muted-foreground"
+                        >
+                          {reason}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </li>
               ))}
             </ul>

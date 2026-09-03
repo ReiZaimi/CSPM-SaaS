@@ -521,6 +521,21 @@ def role_upgrade_available(connection: CloudConnection) -> bool:
     )
 
 
+def required_role_version(connection: CloudConnection) -> str | None:
+    """The role version this connection should be on, or None if it has no such
+    notion.
+
+    Asked of the service rather than read from ``rbac.ROLE_VERSION`` by the
+    route, because the route layer is provider-neutral and a role version is
+    not: the day a second connector lands, "the version to redeploy toward" is
+    that provider's answer, not Azure's constant. The seam test is what caught
+    the first attempt, which imported the constant into the route.
+    """
+    if connection.provider != Provider.AZURE:
+        return None
+    return ROLE_VERSION
+
+
 def degraded_categories(connection: CloudConnection) -> dict[EvidenceCategory, str]:
     """Collection categories this connection's role cannot fully serve.
 
