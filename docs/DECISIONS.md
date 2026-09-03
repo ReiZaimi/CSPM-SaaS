@@ -2821,6 +2821,69 @@ once, including the ones the server has already answered definitively. Retrying
 is now limited to the failures where nobody actually answered -- a 5xx, a
 timeout, a dropped connection.
 
+## 67. A control cites its readings, and the whole assessment leaves as a file
+
+The compliance view walked the chain the product claims -- reading, rule,
+control, framework -- in one direction only, and stopped one link short at each
+end.
+
+**At the evidence end it could only explain failure.** A finding cites the
+readings behind it (`finding_evidence`), so "how do you know this is wrong" had
+an answer. A *passing* control has no findings, so it had no citations at all:
+CloudGuard painted a green row and offered nothing to check it against, on the
+one screen somebody might put in front of an auditor. The question an auditor
+actually asks first is the other one -- how do you know this control is met --
+and the answer was "because no rule complained", which is an assertion, not
+evidence.
+
+So a control now carries the provider readings its verdict rests on, taken from
+the rules' own declared evidence keys and the latest scan's `evidence` rows:
+which listing, when the provider was read, across how many scopes, under which
+permission, and whether the payload is still stored. Three choices inside that
+are load-bearing:
+
+* **The oldest read and the worst outcome, never an average.** A control is
+  only as current and as complete as the least of the things it rests on.
+  Averaging would let forty-nine freshly read subscriptions hide the one nobody
+  could read, which is the same overclaim as a PASS nobody earned, arriving
+  through arithmetic.
+* **A key nothing read is listed, not omitted.** It reports no outcome rather
+  than a failure -- the provider did not refuse, nothing asked -- and it is the
+  case that matters most, because it is precisely how a control ends up green
+  on nothing.
+* **Retention is reported, not assumed.** The blob store is asked which hashes
+  still exist rather than inferring it from the hash being present. A citation
+  whose bytes have aged out is still a true statement about what was read, and
+  saying so beats offering a link that fails.
+
+The evidence keys come from the `rules` read-mirror rather than the Python
+registry (migration 0032 adds `requires_evidence` beside `compliance_mappings`),
+for the reason that table exists at all: a rule deleted from the registry keeps
+its row, disabled, so the controls it used to answer for do not silently become
+uncovered.
+
+**At the other end it could not leave the browser.** An audit is run from a
+spreadsheet, and a GRC platform ingests JSON; a screen is neither.
+`GET /compliance/{id}/export?format=csv|json` is the assessment as a document --
+every control, its verdict, the rules behind it and the readings behind those,
+including the controls that passed. It answers with a file rather than the
+`{data, error, meta}` envelope, as reports do, because the caller is saving
+bytes to disk and an envelope would make every consumer unwrap a shape that
+means nothing there.
+
+Two details of the CSV are decisions rather than formatting. **Every row repeats
+the framework, its version and when the assessment was read**, which is
+redundant on screen and is the only thing that survives what actually happens to
+an export: fifteen rows copied into a larger sheet, where a row that no longer
+says which reading it came from is a compliance claim with no date on it. And
+**booleans are written as yes/no**: a spreadsheet coerces TRUE/FALSE into its
+own boolean type and then formats it in the reader's locale, so a German auditor
+opens the file and finds WAHR.
+
+Nothing here issues a score. The export says what was checked, what was found,
+and what it was found from -- the same position `coverage_ratio` takes on the
+screen, carried into the one artefact that outlives it.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

@@ -464,6 +464,28 @@ export interface ControlRuleEvidence {
   evaluated: boolean;
 }
 
+/**
+ * One provider listing a control's verdict rests on.
+ *
+ * Present for a passing control as much as a failing one, which is the point:
+ * a finding cites the readings behind it, so "how do you know this is wrong"
+ * was answerable and "how do you know this is met" was not.
+ */
+export interface ControlReading {
+  evidence_key: string;
+  /** `null` where the latest scan holds no reading of this key — not the same
+   *  as a failed read, and rendered differently. */
+  outcome: "COMPLETE" | "PARTIAL" | "FAILED" | null;
+  /** How many subscriptions (plus the directory) this listing was taken across. */
+  scopes: number;
+  collected_at: string | null;
+  age_seconds: number | null;
+  permissions: string[];
+  /** Whether every payload behind it is still stored, so it can still be
+   *  followed back to the bytes. */
+  retained: boolean;
+}
+
 export interface ComplianceControl {
   id: string;
   title: string;
@@ -473,6 +495,15 @@ export interface ComplianceControl {
   status: ControlStatus;
   open_finding_count: number;
   rules: ControlRuleEvidence[];
+  readings: ControlReading[];
+}
+
+/** Which reading of the estate an assessment is of. `null` before the first
+ *  scan completes: a framework page is then a catalogue, not an assessment. */
+export interface ComplianceAssessment {
+  scan_id: string;
+  completed_at: string | null;
+  scan_status: string;
 }
 
 export interface ComplianceFramework {
@@ -493,6 +524,7 @@ export interface ComplianceFramework {
 
 export interface ComplianceFrameworkDetail extends ComplianceFramework {
   assessed: boolean;
+  assessment: ComplianceAssessment | null;
   controls: ComplianceControl[];
 }
 

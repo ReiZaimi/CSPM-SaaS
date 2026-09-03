@@ -36,3 +36,14 @@ class Rule(UUIDPrimaryKey, Timestamps, Base):
     # Data-driven framework tagging. No framework logic is ever hardcoded into
     # business logic (PRODUCT_SPEC.md requirement 15).
     compliance_mappings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    # The evidence keys this rule reads, mirrored from ``requires_evidence``.
+    #
+    # Here rather than looked up from the registry because this table is what
+    # the compliance view joins: a control's verdict rests on its rules, and a
+    # rule's verdict rests on the readings it declares -- so without this the
+    # chain from a framework's control back to the provider call behind it
+    # stopped at the rule. It also has to survive a rule being deleted from the
+    # registry, exactly as ``compliance_mappings`` does: the row stays,
+    # disabled, and the controls it used to answer for keep their history.
+    requires_evidence: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

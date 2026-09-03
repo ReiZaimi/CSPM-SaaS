@@ -690,6 +690,25 @@ export const en = {
     notAssessableHelp:
       "This requirement is organizational, procedural or physical. No cloud posture scan can produce evidence for it.",
     evidenceFrom: "Evidence from",
+    // The readings under a control, which is what turns a green row from a
+    // claim into something a reader can check.
+    readFrom: "Read from",
+    readingNever: "not read in the last scan",
+    readingScopes: "scope",
+    readingScopesPlural: "scopes",
+    readingPruned: "payload no longer stored",
+    readingHelp:
+      "The provider listings this control's verdict rests on, as the last scan took them. The oldest read and the worst outcome are shown: a control is only as current and as complete as the least of the things it rests on.",
+    export: "Export",
+    exportCsv: "Spreadsheet (CSV)",
+    exportJson: "Machine-readable (JSON)",
+    exporting: "Preparing\u2026",
+    exportFailed: "Could not prepare the export",
+    exportHelp:
+      "Every control, its verdict, the rules behind it and the readings behind those \u2014 including the controls that passed.",
+    assessedFrom: "Assessed from the scan completed",
+    assessedPartial:
+      "That scan could not read part of the estate, so this assessment has a gap in it.",
     empty: "No frameworks in the catalogue.",
     backToFrameworks: "All frameworks",
     statusHelp: {

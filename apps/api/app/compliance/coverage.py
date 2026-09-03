@@ -12,7 +12,9 @@ Pure functions only. Nothing here touches the database, so the precedence rules
 below can be tested directly rather than through a scan.
 """
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -104,3 +106,92 @@ def status_counts(statuses: list[ControlStatus]) -> dict[str, int]:
     for status in statuses:
         counts[status.value] += 1
     return counts
+
+
+# Which outcome wins when one reading was taken across several subscriptions.
+# Worst first, and for the reason the rule engine gives about PARTIAL: a listing
+# known to be incomplete cannot support "none of them are public", so a control
+# whose storage listing was truncated in one subscription out of nine has to say
+# so rather than average it away.
+_OUTCOME_RANK = {"FAILED": 3, "PARTIAL": 2, "COMPLETE": 1}
+
+
+@dataclass(frozen=True)
+class Reading:
+    """One provider listing behind a control, as the latest scan took it.
+
+    Aggregated across scopes rather than one entry per subscription: a tenant of
+    fifty subscriptions read storage fifty times, and fifty identical rows under
+    one control is a table nobody reads. What survives aggregation is what an
+    auditor asks about -- the worst outcome, the oldest read, how many scopes it
+    covered, the permission it was made under, and whether the bytes are still
+    there to check.
+    """
+
+    evidence_key: str
+    # None where the latest scan holds no reading of this key at all. That is
+    # not the same as a failed read and must not render as one: the first says
+    # nothing was collected, the second says the provider refused. Both stop a
+    # control being green on nothing, which is why neither is dropped.
+    outcome: str | None
+    scopes: int
+    # The *oldest* of the readings, not the newest. A control is only as current
+    # as the least current thing it rests on, and taking the newest would let
+    # forty-nine fresh subscriptions hide the one that has not been read since
+    # Tuesday.
+    collected_at: datetime | None
+    permissions: tuple[str, ...] = ()
+    # Whether every payload behind this reading is still stored. Retention
+    # prunes bytes long before it prunes the record that they were read
+    # (DECISIONS.md §51), so a citation can be true and no longer followable --
+    # and saying which is the difference between provenance and a dead link.
+    retained: bool = False
+
+
+def summarize_readings(
+    keys: Iterable[str],
+    rows: Sequence[tuple[str, str, datetime, Sequence[str], str | None]],
+    stored_hashes: frozenset[str] = frozenset(),
+) -> tuple[Reading, ...]:
+    """Fold this scan's readings into one entry per declared key.
+
+    ``rows`` are ``(evidence_key, outcome, collected_at, permissions,
+    content_hash)`` as the evidence table holds them, one per scope. ``keys`` is
+    what the control's rules declared they read -- passed separately because a
+    key with no row is the case that matters most: it means the verdict above it
+    rests on a reading nobody took.
+    """
+    by_key: dict[str, list[tuple[str, datetime, Sequence[str], str | None]]] = {}
+    for evidence_key, outcome, collected_at, permissions, content_hash in rows:
+        by_key.setdefault(evidence_key, []).append(
+            (outcome, collected_at, permissions, content_hash)
+        )
+
+    readings: list[Reading] = []
+    for key in sorted(set(keys)):
+        entries = by_key.get(key, [])
+        if not entries:
+            readings.append(Reading(evidence_key=key, outcome=None, scopes=0, collected_at=None))
+            continue
+        permissions = sorted(
+            {permission for _o, _c, perms, _h in entries for permission in perms}
+        )
+        hashes = [content_hash for _o, _c, _p, content_hash in entries]
+        readings.append(
+            Reading(
+                evidence_key=key,
+                outcome=max(
+                    (outcome for outcome, _c, _p, _h in entries),
+                    key=lambda outcome: _OUTCOME_RANK.get(outcome, 0),
+                ),
+                scopes=len(entries),
+                collected_at=min(collected_at for _o, collected_at, _p, _h in entries),
+                permissions=tuple(permissions),
+                # Every payload, not any: a control resting on nine readings of
+                # which one has been pruned cannot be followed all the way back,
+                # and "partly retained" is the honest answer to give as False.
+                retained=bool(hashes)
+                and all(h is not None and h in stored_hashes for h in hashes),
+            )
+        )
+    return tuple(readings)

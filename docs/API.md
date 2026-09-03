@@ -57,6 +57,7 @@ GET    /attack-paths/blast-radius/{resource_id}
 
 GET    /rules                              GET    /rules/{rule_id}
 GET    /compliance                         GET    /compliance/{framework_id}
+GET    /compliance/{framework_id}/export?format=csv|json
 
 GET    /notifications                      POST   /notifications/read
 DELETE /notifications                      DELETE /notifications/{id}
@@ -109,6 +110,17 @@ also applied as a *floor*: it can raise an asset's criticality above what the
 capture supported but never lower it, so the worst a mistaken declaration can
 do is over-rank something. `GET /assets/{id}` returns a `context` block giving
 each value's source and confidence alongside it.
+
+`/compliance/{framework_id}/export` answers with a document rather than the
+envelope, for the same reason `/reports/{kind}` does: the caller is saving a
+file, and an envelope would make every consumer unwrap a shape that means
+nothing on disk. CSV is what goes into the spreadsheet an audit is run from and
+JSON is what a GRC platform ingests; both carry every control, its verdict, the
+rules behind that verdict and the provider readings behind those. Every CSV row
+repeats the framework, its version and when the assessment was read, because the
+thing that happens to every export is that fifteen rows are copied into a larger
+sheet — where a row that no longer says which reading it came from is a
+compliance claim with no date on it.
 
 Three endpoints are unauthenticated by necessity, all protected by an
 HMAC-signed token rather than a session: `/cloud-connections/azure/consent/callback`,

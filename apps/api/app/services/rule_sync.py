@@ -36,6 +36,9 @@ async def sync_rules_to_database() -> int:
                 "estimated_effort_minutes": rule.estimated_effort_minutes,
                 "rationale": rule.rationale,
                 "compliance_mappings": rule.compliance_mappings,
+                # Mirrored so the compliance view can follow a control back to
+                # the readings behind it without importing rule code.
+                "requires_evidence": [key.value for key in rule.requires_evidence],
             }
 
             row = existing.get(rule.rule_id)

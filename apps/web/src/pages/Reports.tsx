@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { DownloadIcon, ExternalLinkIcon, FileTextIcon } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api";
+import { openBlob, saveBlob } from "@/lib/download";
 import { useT } from "@/i18n";
 import { ErrorState, PageHeader } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
@@ -302,31 +303,4 @@ function ReportCard({
       </CardContent>
     </Card>
   );
-}
-
-/**
- * Hand the blob to the browser as a download.
- *
- * The object URL is revoked rather than left behind: it pins the whole PDF in
- * memory for the life of the document, and a reader generating a few reports
- * would otherwise hold every one of them.
- */
-function saveBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function openBlob(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, "_blank", "noopener,noreferrer");
-  // Not revoked immediately: the new tab has not finished reading it yet.
-  // A minute is far longer than a render and short enough that a session
-  // spent previewing reports does not accumulate them.
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

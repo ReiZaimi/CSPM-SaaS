@@ -1,10 +1,19 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { DownloadIcon } from "lucide-react";
+
 import { api } from "@/lib/api";
-import type { ComplianceControl, ComplianceFrameworkDetail } from "@/lib/types";
+import type {
+  ComplianceControl,
+  ComplianceFrameworkDetail,
+  ControlReading,
+} from "@/lib/types";
 import { useT } from "@/i18n";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
-import { formatPercent } from "@/lib/format";
+import { saveBlob } from "@/lib/download";
+import { formatDateTime, formatPercent, formatRelative } from "@/lib/format";
+import { Button } from "@/components/ui/button";
 import {
   CoverageBar,
   ControlStatusPill,
@@ -66,10 +75,27 @@ export function ComplianceFrameworkPage() {
             { label: data.name },
           ]}
         />
-        <h1 className="text-xl font-semibold tracking-tight">{data.name}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {data.version} · {data.authority}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight">{data.name}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {data.version} · {data.authority}
+            </p>
+            {/* Which reading of the estate this is an assessment of. A page
+                that did not say so is a compliance claim with no date on it,
+                and the export carries the same line for the same reason. */}
+            {data.assessment && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t.compliance.assessedFrom}{" "}
+                {formatDateTime(data.assessment.completed_at)}
+                {data.assessment.scan_status === "PARTIAL" && (
+                  <span className="text-unknown"> · {t.compliance.assessedPartial}</span>
+                )}
+              </p>
+            )}
+          </div>
+          <ExportControls frameworkId={data.id} />
+        </div>
       </div>
 
       <EvidenceNotice />
@@ -252,7 +278,137 @@ function ControlRow({ control }: { control: ComplianceControl }) {
               : t.compliance.notAssessableHelp}
           </p>
         )}
+
+        <ControlReadings readings={control.readings ?? []} />
       </CardContent>
     </Card>
+  );
+}
+
+
+/**
+ * The export, which is where the chain this page draws actually ends.
+ *
+ * Two formats because the two readers are different: CSV goes into the
+ * spreadsheet an audit is run from, JSON into a GRC platform that would
+ * otherwise have somebody retyping it. Fetched with the caller's token rather
+ * than linked, because the token lives in memory and a plain anchor would
+ * arrive unauthenticated -- the same reason the reports page does it this way.
+ */
+function ExportControls({ frameworkId }: { frameworkId: string }) {
+  const t = useT();
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const download = useMutation({
+    mutationFn: async (format: "csv" | "json") => {
+      const blob = await api.document(
+        `/api/v1/compliance/${encodeURIComponent(frameworkId)}/export?format=${format}`,
+      );
+      return { blob, format };
+    },
+    onSuccess: ({ blob, format }) => {
+      setFailure(null);
+      saveBlob(blob, `cloudguard-${frameworkId}.${format}`);
+    },
+    onError: (err) =>
+      setFailure(err instanceof Error ? err.message : t.compliance.exportFailed),
+  });
+
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={download.isPending}
+          onClick={() => download.mutate("csv")}
+        >
+          <DownloadIcon data-icon="inline-start" />
+          {download.isPending ? t.compliance.exporting : t.compliance.exportCsv}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={download.isPending}
+          onClick={() => download.mutate("json")}
+        >
+          {t.compliance.exportJson}
+        </Button>
+      </div>
+      <p className="max-w-xs text-right text-[11px] leading-relaxed text-muted-foreground">
+        {failure ?? t.compliance.exportHelp}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The readings under a control, which is the half a compliance screen usually
+ * leaves out.
+ *
+ * A finding cites the readings behind it, so "how do you know this is wrong"
+ * was answerable. "How do you know this is met" was not: a passing control has
+ * no findings, so it had no citations at all and the green row was a claim with
+ * nothing behind it.
+ *
+ * The oldest read and the worst outcome, never an average. A control is only as
+ * current and as complete as the least of the things it rests on, and averaging
+ * would let forty-nine good subscriptions hide the one nobody could read.
+ */
+function ControlReadings({ readings }: { readings: ControlReading[] }) {
+  const t = useT();
+  if (readings.length === 0) return null;
+
+  return (
+    <div className="mt-3 border-t pt-3">
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        {t.compliance.readFrom}
+      </p>
+      <ul className="mt-2 flex flex-col gap-1">
+        {readings.map((reading) => (
+          <li
+            key={reading.evidence_key}
+            className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-relaxed"
+          >
+            <code className="text-foreground">{reading.evidence_key}</code>
+            {reading.outcome === null ? (
+              // Not a failure, and it must not read as one: nothing collected
+              // this at all, which is how a control ends up green on nothing.
+              <span className="text-unknown">{t.compliance.readingNever}</span>
+            ) : (
+              <>
+                <span
+                  className={
+                    reading.outcome === "COMPLETE"
+                      ? "text-muted-foreground"
+                      : "text-unknown"
+                  }
+                  title={reading.permissions.join(", ")}
+                >
+                  {reading.outcome.toLowerCase()}
+                </span>
+                <span className="text-muted-foreground">
+                  {formatRelative(reading.collected_at)}
+                </span>
+                <span className="text-muted-foreground">
+                  {reading.scopes}{" "}
+                  {reading.scopes === 1
+                    ? t.compliance.readingScopes
+                    : t.compliance.readingScopesPlural}
+                </span>
+                {!reading.retained && (
+                  // The citation is still true; the bytes behind it have aged
+                  // out of retention. Saying which is the difference between
+                  // provenance and a dead link.
+                  <span className="text-muted-foreground">
+                    · {t.compliance.readingPruned}
+                  </span>
+                )}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

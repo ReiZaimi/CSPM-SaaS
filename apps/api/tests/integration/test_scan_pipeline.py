@@ -4641,3 +4641,172 @@ class TestRetention:
             await session.commit()
 
         assert pruned == 0
+
+
+class TestComplianceProvenance:
+    """A control that passed, and what it passed on.
+
+    The chain a compliance view claims -- reading, rule, control, framework --
+    was followable in one direction only. A *finding* cites the readings behind
+    it, so "how do you know this is wrong" had an answer; a passing control has
+    no findings, so the green row an auditor asks about first had nothing behind
+    it at all.
+
+    Written against a real scan because the readings come from the evidence the
+    scan actually wrote, and a fake would return whatever it was told.
+    """
+
+    async def _framework(self, org_id: uuid.UUID, framework_id: str) -> dict:
+        from app.services import compliance
+
+        async with service_session() as session:
+            detail = await compliance.get_framework_detail(session, org_id, framework_id)
+        assert detail is not None
+        return detail
+
+    async def test_a_control_cites_the_readings_its_verdict_rests_on(
+        self, replay, connected_account, rule_catalogue
+    ) -> None:
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        detail = await self._framework(org_id, "CIS_AZURE_2.0")
+        cited = [c for c in detail["controls"] if c["readings"]]
+
+        assert cited, "no control carried a reading; the chain stops at the rule"
+        for control in cited:
+            for reading in control["readings"]:
+                assert reading["evidence_key"]
+                # Either it was read, or it is reported as not read. A silent
+                # third state is how a control ends up green on nothing.
+                assert reading["outcome"] in {"COMPLETE", "PARTIAL", "FAILED", None}
+
+    async def test_a_passing_control_is_the_one_that_needed_this(
+        self, replay, connected_account, rule_catalogue
+    ) -> None:
+        """It has no findings, so before this it had no provenance either."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        detail = await self._framework(org_id, "CIS_AZURE_2.0")
+        passing = [
+            c for c in detail["controls"] if c["status"] == "PASSING" and c["readings"]
+        ]
+
+        assert passing, "no passing control carried a reading"
+        reading = passing[0]["readings"][0]
+        assert reading["collected_at"] is not None
+        assert reading["scopes"] >= 1
+        # Empty here, and truthfully so: this scan replays a stored capture
+        # whose coverage report predates CloudGuard recording which actions a
+        # read was made under, and `Evidence.permissions` says `[]` means
+        # exactly that rather than "the task called nothing". The next test
+        # holds the carrying itself.
+        assert isinstance(reading["permissions"], list)
+
+    async def test_the_permission_a_read_was_made_under_reaches_the_control(
+        self, replay, connected_account, rule_catalogue
+    ) -> None:
+        """"How did you even see this" is a question with an answer.
+
+        Written onto the evidence rows rather than taken from the fixture,
+        whose coverage report predates CloudGuard recording permissions: what
+        is under test is that the actions on a reading reach the control that
+        rests on it, not what a fixture happens to carry.
+        """
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE evidence SET permissions = :p "
+                    "WHERE organization_id = :o AND evidence_key = 'storage_accounts'"
+                ),
+                {
+                    "p": '["Microsoft.Storage/storageAccounts/read"]',
+                    "o": org_id,
+                },
+            )
+            await session.commit()
+
+        detail = await self._framework(org_id, "CIS_AZURE_2.0")
+        readings = [
+            reading
+            for control in detail["controls"]
+            for reading in control["readings"]
+            if reading["evidence_key"] == "storage_accounts"
+        ]
+
+        assert readings, "no control rests on the storage listing"
+        assert all(
+            reading["permissions"] == ["Microsoft.Storage/storageAccounts/read"]
+            for reading in readings
+        )
+
+    async def test_the_assessment_names_the_scan_it_came_from(
+        self, replay, connected_account, rule_catalogue
+    ) -> None:
+        """A compliance page with no date on it is a claim about no particular
+        moment. The export copies this onto every row for the same reason."""
+        org_id, account_id = connected_account
+        scan_id = await run_scan(org_id, account_id)
+
+        detail = await self._framework(org_id, "ISO_27001")
+
+        assert detail["assessment"] is not None
+        assert detail["assessment"]["scan_id"] == str(scan_id)
+        assert detail["assessment"]["completed_at"] is not None
+
+    async def test_a_pruned_payload_is_reported_as_no_longer_followable(
+        self, replay, connected_account, rule_catalogue
+    ) -> None:
+        """Retention takes the bytes long before it takes the record that they
+        were read. The citation stays true, and offering a link that fails
+        would be worse than saying so."""
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            await session.execute(
+                text("DELETE FROM evidence_blobs WHERE organization_id = :o"),
+                {"o": org_id},
+            )
+            await session.commit()
+
+        detail = await self._framework(org_id, "CIS_AZURE_2.0")
+        readings = [r for c in detail["controls"] for r in c["readings"] if r["outcome"]]
+
+        assert readings
+        assert all(reading["retained"] is False for reading in readings)
+
+    async def test_the_export_says_the_same_thing_as_the_screen(
+        self, replay, connected_account, rule_catalogue
+    ) -> None:
+        """One assessment, two renderings. A file that disagreed with the page
+        it was downloaded from would be the more believed of the two."""
+        import csv
+        import io
+
+        from app.compliance.export import to_csv
+        from app.services import compliance
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            payload = await compliance.build_export(
+                session, org_id, "CIS_AZURE_2.0", organization_name="Contoso"
+            )
+        assert payload is not None
+
+        detail = await self._framework(org_id, "CIS_AZURE_2.0")
+        rows = list(csv.DictReader(io.StringIO(to_csv(payload))))
+
+        assert len(rows) == detail["control_count"]
+        by_id = {c["id"]: c for c in detail["controls"]}
+        for row in rows:
+            assert row["status"] == by_id[row["control_id"]]["status"]
+        assert {row["assessed_at"] for row in rows} == {
+            detail["assessment"]["completed_at"]
+        }

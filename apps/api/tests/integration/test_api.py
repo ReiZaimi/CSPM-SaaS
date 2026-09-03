@@ -523,6 +523,82 @@ class TestCompliance:
         statuses = {c["status"] for c in data["controls"]}
         assert statuses <= {"NOT_ASSESSED", "NOT_COVERED"}
 
+    async def test_the_export_carries_a_row_per_control(
+        self, client, cleanup_orgs, rule_catalogue
+    ) -> None:
+        """The chain leaves the browser, or it may as well not exist.
+
+        An auditor asks for the evidence as a file. What matters here is that
+        the file is a table a spreadsheet opens, that every row says which
+        framework and which reading it came from, and that the controls with
+        nothing to say are in it too -- an export of only the interesting rows
+        is an export that answers the question it prefers.
+        """
+        import csv
+        import io
+
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Exporting Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/compliance/GDPR/export", headers=auth_header(user)
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith("text/csv")
+        assert "attachment" in response.headers["content-disposition"]
+        assert "exporting-ltd-GDPR.csv" in response.headers["content-disposition"]
+
+        rows = list(csv.DictReader(io.StringIO(response.text)))
+        detail = (
+            await client.get("/api/v1/compliance/GDPR", headers=auth_header(user))
+        ).json()["data"]
+        assert len(rows) == detail["control_count"]
+        assert {row["framework"] for row in rows} == {detail["short_name"]}
+        # No scan has run, so the assessed column is empty rather than carrying
+        # the moment the file was generated.
+        assert {row["assessed_at"] for row in rows} == {""}
+
+    async def test_the_json_export_is_a_document_not_an_envelope(
+        self, client, cleanup_orgs, rule_catalogue
+    ) -> None:
+        """It is saved to disk and read by something else. An envelope would
+        make every consumer unwrap a shape that means nothing in a file."""
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Machine Readable Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/compliance/ISO_27001/export?format=json",
+            headers=auth_header(user),
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert set(body) == {
+            "generated_at",
+            "organization",
+            "framework",
+            "assessment",
+            "controls",
+        }
+        assert body["organization"] == "Machine Readable Ltd"
+        assert body["assessment"] is None
+        assert len(body["controls"]) > 0
+
+    async def test_an_export_of_a_framework_that_does_not_exist_is_a_404(
+        self, client, cleanup_orgs
+    ) -> None:
+        user = uuid.uuid4()
+        org = await make_org(client, user, "Wrong Framework Ltd")
+        cleanup_orgs.append(uuid.UUID(org))
+
+        response = await client.get(
+            "/api/v1/compliance/NOT_A_FRAMEWORK/export", headers=auth_header(user)
+        )
+        assert response.status_code == 404
+
     async def test_unknown_framework_is_a_404(self, client, cleanup_orgs) -> None:
         user = uuid.uuid4()
         org = await make_org(client, user, "Curious Ltd")

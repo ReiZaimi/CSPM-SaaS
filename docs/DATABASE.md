@@ -213,6 +213,16 @@ context_declarations       -- what a person said, which beats anything inferred
   -- UNKNOWN is not storable here: it is CloudGuard's word for "nothing said
   -- anything", so unsetting a field withdraws a claim rather than making one
 
+rules                      -- read-mirror of the Python registry, global
+  ...                       -- (not tenant-owned); synced at startup
+  compliance_mappings JSONB  -- framework -> [control ids]
+  requires_evidence JSONB    -- the evidence keys this rule reads, mirrored so
+                             -- the compliance view can follow a control back to
+                             -- the provider call behind it without importing
+                             -- rule code. A rule deleted from the registry
+                             -- keeps its row, disabled, so the controls it
+                             -- answered for keep their history (migration 0032)
+
 evidence                   -- per scan, per evidence key: did this listing
   id, organization_id, scan_id, cloud_account_id, connection_id    -- actually
   provider, evidence_key, category, outcome, detail                 -- arrive?

@@ -140,7 +140,10 @@ to CIS Azure 2.0, ISO 27001, GDPR and NIST CSF controls — including the contro
 nothing checks, so coverage cannot read 100% by omission. A control whose rules
 returned UNKNOWN is *inconclusive*, not passing, and the headline figure counts
 conclusions rather than passes. "78% GDPR compliant" is a sentence this product
-must never produce.
+must never produce. Each control also carries the provider readings its verdict
+rests on — which listing, when it was taken, under what permission, whether the
+bytes are still stored — for the controls that *passed* as much as the ones that
+failed, and the whole assessment exports as CSV or JSON.
 
 **CloudGuard's API never handles a password or a customer credential.** Sign-in
 is Supabase Auth — Microsoft (Entra ID), email and password, or a magic link.

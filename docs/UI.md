@@ -150,6 +150,24 @@ request renders nothing at all, because a network error is not an all-clear.
 
 **Rules** — the catalogue, filterable by severity and free text. It lists what CloudGuard *runs*: a rule withdrawn from the registry (`enabled: false`) is held back behind a toggle and named as withdrawn, because it no longer runs and compliance coverage no longer counts it. Each rule expands to its rationale and the fix in every form the backend holds — prose, CLI, Terraform, Azure Policy.
 
+**Compliance — a framework, control by control.** Controls keep the framework's
+own section order, because somebody arrives holding an auditor's spreadsheet in
+that order. Each control carries its verdict, the rules mapped to it, why a rule
+could not tell where that applies, and — the half a compliance screen usually
+leaves out — the provider readings the verdict rests on: which listing, how long
+ago it was taken, across how many subscriptions, under what permission, and
+whether the payload is still stored. Those are shown for a *passing* control as
+much as a failing one, which is the whole point: a finding cites the readings
+behind it, so "how do you know this is wrong" was already answerable, while the
+green row an auditor asks about first had nothing behind it at all. The oldest
+read and the worst outcome are what a control reports, never an average — a
+control is only as current and as complete as the least of the things it rests
+on. The page is dated by the scan it was assessed from, and says so when that
+scan was PARTIAL. **Export** takes the same assessment away as CSV (the
+spreadsheet an audit is run from) or JSON (a GRC platform), fetched with the
+caller's token rather than linked, because the token lives in memory and a plain
+anchor would arrive unauthenticated.
+
 **Risk detail** — the findings a risk was built from, each one openable, plus the arithmetic in the terms that score was actually built from: the six weighted components for a finding risk, or worst-member/amplifier/hops for a route. The two are never mixed — a scenario was not scored from criticality and exploitability, so it is not shown them.
 
 **Risk detail — when a route was last confirmed.** A scenario says when

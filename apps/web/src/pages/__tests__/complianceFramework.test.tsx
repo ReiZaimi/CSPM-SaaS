@@ -36,6 +36,19 @@ function rule(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reading(overrides: Record<string, unknown> = {}) {
+  return {
+    evidence_key: "sql_auditing",
+    outcome: "COMPLETE",
+    scopes: 2,
+    collected_at: new Date(Date.now() - 3 * 3600_000).toISOString(),
+    age_seconds: 3 * 3600,
+    permissions: ["Microsoft.Sql/servers/auditingSettings/read"],
+    retained: true,
+    ...overrides,
+  };
+}
+
 function control(overrides: Record<string, unknown> = {}) {
   return {
     id: "4.1.1",
@@ -45,6 +58,7 @@ function control(overrides: Record<string, unknown> = {}) {
     status: "PASSING",
     open_finding_count: 0,
     rules: [rule()],
+    readings: [reading()],
     ...overrides,
   };
 }
@@ -73,6 +87,11 @@ function mount(controls: object[]) {
             PASSING: 0,
             NOT_ASSESSED: 0,
             NOT_COVERED: 0,
+          },
+          assessment: {
+            scan_id: "11111111-1111-1111-1111-111111111111",
+            completed_at: new Date(Date.now() - 3 * 3600_000).toISOString(),
+            scan_status: "COMPLETED",
           },
           controls,
         },
@@ -172,5 +191,63 @@ describe("one compliance framework", () => {
 
     expect(await screen.findByText("Inconclusive")).toBeInTheDocument();
     expect(screen.queryByText("Passing")).not.toBeInTheDocument();
+  });
+});
+
+describe("what a control's verdict rests on", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows the readings behind a control that passed", async () => {
+    /** The half a compliance screen leaves out. A finding cites the readings
+     * behind it, so "how do you know this is wrong" was answerable; a passing
+     * control has no findings, so the green row an auditor asks about first had
+     * nothing behind it at all. */
+    mount([control({ status: "PASSING" })]);
+
+    expect(await screen.findByText("sql_auditing")).toBeInTheDocument();
+    expect(screen.getByText("complete")).toBeInTheDocument();
+    expect(screen.getByText(/2 scopes/)).toBeInTheDocument();
+  });
+
+  it("says when a listing was never read, rather than leaving it out", async () => {
+    /** Not a failure: nothing collected it. Omitting it is how a control ends
+     * up green on nothing. */
+    mount([
+      control({
+        readings: [reading({ outcome: null, collected_at: null, scopes: 0, age_seconds: null })],
+      }),
+    ]);
+
+    expect(await screen.findByText(/not read in the last scan/i)).toBeInTheDocument();
+  });
+
+  it("says when the bytes behind a citation have aged out", async () => {
+    /** Retention prunes payloads long before the record that they were read.
+     * The citation stays true, and a link that fails would be worse. */
+    mount([control({ readings: [reading({ retained: false })] })]);
+
+    expect(await screen.findByText(/payload no longer stored/i)).toBeInTheDocument();
+  });
+
+  it("dates the assessment by the scan it came from", async () => {
+    /** A compliance page with no date on it is a claim about no particular
+     * moment. */
+    mount([control()]);
+
+    expect(await screen.findByText(/assessed from the scan completed/i)).toBeInTheDocument();
+  });
+
+  it("offers the assessment as a file", async () => {
+    /** Where the chain actually ends: an auditor asks for it as a document,
+     * not as a screen. */
+    mount([control()]);
+
+    expect(
+      await screen.findByRole("button", { name: /spreadsheet \(csv\)/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /machine-readable \(json\)/i }),
+    ).toBeInTheDocument();
   });
 });
