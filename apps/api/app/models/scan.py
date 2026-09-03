@@ -343,6 +343,21 @@ class Evidence(UUIDPrimaryKey, TenantOwned, Base):
     collected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Which scan read the provider, where that is not ``scan_id``. A reading
+    # inside its reuse window is carried into the next scan, which writes a row
+    # of its own under its own id -- so the honest reading of an unqualified
+    # row was "this scan holds this evidence", and everything downstream took it
+    # to mean "this scan collected it". ``FindingEvidence.source_scan_id`` says
+    # in its own comment that the collecting scan is not necessarily the scan
+    # that raised the finding, and it was copied from ``Evidence.scan_id``,
+    # which could only ever name the latter.
+    #
+    # NULL means this row is the reading: the scan named by ``scan_id`` made the
+    # call. No foreign key, matching the discipline the rest of this provenance
+    # chain follows -- a scan may be deleted, and a citation that vanished with
+    # it would leave the finding claiming nothing rather than claiming something
+    # no longer inspectable.
+    source_scan_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     # The actions the read was made under, copied from the task's own
     # declaration. Turns "we could not read storage" into "we could not read
     # storage, and this is the action your role is missing" without anyone

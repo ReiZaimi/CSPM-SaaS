@@ -113,3 +113,123 @@ def test_every_queue_a_step_is_routed_to_is_actually_consumed() -> None:
         assert queue_for(kind) in consumed, (
             f"{kind.value} is routed to a queue no worker consumes"
         )
+
+
+# --------------------------------------------------------- one lock per target
+def test_every_way_of_naming_one_target_takes_the_same_lock() -> None:
+    """The lock and the in-flight check have to agree on what "the same target"
+    means, or neither is doing anything.
+
+    Callers hold different halves of the answer. The API and the rescan button
+    resolve a subscription and pass it alongside its connection; the scheduler,
+    the change trigger and the verification sweep pass the connection alone.
+    Built from both ids, those were two different locks over one connection --
+    so a customer pressing "Scan now" as the scheduler started the same
+    connection got two scans writing findings for the same resources, and the
+    unique index turned the overlap into a failure with nothing to read.
+    """
+    import asyncio
+    import uuid
+
+    from app.services.scans import lock_scan_target
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        async def execute(self, _statement: object, params: dict) -> None:
+            self.keys.append(params["key"])
+
+    org = uuid.uuid4()
+    connection = uuid.uuid4()
+    recorder = Recorder()
+
+    asyncio.run(lock_scan_target(recorder, org, connection, uuid.uuid4()))
+    asyncio.run(lock_scan_target(recorder, org, connection, None))
+
+    assert recorder.keys[0] == recorder.keys[1]
+
+
+def test_two_connections_in_one_tenant_still_scan_at_once() -> None:
+    """The lock is per target on purpose. Keyed on the organization it would
+    serialize every environment a customer owns behind whichever one started."""
+    import asyncio
+    import uuid
+
+    from app.services.scans import lock_scan_target
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        async def execute(self, _statement: object, params: dict) -> None:
+            self.keys.append(params["key"])
+
+    org = uuid.uuid4()
+    recorder = Recorder()
+
+    asyncio.run(lock_scan_target(recorder, org, uuid.uuid4(), None))
+    asyncio.run(lock_scan_target(recorder, org, uuid.uuid4(), None))
+
+    assert recorder.keys[0] != recorder.keys[1]
+
+
+def test_a_subscription_with_no_connection_is_still_a_target() -> None:
+    """Accounts predating connections have no connection to key on, and a scan
+    of one still has to exclude a second scan of the same subscription."""
+    import asyncio
+    import uuid
+
+    from app.services.scans import lock_scan_target
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        async def execute(self, _statement: object, params: dict) -> None:
+            self.keys.append(params["key"])
+
+    org = uuid.uuid4()
+    account = uuid.uuid4()
+    recorder = Recorder()
+
+    asyncio.run(lock_scan_target(recorder, org, None, account))
+    asyncio.run(lock_scan_target(recorder, org, None, account))
+    asyncio.run(lock_scan_target(recorder, org, None, uuid.uuid4()))
+
+    assert recorder.keys[0] == recorder.keys[1] != recorder.keys[2]
+
+
+# ------------------------------------------------------- what bounds a step
+def test_a_step_may_run_far_longer_than_a_short_task() -> None:
+    """ANALYZE is one evaluation of a whole tenant. Cut at the general ceiling,
+    a large tenant's scan became a killed worker the reaper then retried at the
+    same size -- three attempts, three kills, and a failure whose only cause was
+    the size of the estate."""
+    from app.workers.celery_app import (
+        STEP_SOFT_TIME_LIMIT,
+        STEP_TIME_LIMIT,
+        celery_app,
+    )
+
+    assert celery_app.conf.task_soft_time_limit < STEP_SOFT_TIME_LIMIT
+    assert STEP_TIME_LIMIT > STEP_SOFT_TIME_LIMIT
+
+
+def test_the_step_task_carries_those_limits() -> None:
+    """Declared on the task rather than raised globally: the short tasks are
+    still bounded at a minute-scale ceiling, where anything longer is a fault."""
+    from app.workers.celery_app import STEP_SOFT_TIME_LIMIT, STEP_TIME_LIMIT
+    from app.workers.scan_tasks import run_scan_step
+
+    assert run_scan_step.soft_time_limit == STEP_SOFT_TIME_LIMIT
+    assert run_scan_step.time_limit == STEP_TIME_LIMIT
+
+
+def test_a_worker_reserves_one_step_at_a_time() -> None:
+    """Celery's default reserves four. A reserved message is invisible to every
+    other worker, so three tenant-sized steps would sit idle inside one process
+    while the queue looked empty to the rest of the pool."""
+    from app.workers.celery_app import celery_app
+
+    assert celery_app.conf.worker_prefetch_multiplier == 1

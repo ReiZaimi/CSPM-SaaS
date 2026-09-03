@@ -30,7 +30,10 @@ rather than silently collecting UNKNOWN results.
 """
 
 import json
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from fnmatch import fnmatch
+from typing import Any
 
 from app.connectors.evidence import EvidenceCategory
 from app.core.enums import ConnectionScope
@@ -139,6 +142,7 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "list_role_assignments": ("Microsoft.Authorization/roleAssignments/read",),
     "list_role_assignments_at_scope": ("Microsoft.Authorization/roleAssignments/read",),
     "list_role_definitions": ("Microsoft.Authorization/roleDefinitions/read",),
+    "get_role_definition": ("Microsoft.Authorization/roleDefinitions/read",),
     "list_key_vaults": ("Microsoft.KeyVault/vaults/read",),
     "list_security_assessments": ("Microsoft.Security/assessments/read",),
 }
@@ -339,6 +343,58 @@ def categories_behind(role_version: str) -> frozenset[EvidenceCategory]:
 
 def role_is_current(role_version: str) -> bool:
     return not actions_missing_from(role_version)
+
+
+def _permits(action: str, patterns: Iterable[str]) -> bool:
+    """Whether an ARM action matches any of these permission patterns.
+
+    Patterns rather than plain strings because Azure's own roles are written
+    with wildcards: the built-in Reader grants ``*/read``, and a customer who
+    assigned Reader instead of the custom role does grant every read here.
+    Comparing literally would have reported that role as granting nothing.
+    """
+    return any(fnmatch(action.lower(), pattern.lower()) for pattern in patterns)
+
+
+def actions_granted_by(permissions: Iterable[Mapping[str, Any]]) -> frozenset[str]:
+    """Which of ``ARM_READ_ACTIONS`` these ARM permission blocks allow.
+
+    ``permissions`` is the list ARM returns under a role definition's
+    ``properties.permissions``. Only the actions this scanner needs are
+    evaluated: every recorded role version is a subset of them, so the answer
+    is enough to identify a deployed role, and a role granting something
+    CloudGuard never asks for is not more current for it.
+    """
+    granted: set[str] = set()
+    for block in permissions:
+        allowed = tuple(block.get("actions") or ())
+        denied = tuple(block.get("notActions") or ())
+        granted.update(
+            action
+            for action in ARM_READ_ACTIONS
+            if _permits(action, allowed) and not _permits(action, denied)
+        )
+    return frozenset(granted)
+
+
+def version_of_granted(granted: Collection[str]) -> str | None:
+    """The newest recorded role version these actions fully cover, or None.
+
+    None means "not even the oldest published role", which is the answer for a
+    role that was never CloudGuard's -- and it is deliberately not a version
+    string, because recording a guess would be the same lie this whole
+    mechanism exists to stop. Newest rather than "the one whose actions match
+    exactly": a customer who assigned the built-in Reader grants a superset of
+    v5, and telling them to redeploy would be sending them to fix nothing.
+
+    Reads ``ROLE_HISTORY`` newest-first, relying on it being declared in
+    ascending order -- which the history's monotonicity test enforces.
+    """
+    have = frozenset(granted)
+    for version, actions in reversed(list(ROLE_HISTORY.items())):
+        if frozenset(actions) <= have:
+            return version
+    return None
 
 
 # Anything granted that no collector call reaches. Expected to be empty: the

@@ -113,3 +113,77 @@ def test_every_task_internal_releases_its_connections() -> None:
         assert "finally:" in source and "dispose_engines()" in source, (
             f"{name} does not release its connections inside its own loop"
         )
+
+
+# ------------------------------------------------- nudging what nothing owns
+def test_the_reaper_nudges_every_scan_with_work_outstanding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The safety net that was written and never wired up.
+
+    ``orchestrator.unfinished_scan_ids`` shipped with a docstring saying it
+    exists for the case where a step's own advance message was lost -- and
+    nothing called it. A lost message left the scan holding PENDING steps, which
+    carry no lease to expire, and the scan reaper skips a scan with a live step
+    because it has work waiting for a worker rather than work nobody is doing.
+    Nothing else in the system would ever look at that scan again: it sat on
+    screen at whatever percentage it had reached, and its connection answered
+    "a scan is already running" for good.
+    """
+    reclaimed = uuid4()
+    waiting = uuid4()
+    nudged: list[str] = []
+
+    async def fake_reap() -> tuple[list, list, list]:
+        return [reclaimed], [], [waiting]
+
+    monkeypatch.setattr(scan_tasks, "_reap_and_release", fake_reap)
+    monkeypatch.setattr(
+        scan_tasks.advance_scan, "delay", lambda scan_id: nudged.append(scan_id)
+    )
+
+    result = scan_tasks.reap_abandoned_scans()
+
+    assert nudged == [str(reclaimed), str(waiting)]
+    assert result["nudged"] == 2
+
+
+def test_a_scan_is_nudged_once_however_many_ways_it_qualifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reclaimed step is also a step waiting for a worker, so the two lists
+    overlap. Advancing twice is harmless -- the claim is atomic -- but a queue
+    growing with every tick is not the shape to leave lying around."""
+    scan_id = uuid4()
+    nudged: list[str] = []
+
+    async def fake_reap() -> tuple[list, list, list]:
+        return [scan_id], [], [scan_id]
+
+    monkeypatch.setattr(scan_tasks, "_reap_and_release", fake_reap)
+    monkeypatch.setattr(
+        scan_tasks.advance_scan, "delay", lambda scan_id: nudged.append(scan_id)
+    )
+
+    scan_tasks.reap_abandoned_scans()
+
+    assert nudged == [str(scan_id)]
+
+
+def test_a_scan_just_closed_is_not_nudged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Closing it is the end of it. Advancing a scan the reaper has just failed
+    would re-derive its status from steps it no longer has any use for."""
+    closed = uuid4()
+    nudged: list[str] = []
+
+    async def fake_reap() -> tuple[list, list, list]:
+        return [], [closed], []
+
+    monkeypatch.setattr(scan_tasks, "_reap_and_release", fake_reap)
+    monkeypatch.setattr(
+        scan_tasks.advance_scan, "delay", lambda scan_id: nudged.append(scan_id)
+    )
+
+    scan_tasks.reap_abandoned_scans()
+
+    assert nudged == []

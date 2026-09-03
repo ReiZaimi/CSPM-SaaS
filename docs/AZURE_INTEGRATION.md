@@ -17,7 +17,7 @@ There is **no product-facing MockAzureConnector** in the MVP. Rule unit tests us
 This is **two separate consent steps**, not one:
 
 1. **Entra admin consent** — CloudGuard's multi-tenant app requests nine Microsoft Graph *application* permissions, listed in `REQUIRED_GRAPH_PERMISSIONS` (`app/connectors/azure/auth.py`): `Directory.Read.All`, `User.Read.All`, `RoleManagement.Read.Directory`, `UserAuthenticationMethod.Read.All`, `Policy.Read.All`, `Application.Read.All`, `Group.Read.All`, `IdentityRiskyUser.Read.All`, `AuditLog.Read.All`. Every one is a read scope. The customer's Entra admin clicks one consent link and grants tenant-wide.
-2. **Azure RBAC Reader role** — a separate grant not covered by Graph consent. The customer assigns CloudGuard's app the **Reader** role on the subscription(s)/resource group(s) to scan, via Portal, Azure CLI, or an ARM/Bicep template CloudGuard provides.
+2. **Azure RBAC scanner role** — a separate grant not covered by Graph consent. The customer deploys CloudGuard's own custom read-only role and its assignment over the scope to scan, from a pre-filled ARM template the product generates (the "Deploy to Azure" button); the built-in **Reader** works too and grants a superset. Portal and Azure CLI remain available for anyone who prefers to do it by hand. See §"The role is exactly what the scanner reads" for what the custom role contains and why it is versioned.
 
 Access is **read-only** for the MVP. No write permissions are ever requested. Credentials/secrets never reach the frontend.
 
@@ -219,7 +219,7 @@ checked.
 
 ### The role is exactly what the scanner reads
 
-The custom role declares 14 read actions, and every one is exercised by a real
+The custom role declares 17 read actions, and every one is exercised by a real
 call in `app/connectors/azure/client.py`. Nothing is granted speculatively.
 
 It was briefly wider — 30 actions, with 17 declared ahead of the rules that
@@ -248,13 +248,32 @@ az provider operation show --namespace Microsoft.KeyVault \
   --query "resourceTypes[].operations[].name"
 ```
 
-`ROLE_VERSION` is `v2`. It exists to flag a deployed role that is
-*insufficient* for a newer rule; narrowing is backward compatible and does not
-warrant a bump. `v2` adds `Microsoft.ResourceGraph/resources/read`, which
-inventory needs since it moved off the ARM resource listing (`DECISIONS.md`
-§14). A connection still on `v1` keeps every other category and loses
-inventory until the customer redeploys, which `degraded_categories` tells them
-in those terms rather than as a 403.
+`ROLE_VERSION` is `v5`, and `ROLE_HISTORY` records what every published version
+granted. A version exists to flag a deployed role that is *insufficient* for a
+newer rule; narrowing is backward compatible and does not warrant a bump. `v2`
+added Resource Graph, which inventory needs since it moved off the ARM resource
+listing (`DECISIONS.md` §14); `v3` key vaults, `v4` SQL auditing settings, `v5`
+Defender for Cloud's assessments. A connection on an older role keeps every
+other category and loses exactly the checks the missing actions serve, which
+`degraded_categories` names in those terms rather than as a 403 — and those
+checks report UNKNOWN rather than passing.
+
+**Which version a connection is on is read from Azure, not remembered.**
+`cloud_connections.role_version` was stamped when the connection was created and
+never written again, so it recorded the role a customer was *offered* rather
+than the one they have: redeploying could not clear the prompt asking them to
+redeploy. It is now resolved from the assignments the scanner's principal holds
+at the connection's scope, by reading the actions on the definitions those
+assignments point at. Actions rather than the role's name, because the name is
+not evidence — a role edited in the portal, or the built-in `Reader` assigned
+instead of the template, both say nothing useful in their title and everything
+in their permissions. A probe that cannot answer leaves the recorded version
+alone rather than replacing a fact with a guess.
+
+The connection page re-reads it on demand
+(`POST /cloud-connections/{id}/recheck`) and on any detail request while the
+role is believed to be behind, so a customer who redeploys and comes back finds
+the prompt gone without having to press anything (`DECISIONS.md` §65).
 
 ### Permission modes
 

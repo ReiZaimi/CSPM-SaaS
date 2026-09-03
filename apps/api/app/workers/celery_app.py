@@ -27,6 +27,22 @@ ANALYZE_QUEUE = "analyze"
 # all database-only.
 DEFAULT_QUEUE = "celery"
 
+# How long one step may run before Celery takes the process apart. Longer than
+# the general ceiling in ``task_time_limit`` below, because the two are bounded
+# by different things: a short task is a few queries and anything past a minute
+# is a fault, while ANALYZE is one evaluation of an entire tenant and a large
+# one legitimately runs for half an hour. Cutting it at the general limit turned
+# a slow scan into a killed worker, which the step reaper then retried at the
+# same size -- three attempts, three kills, and a failure reported to a customer
+# whose only fault was owning fifty subscriptions.
+#
+# The lease is what makes a longer limit safe rather than merely permissive: a
+# step that stops renewing is reclaimed within ``ScanStep.LEASE_SECONDS``
+# whatever Celery does, so a worker that is genuinely wedged is caught by the
+# lease rather than by this.
+STEP_SOFT_TIME_LIMIT = 3300
+STEP_TIME_LIMIT = 3600
+
 celery_app = Celery(
     "cloudguard",
     broker=settings.redis_url,
@@ -94,9 +110,18 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     # A scan is bounded work; a stuck Azure call should surface as a failed scan
-    # rather than a worker that never comes back.
+    # rather than a worker that never comes back. This is the ceiling for the
+    # short tasks -- starting, advancing, reaping, the sweeps. A step carries
+    # its own, longer limits, declared on the task: see ``STEP_TIME_LIMIT``.
     task_time_limit=1800,
     task_soft_time_limit=1500,
+    # One message at a time, per process. Celery's default of four reserves
+    # three more before starting the first, which is wrong for exactly the work
+    # this queue carries: a step is minutes long, so a worker that reserved four
+    # analyses of large tenants holds three of them idle while other workers
+    # have nothing -- and a reserved message is invisible to every other worker,
+    # so the queue looks empty while the work has not started.
+    worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=50,
     broker_connection_retry_on_startup=True,
 )

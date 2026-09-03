@@ -287,6 +287,22 @@ async def rediscover(connection_id: UUID, session: DbSession, tenant: Tenant) ->
     return envelope(_serialize(connection, len(subscriptions), subscriptions))
 
 
+@router.post("/{connection_id}/recheck")
+async def recheck_access(connection_id: UUID, session: DbSession, tenant: Tenant) -> dict:
+    """Ask Azure again what this connection is allowed to do.
+
+    A real probe, which is what the access panel's button has always said it
+    was. The GET only validates a connection that is not verified yet, so on a
+    working connection re-checking read the same row back -- and the role
+    version on it had not been looked at since the connection was created.
+    """
+    tenant.require_write()
+    connection, subscriptions = await service.recheck_access(
+        session, tenant, connection_id
+    )
+    return envelope(_serialize(connection, len(subscriptions), subscriptions))
+
+
 @router.patch("/{connection_id}/subscriptions")
 async def set_scope(
     connection_id: UUID, payload: ScopeSelection, session: DbSession, tenant: Tenant

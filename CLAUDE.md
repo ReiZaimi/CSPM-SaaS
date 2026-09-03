@@ -43,6 +43,8 @@ npm test                         # vitest run
 
 **Scanner pipeline** (`app/services/scanner.py`): Collect raw Azure JSON → store snapshot → normalize to `CloudResource` → evaluate rules → score risk → persist findings. Raw JSON is stored verbatim for later re-evaluation against new rules.
 
+**Scan execution** (`app/services/orchestrator.py`): a scan is durable `scan_steps` — PLAN, one COLLECT per subscription plus one for the tenant directory, then ANALYZE — claimed under a lease and routed to the `collect`/`analyze` queues. Every write a running step makes is fenced on the attempt it was claimed under.
+
 **Multi-tenancy**: Dual-enforced. App layer derives `organization_id` from JWT. PostgreSQL RLS policies enforce row-level isolation via the `cloudguard_app` role.
 
 **Rule engine** (`app/rules/`): `SecurityRule` ABC. Rules are deterministic — no network, no database, no LLM calls inside evaluation. Results: PASS, FAIL, UNKNOWN, NOT_APPLICABLE. UNKNOWN is never treated as PASS.
@@ -75,3 +77,5 @@ npm test                         # vitest run
 - Relationship edges indexed both ways at RuleContext construction
 - No mock connector in production code; fixture-based unit tests instead
 - API response envelope: `{ "data": ..., "error": null, "meta": {} }`
+- A step is fenced to the worker that claimed it; one advisory lock per scan target (§65)
+- The frontend catches its own failures: error boundaries, request timeouts, 401 signs out (§66)

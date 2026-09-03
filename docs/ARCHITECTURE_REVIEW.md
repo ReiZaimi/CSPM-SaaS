@@ -80,6 +80,50 @@ depth.
 
 ## 2. Problems
 
+> **Status, as of 3 September 2026.** This section is the review as first
+> written and is kept in that form on purpose -- the reasoning is what the
+> recommendations below rest on, and rewriting a finding into "this used to be
+> true" loses the argument that produced the fix. What follows is which of them
+> are closed, checked against the repository rather than against memory.
+>
+> * **2.1 Identity collected per subscription** -- closed. The directory is one
+>   tenant-scoped COLLECT step, and its assets are keyed by connection rather
+>   than by account, so one administrator is one row and one finding.
+> * **2.2 One Celery task, no lease, no reaper** -- closed. A scan is durable
+>   `scan_steps` claimed under a lease, retried individually, reaped when a
+>   worker stops reporting (`services/orchestrator.py`). Every write a running
+>   step makes is fenced on the attempt it was claimed under, and the lease is
+>   held on a clock for every kind of step rather than only while collection
+>   reports progress (`DECISIONS.md` §65).
+> * **2.3 `scan_in_flight` read-then-insert race** -- closed. A transaction
+>   scoped advisory lock keyed on the connection covers the check and the
+>   insert, and every caller now takes the same lock for the same target,
+>   whichever ids it happens to hold (`DECISIONS.md` §65).
+> * **2.4 Whole-tenant reads in the hot path** -- closed for findings, risk
+>   links and relationships, which are scoped to what the scan covers, and for
+>   the capture rebuild, which fetches every subscription's readings in one
+>   statement rather than one per capture.
+> * **2.5 Unbounded snapshots** -- closed. Captures are manifests over
+>   content-addressed, compressed payloads (`DECISIONS.md` §55), and retention
+>   prunes on both a window and a per-scope ceiling, never the newest capture of
+>   a scope.
+> * **2.6 No evidence model** -- closed. `evidence` records one row per reading
+>   with its outcome, permissions, endpoints, collected-at, hash and -- since
+>   0031 -- which scan actually read the provider; `finding_evidence` is the
+>   citation.
+> * **2.7 Collection is static** -- closed. `services/evidence_planner.py`
+>   derives the requirement from the enabled rules and the connector's baseline,
+>   and carries a reading forward only where the key opts into reuse.
+> * **2.8 No asset graph** -- closed. `app/graph/` answers reachability,
+>   escalation chains and choke points from one scan's normalized state.
+> * **2.12 No scheduling** -- closed. `celery_app.conf.beat_schedule` runs the
+>   reaper, the due-scan sweep, change-triggered scans, verification,
+>   notifications and retention.
+>
+> The rest stand as written. The frontend's own production gaps are a separate
+> list and are recorded in `DECISIONS.md` §66.
+
+
 ### Critical
 
 **2.1 Identity is collected once per subscription, so a tenant-wide scan

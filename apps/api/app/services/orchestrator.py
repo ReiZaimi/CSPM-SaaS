@@ -231,20 +231,33 @@ async def claim(
     return [(row.id, ScanStepKind(row.kind)) for row in claimed]
 
 
-async def renew(session: AsyncSession, step_id: UUID) -> None:
-    """Extend a running step's lease. Called as it reports progress.
+async def renew(session: AsyncSession, step_id: UUID, attempt: int) -> bool:
+    """Extend a running step's lease. Returns whether the step is still ours.
 
     A step that stops renewing is a step whose worker is gone, which is the only
     evidence available: a process that died did not get to say so.
+
+    ``attempt`` is the fence. The reaper returns an expired step to PENDING and
+    the next advance claims it again at ``attempt + 1``, so a worker that was
+    merely slow -- a paused container, a long GC, a database that stalled past
+    the lease -- is holding a number that no longer matches the row. Without the
+    fence its renewal pushed the lease of a step somebody else was running,
+    which kept the reaper away from a step with two workers on it: the failure
+    the lease exists to detect, hidden by the mechanism meant to report it.
     """
-    await session.execute(
+    updated = await session.execute(
         update(ScanStep)
-        .where(ScanStep.id == step_id)
+        .where(
+            ScanStep.id == step_id,
+            ScanStep.status == ScanStepStatus.RUNNING,
+            ScanStep.attempt == attempt,
+        )
         .values(
             lease_until=datetime.now(UTC) + timedelta(seconds=ScanStep.LEASE_SECONDS)
         )
     )
     await session.commit()
+    return bool(updated.rowcount)
 
 
 async def finish(
@@ -252,23 +265,82 @@ async def finish(
     step: ScanStep,
     status: ScanStepStatus,
     error: str | None = None,
-) -> None:
+    *,
+    attempt: int | None = None,
+) -> bool:
+    """Settle a step. Returns whether this worker was still the one to settle it.
+
+    ``attempt`` fences the write, and every caller that ran the work should pass
+    it. A step whose lease expired is returned to PENDING and re-claimed at the
+    next number, and the worker that lost it is usually still running: it
+    finishes its collection minutes later and, unfenced, marked SUCCEEDED a step
+    another worker was in the middle of. ANALYZE then started on a scan whose
+    collection was still being written -- a partial report presented as a
+    complete one, which is the overclaim this codebase refuses everywhere else.
+    """
+    if attempt is not None:
+        updated = await session.execute(
+            update(ScanStep)
+            .where(
+                ScanStep.id == step.id,
+                ScanStep.status == ScanStepStatus.RUNNING,
+                ScanStep.attempt == attempt,
+            )
+            .values(
+                status=status,
+                error=error[:2000] if error else None,
+                finished_at=datetime.now(UTC),
+                lease_until=None,  # settled; nothing left to reclaim
+            )
+        )
+        await session.commit()
+        if not updated.rowcount:
+            return False
+        await session.refresh(step)
+        return True
+
     step.status = status
     step.error = error[:2000] if error else None
     step.finished_at = datetime.now(UTC)
     step.lease_until = None  # settled; nothing left to reclaim
     await session.commit()
+    return True
 
 
 async def fail_or_retry(
-    session: AsyncSession, step: ScanStep, error: str
-) -> ScanStepStatus:
+    session: AsyncSession, step: ScanStep, error: str, *, attempt: int | None = None
+) -> ScanStepStatus | None:
     """Put a failed step back in the queue, or give up on it.
 
     Returns what was decided, so the caller can log the difference between "this
-    will be tried again" and "this is as far as it got".
+    will be tried again" and "this is as far as it got" -- or None when the step
+    was no longer this worker's to decide about, which is the same fence
+    :func:`finish` applies and matters here for a sharper reason: an expired
+    step has already been returned to PENDING once, and a second worker's late
+    failure would spend an attempt on the run that replaced it.
     """
     if step.attempt < step.max_attempts:
+        if attempt is not None:
+            updated = await session.execute(
+                update(ScanStep)
+                .where(
+                    ScanStep.id == step.id,
+                    ScanStep.status == ScanStepStatus.RUNNING,
+                    ScanStep.attempt == attempt,
+                )
+                .values(
+                    status=ScanStepStatus.PENDING,
+                    error=error[:2000],
+                    lease_until=None,
+                    worker_id=None,
+                )
+            )
+            await session.commit()
+            if not updated.rowcount:
+                return None
+            await session.refresh(step)
+            return ScanStepStatus.PENDING
+
         step.status = ScanStepStatus.PENDING
         step.error = error[:2000]
         step.lease_until = None
@@ -276,8 +348,10 @@ async def fail_or_retry(
         await session.commit()
         return ScanStepStatus.PENDING
 
-    await finish(session, step, ScanStepStatus.FAILED, error)
-    return ScanStepStatus.FAILED
+    settled = await finish(
+        session, step, ScanStepStatus.FAILED, error, attempt=attempt
+    )
+    return ScanStepStatus.FAILED if settled else None
 
 
 async def reap_expired_steps(session: AsyncSession) -> list[UUID]:
@@ -308,12 +382,18 @@ async def reap_expired_steps(session: AsyncSession) -> list[UUID]:
     # the caller has no other way to know which scans those are.
     reclaimed: set[UUID] = set()
     for step in expired:
-        await fail_or_retry(
+        # Fenced on the attempt it was read at, so two reapers running at once
+        # -- a beat tick overlapping a slow one -- cannot both spend an attempt
+        # on the same expired step.
+        decided = await fail_or_retry(
             session,
             step,
             "The worker running this step stopped reporting -- usually a "
             "redeploy or a restart.",
+            attempt=step.attempt,
         )
+        if decided is None:
+            continue
         reclaimed.add(step.scan_id)
     return sorted(reclaimed)
 

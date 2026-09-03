@@ -88,6 +88,80 @@ if (typeof window !== "undefined") {
   });
 }
 
+/**
+ * How long a request may hang before it is given up on.
+ *
+ * `fetch` has no timeout of its own, and neither does TanStack Query: a request
+ * to a host that accepts the connection and then says nothing -- a container
+ * mid-redeploy, a captive portal, a dropped mobile connection -- never settles,
+ * so the query never leaves `isLoading` and the page spins for as long as the
+ * tab is open. A bounded failure is something a reader can act on; an unbounded
+ * spinner is not.
+ *
+ * Generous, because the API is a scanner's API: a dashboard aggregates a
+ * tenant's whole posture, and a slow answer is still an answer.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+/** A report is rendered on demand, printed to PDF, and legitimately slow. */
+const DOCUMENT_TIMEOUT_MS = 120_000;
+
+/**
+ * What happens when the server says the caller is not signed in.
+ *
+ * Only the dashboard used to notice, and it noticed by rendering an error where
+ * its charts go. Everywhere else an expired session read as a broken product:
+ * every panel on the page failed with its own message, none of them said
+ * "signed out", and nothing offered the one action that fixes it. Clearing the
+ * token puts the router back in charge -- ``RequireAuth`` sends the reader to
+ * sign in, which is what actually happened.
+ *
+ * 403 is deliberately not this. A viewer refused a write is signed in and
+ * should stay signed in; signing them out would answer "you may not do that"
+ * with "prove who you are", and they would arrive back at the same refusal.
+ */
+function handleUnauthorized(): void {
+  if (auth.token) auth.signOut();
+}
+
+async function send(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  // A caller's own signal is honoured alongside the timeout -- TanStack passes
+  // one when a query is cancelled, and dropping it would leave abandoned
+  // requests running.
+  const timeout = new AbortController();
+  const timer = window.setTimeout(() => timeout.abort(), timeoutMs);
+  const external = init.signal;
+  const onExternalAbort = () => timeout.abort();
+  external?.addEventListener("abort", onExternalAbort);
+
+  try {
+    return await fetch(url, { ...init, signal: timeout.signal });
+  } catch (err) {
+    if (external?.aborted) throw err;
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(
+        "TIMEOUT",
+        `CloudGuard's API did not answer within ${Math.round(timeoutMs / 1000)} seconds.`,
+        0,
+      );
+    }
+    // A rejected fetch is the network, not the API: offline, DNS, a refused
+    // connection, a CORS policy. Reported as such rather than as the browser's
+    // own "Failed to fetch", which reads to a customer as a bug in CloudGuard.
+    throw new ApiError(
+      "NETWORK_ERROR",
+      "CloudGuard could not reach its API. Check your connection and try again.",
+      0,
+    );
+  } finally {
+    window.clearTimeout(timer);
+    external?.removeEventListener("abort", onExternalAbort);
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit & { skipAuth?: boolean } = {},
@@ -105,7 +179,9 @@ async function request<T>(
     headers.set("X-Organization-Id", auth.organizationId);
   }
 
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers });
+  const response = await send(`${API_URL}${path}`, { ...init, headers }, REQUEST_TIMEOUT_MS);
+
+  if (response.status === 401 && !skipAuth) handleUnauthorized();
 
   let body: Envelope<T>;
   try {
@@ -139,7 +215,9 @@ async function fetchDocument(path: string): Promise<Blob> {
   if (auth.token) headers.set("Authorization", `Bearer ${auth.token}`);
   if (auth.organizationId) headers.set("X-Organization-Id", auth.organizationId);
 
-  const response = await fetch(`${API_URL}${path}`, { headers });
+  const response = await send(`${API_URL}${path}`, { headers }, DOCUMENT_TIMEOUT_MS);
+
+  if (response.status === 401) handleUnauthorized();
 
   if (!response.ok) {
     try {

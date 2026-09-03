@@ -7,6 +7,7 @@ import { api, auth } from "@/lib/api";
 import type { CloudAccount, Organization } from "@/lib/types";
 import { useT } from "@/i18n";
 import { ShieldMark } from "@/components/Brand";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AccountMenu } from "@/components/AccountMenu";
 import { SidebarNav } from "@/components/layout/Sidebar";
 import { CommandPalette } from "@/components/layout/CommandPalette";
@@ -195,7 +196,13 @@ export function Shell() {
           </header>
 
           <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:py-8">
-            <Outlet />
+            {/* Per-page, inside the chrome. A page that throws is one broken
+                screen the reader can navigate away from, rather than a product
+                that vanished -- and the root boundary is still behind this for
+                anything the shell itself does. */}
+            <ErrorBoundary variant="page">
+              <Outlet />
+            </ErrorBoundary>
           </main>
         </div>
 

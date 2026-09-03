@@ -35,6 +35,18 @@ React (TS/Vite) → FastAPI (REST) → Supabase PostgreSQL (+RLS)
 
 Full detail on the Azure-specific parts of this pipeline (collection architecture, auth model) is in `AZURE_INTEGRATION.md`. Rule/risk engine detail is in `RULE_ENGINE.md` and `RISK_ENGINE.md`.
 
+**A scan is not one queued task.** It is a set of durable steps -- PLAN, one
+COLLECT per subscription plus one for the tenant directory, then ANALYZE --
+recorded in `scan_steps` and claimed under a lease by whichever worker is free.
+Collection and analysis go to different queues because they cost opposite
+things: collection waits on Azure and wants many in flight, analysis holds a
+tenant in memory and wants few. What makes it survivable is that the state lives
+in the database rather than in a Python frame: a redeploy costs the step in
+flight rather than the scan, one unreadable subscription does not take the other
+forty-nine with it, and every write a running step makes is fenced on the claim
+it was made under, so a worker that was merely slow cannot settle a step another
+worker is running (`services/orchestrator.py`, `DECISIONS.md` §65).
+
 ---
 
 ## 3. Repository Structure

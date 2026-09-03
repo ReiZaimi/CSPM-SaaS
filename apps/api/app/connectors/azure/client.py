@@ -493,6 +493,16 @@ class ArmClient(_BaseClient):
             "/roleDefinitions?api-version=2022-04-01"
         )
 
+    async def get_role_definition(self, definition_id: str) -> dict[str, Any]:
+        """One role definition, by the id an assignment names.
+
+        Fetched by id rather than found in a listing, because an assignment can
+        name a definition that lives above the scope being read -- a role
+        defined at a management group and assigned to a subscription beneath it
+        -- and a subscription-scoped listing does not contain it.
+        """
+        return await self.get(f"{definition_id}?api-version=2022-04-01")
+
 
 class ResourceGraphClient(_BaseClient):
     """Azure Resource Graph — inventory, read across subscriptions at once.

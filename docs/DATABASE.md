@@ -200,6 +200,11 @@ cloud_connections          -- supersedes `cloud_accounts` as the unit a scan
   status, status_detail, last_discovery_at          -- separately consentable and
   scan_interval_hours        -- automatic scanning, off by default              -- separately revocable
   change_events_enabled, change_pending_since, last_change_event_at
+  -- role_version is read back from Azure rather than only stamped at creation.
+  -- It records which role is *assigned*, resolved from the actions on the
+  -- definitions the scanner's principal holds -- so redeploying the role
+  -- clears the "behind" prompt, which a column written once never could
+  -- (DECISIONS.md §65)
 
 context_declarations       -- what a person said, which beats anything inferred
   id, organization_id, cloud_account_id
@@ -212,6 +217,16 @@ evidence                   -- per scan, per evidence key: did this listing
   id, organization_id, scan_id, cloud_account_id, connection_id    -- actually
   provider, evidence_key, category, outcome, detail                 -- arrive?
   item_count, collected_at
+  source_scan_id             -- which scan read the provider, where that is not
+                             -- scan_id. A reading inside its reuse window is
+                             -- carried into the next scan, which writes a row
+                             -- of its own holding the original collected_at --
+                             -- so the age survived and the authorship did not,
+                             -- and finding_evidence.source_scan_id was copied
+                             -- from scan_id, which could only name the scan
+                             -- that reused it. NULL means this row *is* the
+                             -- reading. No foreign key: provenance outlives the
+                             -- scan it points at (DECISIONS.md §65)
   permissions JSONB          -- the actions the read was made under
   endpoints JSONB            -- [{path, api_version}]: what it called, and the
                              -- contract it called under. A response's shape is
@@ -251,6 +266,13 @@ scan_steps                 -- a scan is resumable work, not one long call
   id, organization_id, scan_id, kind, cloud_account_id
   status, attempt, max_attempts, lease_until, worker_id
   error, started_at, finished_at, created_at
+  -- `attempt` is the fence as well as the counter. A claim raises it, and every
+  -- write a running step makes -- each lease renewal, and the settle at the end
+  -- -- is conditional on the row still carrying the number it was claimed
+  -- under. A worker paused past its lease has not died: unfenced, it came back
+  -- and settled a step another worker was in the middle of, and ANALYZE (which
+  -- waits on collection *settling*) then read a subscription still being
+  -- written (DECISIONS.md §65)
 
 remediation_verifications  -- did the fix actually hold?
   id, organization_id, finding_id, remediation_task_id

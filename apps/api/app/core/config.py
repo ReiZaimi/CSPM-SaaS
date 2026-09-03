@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     # it is what an applied replay reads, and losing it would quietly turn every
     # "did the fix work" into an advisory answer.
     snapshot_retention_days: int = 30
+    # And a ceiling on how many captures one subscription may keep, whatever the
+    # window says. Days alone is a policy about time, and storage is not spent
+    # in time: a customer scanning on the half hour stores 48 captures a day and
+    # 1,440 inside a 30-day window, while a customer scanning weekly stores 4 --
+    # for the same stated retention, and a table two orders of magnitude apart.
+    #
+    # 90 is a month of daily scanning, which is what the window was written to
+    # mean. Past that the oldest are dropped first, and the newest capture of a
+    # scope is exempt here exactly as it is from the window.
+    snapshot_retention_max_per_scope: int = 90
     # Payloads are content-addressed and shared, so this is measured from when a
     # payload was last *seen* rather than first stored: an estate that has not
     # changed in six months keeps one copy alive by re-reading it, which is the

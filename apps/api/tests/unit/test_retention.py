@@ -48,12 +48,15 @@ class FakeSession:
         newest_dirs: list,
         manifests: list | None = None,
         expired_blobs: list | None = None,
+        surplus: list | None = None,
     ):
         self.manifests = manifests or []
         self.expired_blobs = expired_blobs or []
         self.stale = stale
         self.newest_accounts = newest_accounts
         self.newest_dirs = newest_dirs
+        # Captures beyond the per-scope ceiling, whatever the window says.
+        self.surplus = surplus or []
         self.deleted: list[str] = []
         self.doomed: list[uuid.UUID] = []
 
@@ -93,6 +96,11 @@ class FakeSession:
             result.rowcount = len(self.doomed)
             return result
             return Result([])
+        # Matched before the DISTINCT ON lookups: the ranking query selects from
+        # cloud_snapshots too, and a matcher that fell through would hand it the
+        # stale list and quietly prove nothing.
+        if "row_number" in text.lower():
+            return Result(self.surplus)
         if "DISTINCT ON (cloud_snapshots.cloud_account_id)" in text:
             return Result(self.newest_accounts)
         if "DISTINCT ON (cloud_snapshots.connection_id)" in text:
@@ -245,3 +253,86 @@ async def test_nothing_expired_means_no_delete_at_all() -> None:
 
     assert pruned == 0
     assert session.deleted == []
+
+
+# ------------------------------------------------------- the per-scope ceiling
+SURPLUS_ONE = uuid.uuid4()
+SURPLUS_TWO = uuid.uuid4()
+
+
+async def test_captures_past_the_ceiling_go_even_though_they_are_inside_the_window() -> None:
+    """A window is a policy about time, and storage is not spent in time.
+
+    A customer scanning every half hour writes 48 captures a day per
+    subscription and 1,440 inside a 30-day window; a customer scanning weekly
+    writes 4. Both are inside the same stated retention and their tables are two
+    orders of magnitude apart, which is how one tenant enabling change-triggered
+    scanning becomes the reason a shared database fills up.
+    """
+    session = FakeSession(
+        stale=[],
+        newest_accounts=[NEWEST_ACCOUNT],
+        newest_dirs=[],
+        surplus=[SURPLUS_ONE, SURPLUS_TWO],
+    )
+
+    pruned = await retention.prune_snapshots(  # type: ignore[arg-type]
+        session, ORG, keep_days=30, keep_per_scope=90
+    )
+
+    assert pruned == 2
+    assert set(session.doomed) == {SURPLUS_ONE, SURPLUS_TWO}
+
+
+async def test_the_ceiling_never_takes_the_newest_capture_either() -> None:
+    """The one exclusion that holds against every limit here. The newest capture
+    of a scope is what an applied replay reads, and losing it turns "did the fix
+    work" into an advisory answer without failing anywhere."""
+    session = FakeSession(
+        stale=[],
+        newest_accounts=[NEWEST_ACCOUNT],
+        newest_dirs=[NEWEST_DIRECTORY],
+        surplus=[NEWEST_ACCOUNT, NEWEST_DIRECTORY, SURPLUS_ONE],
+    )
+
+    pruned = await retention.prune_snapshots(  # type: ignore[arg-type]
+        session, ORG, keep_days=30, keep_per_scope=1
+    )
+
+    assert pruned == 1
+    assert session.doomed == [SURPLUS_ONE]
+
+
+async def test_no_ceiling_asks_the_ranking_query_nothing() -> None:
+    """Left unset -- the old behaviour -- the window is the only limit, and the
+    extra scan of the table is not paid for."""
+    session = FakeSession(
+        stale=[OLD_ONE],
+        newest_accounts=[NEWEST_ACCOUNT],
+        newest_dirs=[],
+        surplus=[SURPLUS_ONE],
+    )
+
+    pruned = await retention.prune_snapshots(session, ORG, keep_days=30)  # type: ignore[arg-type]
+
+    assert pruned == 1
+    assert session.doomed == [OLD_ONE]
+
+
+async def test_both_limits_are_applied_in_one_delete() -> None:
+    """Age and count name overlapping sets, and a capture named by both must be
+    deleted once rather than counted twice."""
+    session = FakeSession(
+        stale=[OLD_ONE, SURPLUS_ONE],
+        newest_accounts=[],
+        newest_dirs=[],
+        surplus=[SURPLUS_ONE, SURPLUS_TWO],
+    )
+
+    pruned = await retention.prune_snapshots(  # type: ignore[arg-type]
+        session, ORG, keep_days=30, keep_per_scope=5
+    )
+
+    assert pruned == 3
+    assert set(session.doomed) == {OLD_ONE, SURPLUS_ONE, SURPLUS_TWO}
+    assert len(session.deleted) == 1

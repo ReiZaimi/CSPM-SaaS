@@ -62,8 +62,27 @@ async def lock_scan_target(
 
     ``hashtextextended`` rather than Python's ``hash``: the value has to be the
     same in every process, and PYTHONHASHSEED makes Python's is not.
+
+    **One key per target, whichever way the caller names it.** The key used to
+    be built from both ids, and the callers do not agree on how many they hold:
+    the API and the rescan button pass a connection *and* the subscription they
+    resolved it from, while the scheduler, the change trigger and the
+    verification sweep pass the connection alone. Two names for the same target
+    are two different locks, so a customer pressing "Scan now" at the moment the
+    scheduler started the same connection took one lock each, both read
+    "nothing running" -- ``scan_in_flight`` matches either form and would have
+    caught it -- and both inserted. The two scans then wrote findings for the
+    same resources, and the unique index on (organization, rule, resource)
+    turned the overlap into a scan that failed with nothing a customer could
+    read.
+
+    So the connection is the target whenever there is one, and the subscription
+    only for an account that predates connections. That is exactly the set
+    ``scan_in_flight`` treats as overlapping, which is what makes the check and
+    the lock agree.
     """
-    key = f"scan:{organization_id}:{connection_id or ''}:{account_id or ''}"
+    target = f"connection:{connection_id}" if connection_id else f"account:{account_id}"
+    key = f"scan:{organization_id}:{target}"
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key}
     )

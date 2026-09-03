@@ -260,6 +260,19 @@ Node installed on your machine.
    AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-connections/azure/consent/callback
 
    SENTRY_DSN=
+
+   # Optional, both with defaults, both about disk rather than correctness.
+   # A raw capture is kept for SNAPSHOT_RETENTION_DAYS *and* no more than
+   # SNAPSHOT_RETENTION_MAX_PER_SCOPE captures are kept per subscription --
+   # days alone is a policy about time, and a customer scanning every half hour
+   # stores 48 captures a day per subscription against a weekly scanner's 4,
+   # inside the same stated retention. The newest capture of a scope survives
+   # both limits whatever they say: it is what a replay reads.
+   # EVIDENCE_RETENTION_DAYS measures from when a payload was last *seen*, so an
+   # estate that has not changed keeps one copy alive by re-reading it.
+   SNAPSHOT_RETENTION_DAYS=30
+   SNAPSHOT_RETENTION_MAX_PER_SCOPE=90
+   EVIDENCE_RETENTION_DAYS=90
    ```
 
    Start on `APP_ENV=staging` while you are still filling in URLs: every value

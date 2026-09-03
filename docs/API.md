@@ -13,6 +13,7 @@ DELETE /organizations/{id}
 POST   /cloud-connections                  GET    /cloud-connections
 GET    /cloud-connections/{id}             DELETE /cloud-connections/{id}
 POST   /cloud-connections/{id}/discover
+POST   /cloud-connections/{id}/recheck
 PATCH  /cloud-connections/{id}/subscriptions
 PATCH  /cloud-connections/{id}/schedule
 GET    /cloud-connections/{id}/change-events
@@ -74,6 +75,16 @@ stay queued" is otherwise indistinguishable from "the product is broken".
 
 `POST /findings/{id}/status` is the general transition; `accept-risk` is its own
 endpoint rather than a status value because it takes a reason and an approver.
+
+`/cloud-connections/{id}/recheck` is a POST because it is a probe rather than a
+read. The GET validates a connection only while it is *unverified* — that is
+what the setup wizard polls — so on a working connection it re-read the same row
+and repainted the same answer, including a role version that had not been looked
+at since the connection was created. This asks Azure two questions: whether the
+read still works, and which role it works through, resolved from the actions on
+the definitions the scanner's principal is actually assigned. A failed probe
+leaves the recorded state alone; proving access is *gone* is
+`/check-revoked`'s job, where the customer has asked that question deliberately.
 
 `/cloud-accounts` is **read-only** except for `/context`: an account is a
 subscription discovered beneath a connection, so there is nothing to create,

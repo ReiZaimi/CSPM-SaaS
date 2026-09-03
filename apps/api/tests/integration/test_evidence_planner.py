@@ -274,3 +274,70 @@ async def test_a_reading_whose_blob_is_gone_is_read_again(cleanup_orgs) -> None:
 
     assert plan.carried == {}
     assert plan.wants(REUSABLE)
+
+
+async def test_a_carried_reading_names_the_scan_that_read_the_provider(
+    cleanup_orgs,
+) -> None:
+    """Provenance survives the reuse, against the real column.
+
+    A carried reading is written again under the reusing scan's own id, so
+    without this the trail said that scan called the provider -- and
+    ``finding_evidence.source_scan_id``, whose whole purpose is to name the scan
+    that collected rather than the scan that concluded, was copied from it.
+    """
+    org_id, connection_id, accounts = await make_tenant("Planner Source Org")
+    cleanup_orgs.append(org_id)
+    collecting_scan = await record_reading(org_id, connection_id, accounts[0])
+
+    plan = await plan_for(org_id, connection_id, accounts[0])
+
+    assert plan.carried[REUSABLE].source_scan_id == collecting_scan
+
+
+async def test_the_source_survives_a_second_reuse(cleanup_orgs) -> None:
+    """The chain stays one hop long however many scans reuse a reading.
+
+    A row that was itself carried already names its source. Taking its
+    ``scan_id`` instead would credit whichever scan last reused it, and the
+    answer would drift one scan further from the reading on every reuse -- which
+    is the failure mode the column exists to prevent, arriving slowly.
+    """
+    org_id, connection_id, accounts = await make_tenant("Planner Chain Org")
+    cleanup_orgs.append(org_id)
+    original = await record_reading(org_id, connection_id, accounts[0])
+
+    # The reuse, recorded as a collection step leaves it: this scan's own row,
+    # holding the original's read time and naming the original as its source.
+    async with service_session() as session:
+        reuse = Scan(
+            organization_id=org_id,
+            connection_id=connection_id,
+            cloud_account_id=accounts[0],
+            status=ScanStatus.COMPLETED,
+        )
+        session.add(reuse)
+        await session.flush()
+        session.add(
+            Evidence(
+                organization_id=org_id,
+                scan_id=reuse.id,
+                cloud_account_id=accounts[0],
+                connection_id=connection_id,
+                provider=Provider.AZURE,
+                evidence_key=REUSABLE.value,
+                category=REUSABLE.category.value,
+                outcome=TaskOutcome.COMPLETE,
+                item_count=1,
+                collected_at=NOW - timedelta(hours=12),
+                permissions=["Microsoft.Authorization/roleDefinitions/read"],
+                content_hash=CONTENT_HASH,
+                byte_size=len(str(PAYLOAD)),
+                source_scan_id=original,
+            )
+        )
+        await session.commit()
+
+    plan = await plan_for(org_id, connection_id, accounts[0])
+
+    assert plan.carried[REUSABLE].source_scan_id == original

@@ -45,10 +45,6 @@ export function ConnectionRow({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [error, setError] = useState<string | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
-  // Kept apart from the query's own `isFetching`, which is true on every poll:
-  // a button that says "Checking…" on a timer claims the reader pressed
-  // something they did not.
-  const [rechecking, setRechecking] = useState(false);
 
   const detail = useQuery({
     queryKey: ["cloud-connection", initial.id],
@@ -76,6 +72,24 @@ export function ConnectionRow({
   // subscriptions beneath it, so any scannable one of them names the target
   // and a subscription discovered between queueing and running is still read.
   const scannable = subscriptions.find((s) => s.is_scannable);
+
+  // A probe, not a refetch. Re-checking used to call `refetch()`, and the only
+  // probe on the GET path runs while a connection is still unverified -- so on
+  // a working connection the button re-read the same row and repainted the
+  // same three lines. This endpoint asks Azure.
+  const recheck = useMutation({
+    mutationFn: () =>
+      api
+        .post<CloudConnection>(`/api/v1/cloud-connections/${connection.id}/recheck`)
+        .then((r) => r.data),
+    onSuccess: (fresh) => {
+      if (fresh) queryClient.setQueryData(["cloud-connection", initial.id], fresh);
+      queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
+      setError(null);
+    },
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.message : "Could not re-check access"),
+  });
 
   const scanNow = useMutation({
     mutationFn: () =>
@@ -231,11 +245,8 @@ export function ConnectionRow({
             />
             <AccessPanel
               connection={connection}
-              rechecking={rechecking}
-              onRecheck={() => {
-                setRechecking(true);
-                void detail.refetch().finally(() => setRechecking(false));
-              }}
+              rechecking={recheck.isPending}
+              onRecheck={() => recheck.mutate()}
             />
 
             {confirmingRemove ? (

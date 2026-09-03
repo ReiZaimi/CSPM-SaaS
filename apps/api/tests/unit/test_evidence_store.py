@@ -302,3 +302,66 @@ async def test_a_capture_written_before_the_manifest_still_reads_inline() -> Non
     rebuilt = await _rebuild_capture(None, uuid4(), row)  # type: ignore[arg-type]
 
     assert rebuilt["data"] == {"vms": []}
+
+
+# ------------------------------------------- one fetch for a tenant's captures
+async def test_a_rebuild_given_its_readings_asks_the_database_for_nothing() -> None:
+    """What makes a tenant-wide analysis one query rather than fifty.
+
+    Every capture used to fetch its own readings, so an analysis of a
+    fifty-subscription tenant opened with fifty round trips against the largest
+    table in the schema before a single rule ran. The readings are
+    content-addressed and the captures share them, so they are fetched together
+    and handed down.
+    """
+    payload = {"virtual_machines": [{"id": "/v"}]}
+    content_hash = digest(payload)[0]
+    row = SimpleNamespace(
+        manifest={
+            "provider": "azure",
+            "tenant_id": "t",
+            "payload_hashes": {"virtual_machines": content_hash},
+        },
+        data={},
+    )
+
+    class Exploding:
+        async def execute(self, _statement: object) -> None:
+            raise AssertionError("a rebuild handed its readings must not query")
+
+    rebuilt = await _rebuild_capture(
+        Exploding(),  # type: ignore[arg-type]
+        uuid4(),
+        row,
+        {content_hash: payload},
+    )
+
+    assert rebuilt["data"] == payload
+
+
+async def test_a_reading_missing_from_the_batch_is_still_refused() -> None:
+    """The interlock does not weaken because the fetch moved. Half a capture
+    replays as an estate that has lost whatever the missing half held, which is
+    the same overclaim as a PASS nobody earned."""
+    row = SimpleNamespace(
+        manifest={"payload_hashes": {"virtual_machines": "a" * 64}},
+        data={},
+    )
+
+    with pytest.raises(SnapshotUnavailable):
+        await _rebuild_capture(None, uuid4(), row, {})  # type: ignore[arg-type]
+
+
+def test_the_batch_asks_for_every_hash_every_capture_names() -> None:
+    from app.services.scanner import _manifest_hashes
+
+    captures = [
+        SimpleNamespace(manifest={"payload_hashes": {"vms": "a" * 64}}),
+        SimpleNamespace(
+            manifest={"payload_hashes": {"vms": "a" * 64, "storage": "b" * 64}}
+        ),
+        # Written before manifests: its readings are inline and none are fetched.
+        SimpleNamespace(manifest=None),
+    ]
+
+    assert _manifest_hashes(captures) == {"a" * 64, "b" * 64}

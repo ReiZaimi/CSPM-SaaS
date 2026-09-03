@@ -15,18 +15,23 @@ import { collectionCategoryLabel, formatDate } from "@/lib/format";
  * the grants -- rather than in a marketing paragraph -- puts it where somebody
  * auditing this screen will actually read it.
  *
- * Re-checking is a real probe, not a cache read: the backend re-tests both
- * grants on every read of the connection, so this button asks Azure again. It
- * is what turns a role deleted in the portal last night into a connection that
- * says so.
+ * Re-checking is a real probe, not a cache read: it posts to an endpoint that
+ * re-tests the read and re-reads which role the assignment actually grants, so
+ * the button asks Azure again. It had to become that. Re-checking used to
+ * refetch the connection, and the only probe on that path runs while a
+ * connection is still unverified -- so on a working connection the button
+ * repainted the answer already on screen, including a role version nothing had
+ * looked at since the row was created.
  *
  * The reader role line is the one that had to stop lying. A deployed role older
  * than the one CloudGuard needs was printed in the same green as a current one,
  * because the version was rendered and never compared -- so a customer whose
  * database and key vault checks were all reporting "not known" had a screen
  * telling them their access was fine, and nowhere in the product said
- * otherwise. The backend has known this since role versions existed; this is
- * where it reaches somebody.
+ * otherwise. Comparing it was only half: the recorded version was stamped when
+ * the connection was created and never written again, so redeploying the role
+ * could not change this line either. It is now read back from the actions the
+ * assignment actually grants.
  */
 export function AccessPanel({
   connection,

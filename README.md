@@ -78,7 +78,7 @@ apps/api/app/
 ├── services/      scanner pipeline, findings, dashboard, cloud accounts
 ├── models/        SQLAlchemy tables
 ├── api/routes/    HTTP surface
-└── workers/       Celery app and scan task
+└── workers/       Celery app, the scan step tasks, and the periodic sweeps
 
 apps/web/src/      React + TypeScript + Tailwind
 database/          migrations (with RLS policies) and the demo seed
@@ -125,6 +125,15 @@ already filled in. Customers who want more than Azure's `Reader` can take the
 CloudGuard custom role instead: exactly the read operations the collector
 performs, no `*/action` entries at all, generated from the connector so a test
 fails if the two ever disagree.
+
+**A scan is durable steps, not one long task.** Planning, one collection per
+subscription plus one for the tenant directory, then a single analysis — each
+recorded, claimed under a lease, and retried on its own. A redeploy costs the
+step in flight rather than the scan, one unreadable subscription does not take
+the other forty-nine with it, and every write a running step makes is fenced on
+the claim it was made under, so a worker that stalled past its lease cannot
+settle a step another worker has taken over. See
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 **Compliance is evidence, never a verdict.** The `/compliance` view maps rules
 to CIS Azure 2.0, ISO 27001, GDPR and NIST CSF controls — including the controls

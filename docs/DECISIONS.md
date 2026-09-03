@@ -2675,6 +2675,152 @@ March cannot make its payloads look freshly read.
 
 ---
 
+## 65. What holds a step, what stops two scans, and what a tenant may keep
+
+Five production problems in the scanning path, all of them invisible in a
+demo tenant and all of them certain in a large one. They are recorded together
+because four of the five are the same mistake in different places: a mechanism
+that was correct about the state it wrote and silent about who was entitled to
+write it.
+
+**A step is fenced by the attempt it was claimed under.** The lease made a
+redeploy survivable: a step that stops renewing is returned to PENDING and run
+again elsewhere. What it did not handle is the worker coming back. A process
+paused past its lease -- a throttled container, a database stall, a long
+garbage collection -- has not died, and it finished its collection minutes
+later and marked the step SUCCEEDED while another worker was in the middle of
+the same step. ANALYZE waits on collection *settling*, so the scan then
+interpreted a subscription still being written and reported it as a complete
+reading: the same overclaim as a PASS nobody earned, arriving through the
+orchestrator instead of through a rule. Renewals and settles are now
+conditional on the row still carrying the attempt the worker claimed, and a
+worker that lost its step writes nothing. The renewal fence matters as much as
+the settle: unfenced, the returning worker kept alive the lease of a step
+somebody else was running, so the mechanism that reports a lost step was the
+thing concealing that two workers held it.
+
+**The lease is held by a clock, not by whatever the phase reports.** Renewal
+used to happen inside collection's progress callback, which covered one of the
+three step kinds. ANALYZE -- reconstructing every capture, evaluating every
+rule, scoring every finding, the longest thing a scan does -- renewed nothing.
+A tenant whose analysis ran past `ScanStep.LEASE_SECONDS` had its step reaped
+mid-evaluation and restarted while the first was still writing, so the one case
+where the reaper reliably fired was the case where nothing had gone wrong, and
+it fired more reliably the larger the tenant. A background keeper now renews on
+a fraction of the window for every kind of step, and a refused renewal stops the
+work at the next opportunity rather than spending the customer's Azure quota on
+a capture that will be discarded.
+
+**One target, one lock.** Starting a scan takes a transaction-scoped advisory
+lock and then checks whether one is already in flight. The lock was keyed on
+whichever ids the caller happened to hold, and the callers do not agree: the API
+and the rescan button pass a connection *and* the subscription they resolved it
+from, while the scheduler, the change trigger and the verification sweep pass
+the connection alone. Those are two different locks over one connection, so a
+customer pressing "Scan now" at the moment the scheduler started the same
+connection got two scans writing findings for the same resources -- and the
+unique index on (organization, rule, resource) turned the overlap into a scan
+that failed with nothing a customer could read. The key is now the connection
+wherever there is one, which is exactly the set the in-flight check treats as
+overlapping.
+
+**A lost message no longer strands a scan.** `unfinished_scan_ids` was written
+as the safety net for an advance message the broker never delivered, and nothing
+called it. A PENDING step holds no lease to expire, and the scan reaper
+deliberately skips a scan with a live step -- so such a scan sat at whatever
+percentage it had reached, permanently, with its connection answering "a scan is
+already running". The reaper now nudges every scan with work outstanding, which
+is a no-op on the normal path where a step enqueues its own successor.
+
+**A step carries its own time limits, and a worker reserves one at a time.**
+The general Celery ceiling bounds the short tasks, where anything past a minute
+is a fault. A step is not that: one evaluation of an entire tenant legitimately
+runs for half an hour, and cutting it at the general limit turned a large tenant
+into a killed worker that the reaper retried at the same size -- three attempts,
+three kills, and a failure whose only cause was the number of subscriptions the
+customer owned. Prefetch drops to one for the same reason: a reserved message is
+invisible to every other worker, so the default of four left three tenant-sized
+steps idle inside one process while the queue looked empty to the rest of the
+pool.
+
+**Retention is a count as well as a window.** Days alone is a policy about time,
+and storage is not spent in time. A customer scanning every half hour writes 48
+captures a day per subscription and 1,440 inside a 30-day window; a customer
+scanning weekly writes 4. Both are inside the same stated retention and their
+tables are two orders of magnitude apart, which is how one tenant enabling
+change-triggered scanning becomes the reason a shared database fills up. A
+per-scope ceiling caps the series, ranked in PostgreSQL by the same
+(created_at, id) order the replay path uses -- and the newest capture of a scope
+is exempt from the ceiling exactly as it is from the window, because it is what
+an applied replay reads.
+
+**Evidence records which scan read the provider.** A reading inside its reuse
+window is carried into the next scan, which writes a row of its own under its
+own id holding the original's `collected_at`. The age survived; the authorship
+did not. `finding_evidence.source_scan_id` exists precisely to say that the
+collecting scan is not necessarily the scan that raised the finding, and it was
+copied from `evidence.scan_id`, which could only ever name the latter -- so a
+customer following a citation back to the reading it rests on was handed a scan
+that made no such call. `evidence.source_scan_id` (migration 0031) carries the
+collecting scan, NULL meaning this row is the reading, and a carried row's
+source is followed rather than restarted so the trail stays one hop long however
+many scans have reused it.
+
+**And one performance change with no correctness argument behind it.**
+Rebuilding a capture fetched its own stored readings, so an analysis of a
+fifty-subscription tenant opened with fifty queries against the largest table in
+the schema before a single rule ran. The readings are content-addressed and the
+captures share them; they are now fetched once and handed down.
+
+## 66. The frontend's own production failures
+
+Four of them, all invisible in development and none of them a bug in any
+feature. Development serves every module from a running dev server, never
+redeploys under an open tab, and talks to an API on localhost that either
+answers or refuses immediately -- so the conditions below only exist once the
+thing is deployed.
+
+**Nothing caught a thrown error, so the page went white.** React unmounts the
+whole tree when a render throws and nothing catches it: no message, no way back,
+and nothing on screen for a customer to describe to support. For a product whose
+job is telling somebody whether their cloud is secure, a blank page is the worst
+available answer. There is now a boundary at the root and a second one around
+the router's outlet, so a page that throws leaves the reader with the navigation
+they arrived by rather than an empty document.
+
+**The most common cause of that blank page was not a bug at all.** Every page is
+a dynamic import, and a deploy replaces the hashed files a tab already open was
+going to fetch. Somebody who leaves CloudGuard open, gets a release, then clicks
+Findings asks for a chunk that no longer exists; the import rejects, and the
+`Suspense` boundary above it has nothing to catch it. That is not an error to
+report -- it is a page that needs the new build -- so the boundary recognises
+the shape of it and reloads once, guarded in session storage. Once, because a
+reload that hits the same error again loops for ever, which is a worse blank
+page than the one it replaced.
+
+**A hanging request never resolved.** `fetch` has no timeout and neither does
+TanStack Query, so a host that accepts the connection and then says nothing --
+a container mid-redeploy, a captive portal, a mobile connection that dropped --
+left the query in `isLoading` for as long as the tab stayed open. Requests are
+now bounded (30s, and 120s for a report, which is rendered on demand and
+legitimately slow), and a rejected fetch is reported as an unreachable API
+rather than as the browser's own "Failed to fetch", which reads to a customer as
+a bug in CloudGuard.
+
+**An expired session read as a broken product.** Only the dashboard noticed a
+401, and it noticed by rendering an error where its charts go. Everywhere else
+every panel on the page failed with its own message, none of them said "signed
+out", and nothing offered the action that fixes it. A 401 now clears the token,
+which puts the router back in charge and sends the reader to sign in. A 403 is
+deliberately not this: a viewer refused a write is signed in and should stay
+signed in, and answering "you may not do that" with "prove who you are" would
+land them back at the same refusal.
+
+And one smaller thing found on the way: the query client retried every failure
+once, including the ones the server has already answered definitively. Retrying
+is now limited to the failures where nobody actually answered -- a 5xx, a
+timeout, a dropped connection.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

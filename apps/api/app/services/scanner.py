@@ -25,8 +25,9 @@ owner connection and scopes every write by the ``organization_id`` taken from
 the scan record it was handed — never from client input.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -118,7 +119,10 @@ def _manifest(snapshot: RawSnapshot) -> dict:
 
 
 async def _rebuild_capture(
-    session: AsyncSession, organization_id: UUID, row: CloudSnapshot
+    session: AsyncSession,
+    organization_id: UUID,
+    row: CloudSnapshot,
+    payloads: dict[str, dict] | None = None,
 ) -> dict:
     """The stored form of a capture, whichever way it was written.
 
@@ -138,6 +142,13 @@ async def _rebuild_capture(
     replays as an estate that has lost whatever was in the missing half, which
     is the same overclaim as a PASS nobody earned -- retention's interlock
     exists so this cannot happen, and this is what says so if it ever does.
+
+    ``payloads`` is the readings already in hand, keyed by content hash. A
+    tenant-wide scan rebuilds one capture per subscription and each rebuild was
+    a query of its own, so a fifty-subscription analysis opened with fifty
+    round trips before it read a rule -- see :meth:`ScanPipeline._payloads_for`,
+    which fetches the lot in one. Absent, this asks for its own, which is what a
+    single-capture caller wants.
 
     **The manifest decides which form this is, not ``data``.** This used to ask
     whether ``data`` was NULL, and that question could not be answered by the
@@ -159,23 +170,13 @@ async def _rebuild_capture(
 
     manifest = dict(row.manifest)
     hashes = dict(manifest.pop("payload_hashes", {}) or {})
-    payloads = {
-        blob.content_hash: blob.content
-        for blob in (
-            await session.execute(
-                select(EvidenceBlob).where(
-                    EvidenceBlob.organization_id == organization_id,
-                    EvidenceBlob.content_hash.in_(list(hashes.values())),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    }
+    held = payloads if payloads is not None else await _payloads_by_hash(
+        session, organization_id, set(hashes.values())
+    )
 
     data: dict = {}
     for key, content_hash in hashes.items():
-        payload = payloads.get(content_hash)
+        payload = held.get(content_hash)
         if payload is None:
             raise SnapshotUnavailable(
                 f"the stored reading for {key} is no longer held, so this "
@@ -186,6 +187,47 @@ async def _rebuild_capture(
 
     manifest["data"] = data
     return manifest
+
+
+def _manifest_hashes(rows: Sequence[CloudSnapshot]) -> set[str]:
+    """Every payload hash these captures name.
+
+    Empty for a capture written before manifests, which carries its readings
+    inline and needs nothing fetched.
+    """
+    return {
+        content_hash
+        for row in rows
+        if row.manifest
+        for content_hash in (row.manifest.get("payload_hashes") or {}).values()
+    }
+
+
+async def _payloads_by_hash(
+    session: AsyncSession, organization_id: UUID, hashes: set[str]
+) -> dict[str, dict]:
+    """The stored readings these hashes name, decompressed.
+
+    One statement whatever the number of captures asking, which is the point of
+    lifting it out of the per-capture rebuild: the hashes are content-addressed
+    and a tenant's subscriptions share plenty of them, so a merged fetch is both
+    fewer round trips and fewer decompressions than one query per capture.
+    """
+    if not hashes:
+        return {}
+    return {
+        blob.content_hash: blob.content
+        for blob in (
+            await session.execute(
+                select(EvidenceBlob).where(
+                    EvidenceBlob.organization_id == organization_id,
+                    EvidenceBlob.content_hash.in_(list(hashes)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
 
 
 class ScanVanished(Exception):
@@ -245,34 +287,130 @@ class ReconstructedScan:
     observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-class _StepHeartbeat:
-    """The progress callback a step hands to collection.
+class StepLeaseLost(ScanStepError):
+    """This worker is no longer the one running this step.
 
-    Renews the step's lease rather than counting anything. Per-listing progress
-    was accumulated in one process, which could only ever describe the part of
-    a scan that process happened to run; the scan's progress is now derived
-    from its steps, which every worker can see. What is left for a callback to
-    do is the thing only the running worker knows -- that it is still alive.
+    Raised by the lease keeper when a renewal is refused, which means the step
+    was reclaimed while this process was working -- it stopped reporting for
+    longer than the lease, the reaper returned the step to PENDING, and another
+    worker has it now. The right response is to stop immediately: the work is
+    being done elsewhere, and everything this attempt would still write is a
+    duplicate of it.
+
+    Not retryable, because there is nothing to retry. The step is already back
+    in the queue or already running somewhere else, and the settle that follows
+    is fenced out anyway.
     """
 
-    def __init__(self, step_id: UUID, organization_id: UUID) -> None:
+    retryable = False
+
+
+class LeaseKeeper:
+    """Holds a step's lease for as long as this worker is running it.
+
+    A lease renewed only when collection reports progress covered exactly one
+    of the three step kinds. PLAN is short enough not to need it, but ANALYZE
+    is the longest thing a scan does -- reconstructing every capture,
+    evaluating every rule, scoring every finding -- and it renewed nothing at
+    all. A tenant whose analysis ran past ``ScanStep.LEASE_SECONDS`` had its
+    step reaped mid-evaluation and started again on another worker, while the
+    first was still writing findings for the same scan. The bigger the tenant,
+    the more certain it was: the one case where the reaper reliably fired was
+    the one where nothing had actually gone wrong.
+
+    So the lease is held by the clock rather than by whatever the phase happens
+    to report. A background task renews it on a fraction of the window, and a
+    refused renewal -- the fence in ``orchestrator.renew`` -- means the step has
+    been taken, which sets ``lost`` and makes the next heartbeat raise.
+    """
+
+    # Three renewals inside one lease window. Two would leave a single missed
+    # renewal -- a slow query, a paused container -- looking exactly like a dead
+    # worker; more would spend writes for no more safety.
+    RENEW_EVERY = ScanStep.LEASE_SECONDS / 3
+
+    def __init__(self, step_id: UUID, organization_id: UUID, attempt: int) -> None:
         self.step_id = step_id
-        # Carried so the heartbeat runs on the same constrained session as the
+        # Carried so the renewal runs on the same constrained session as the
         # step it is beating for. It writes one column on one row, and doing
         # that on the owner connection would be a small hole in an otherwise
         # closed boundary.
         self.organization_id = organization_id
+        self.attempt = attempt
+        self.lost = False
+        self._task: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> "LeaseKeeper":
+        self._task = asyncio.create_task(self._run())
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+
+    async def _run(self) -> None:
+        while True:
+            await asyncio.sleep(self.RENEW_EVERY)
+            try:
+                async with scan_session(self.organization_id) as session:
+                    held = await orchestrator.renew(
+                        session, self.step_id, self.attempt
+                    )
+            except Exception as exc:  # pragma: no cover - never fatal in itself
+                # A failed renewal is not proof the step was taken; the database
+                # may simply have been unreachable for a moment. Losing enough
+                # of them costs the lease, which the reaper handles -- and that
+                # path ends in the same place, with this attempt fenced out of
+                # its own settle.
+                log.warning(
+                    "scan.lease_renew_failed",
+                    step_id=str(self.step_id),
+                    error=str(exc),
+                )
+                continue
+            if not held:
+                log.warning(
+                    "scan.lease_lost",
+                    step_id=str(self.step_id),
+                    attempt=self.attempt,
+                )
+                self.lost = True
+                return
+
+
+async def _no_heartbeat(done: int, total: int) -> None:
+    """Progress reported by a collection with no step behind it.
+
+    A direct ``collect`` call in a test has no lease to lose, and the collector
+    always has somewhere to report progress rather than a callback it must
+    check for None.
+    """
+    return None
+
+
+class _StepHeartbeat:
+    """The progress callback a step hands to collection.
+
+    It no longer renews anything -- :class:`LeaseKeeper` does that on a clock,
+    for every kind of step rather than only the one that reports progress. What
+    is left is the half a callback is uniquely placed to do: stop the work.
+
+    A step whose lease was lost is being run by somebody else, so every request
+    this one still makes spends the customer's Azure quota to produce a capture
+    that will be discarded. Raising at the next progress report ends it at the
+    first opportunity the collector offers.
+    """
+
+    def __init__(self, keeper: "LeaseKeeper") -> None:
+        self.keeper = keeper
 
     async def __call__(self, done: int, total: int) -> None:
-        try:
-            async with scan_session(self.organization_id) as session:
-                await orchestrator.renew(session, self.step_id)
-        except Exception as exc:  # pragma: no cover - a heartbeat is never fatal
-            # Losing a heartbeat costs the step its lease eventually, which the
-            # reaper handles. Failing the step over it would turn a database
-            # blip into lost collection.
-            log.warning(
-                "scan.heartbeat_failed", step_id=str(self.step_id), error=str(exc)
+        if self.keeper.lost:
+            raise StepLeaseLost(
+                "This step was taken over by another worker while it was "
+                "running, so this attempt stopped."
             )
 
 
@@ -355,6 +493,11 @@ class ScanPipeline:
                 return ScanStepStatus.FAILED
             kind = step.kind
             scope = step.cloud_account_id
+            # The claim this worker is running under. Everything below is
+            # fenced on it: the lease it renews, and the settle it writes at the
+            # end. A step reclaimed while this attempt was working carries a
+            # higher number, and this attempt then writes nothing.
+            attempt = step.attempt
 
         # Bound here rather than in the Celery task, so a step driven by the
         # tests or by a future caller carries the same context a queued one
@@ -366,20 +509,28 @@ class ScanPipeline:
             step_kind=kind.value,
             cloud_account_id=str(scope) if scope else None,
         ):
-            try:
-                if kind == ScanStepKind.PLAN:
-                    await self.plan()
-                elif kind == ScanStepKind.COLLECT:
-                    await self.collect(step_id)
-                else:
-                    await self.analyze()
-            except ScanStepError as exc:
-                return await self._settle(step_id, str(exc), retryable=exc.retryable)
-            except Exception as exc:
-                log.exception("scan.step_failed")
-                return await self._settle(step_id, str(exc), retryable=True)
+            organization_id = await self._organization()
+            async with LeaseKeeper(step_id, organization_id, attempt) as keeper:
+                try:
+                    if kind == ScanStepKind.PLAN:
+                        await self.plan()
+                    elif kind == ScanStepKind.COLLECT:
+                        await self.collect(step_id, _StepHeartbeat(keeper))
+                    else:
+                        await self.analyze()
+                except ScanStepError as exc:
+                    return await self._settle(
+                        step_id, str(exc), retryable=exc.retryable, attempt=attempt
+                    )
+                except Exception as exc:
+                    log.exception("scan.step_failed")
+                    return await self._settle(
+                        step_id, str(exc), retryable=True, attempt=attempt
+                    )
 
-            return await self._settle(step_id, None, retryable=False)
+                return await self._settle(
+                    step_id, None, retryable=False, attempt=attempt
+                )
 
     def _log_step(self, step: ScanStep, outcome: ScanStepStatus) -> None:
         """One line per stage, carrying what it cost.
@@ -405,25 +556,65 @@ class ScanPipeline:
         )
 
     async def _settle(
-        self, step_id: UUID, error: str | None, *, retryable: bool
+        self,
+        step_id: UUID,
+        error: str | None,
+        *,
+        retryable: bool,
+        attempt: int | None = None,
     ) -> ScanStepStatus:
+        """Record how this attempt went, if it is still this attempt's to record.
+
+        ``attempt`` is the fence, and the case it closes is not exotic. A worker
+        paused past its lease -- a container throttled, a database stall, a
+        redeploy that took the process's CPU away for a quarter of an hour --
+        has its step reclaimed and re-run elsewhere, and then comes back. What
+        it wrote before is already discarded by the retry's own demolition; what
+        it must not do is settle a step another worker is in the middle of,
+        because ANALYZE waits on COLLECT settling and would then start on a
+        collection still being written.
+        """
         async with self._session() as session:
             step = await session.get(ScanStep, step_id)
             if step is None:
                 return ScanStepStatus.FAILED
             if error is None:
-                await orchestrator.finish(session, step, ScanStepStatus.SUCCEEDED)
+                if not await orchestrator.finish(
+                    session, step, ScanStepStatus.SUCCEEDED, attempt=attempt
+                ):
+                    return self._lost(step)
                 self._log_step(step, ScanStepStatus.SUCCEEDED)
                 return ScanStepStatus.SUCCEEDED
             if not retryable:
-                await orchestrator.finish(
-                    session, step, ScanStepStatus.FAILED, error
-                )
+                if not await orchestrator.finish(
+                    session, step, ScanStepStatus.FAILED, error, attempt=attempt
+                ):
+                    return self._lost(step)
                 self._log_step(step, ScanStepStatus.FAILED)
                 return ScanStepStatus.FAILED
-            outcome = await orchestrator.fail_or_retry(session, step, error)
+            outcome = await orchestrator.fail_or_retry(
+                session, step, error, attempt=attempt
+            )
+            if outcome is None:
+                return self._lost(step)
             self._log_step(step, outcome)
             return outcome
+
+    def _lost(self, step: ScanStep) -> ScanStepStatus:
+        """What this attempt reports when the step was no longer its own.
+
+        The step's real state is whatever the worker that took it says, so this
+        returns what the row already holds rather than a verdict of its own. It
+        is reported as this attempt's outcome only for the log line and the
+        task's return value; nothing was written.
+        """
+        log.warning(
+            "scan.step_settle_skipped",
+            scan_id=str(self.scan_id),
+            step_id=str(step.id),
+            detail="another worker holds this step",
+        )
+        return step.status
 
     async def plan(self) -> list[CloudAccount]:
         """Resolve what this scan covers and create a step per scope.
@@ -467,8 +658,14 @@ class ScanPipeline:
             )
             return accounts
 
-    async def collect(self, step_id: UUID) -> None:
+    async def collect(
+        self, step_id: UUID, heartbeat: "_StepHeartbeat | None" = None
+    ) -> None:
         """Read one scope and store what came back. Interprets nothing.
+
+        ``heartbeat`` is how collection finds out it has lost the step. Optional
+        so a test can drive one collection without a lease to hold, and passed
+        by ``run_step`` in every other case.
 
         Idempotent by demolition: a retried step deletes whatever the previous
         attempt stored for this scope before storing again. The alternative is
@@ -501,7 +698,7 @@ class ScanPipeline:
                     session,
                     scan,
                     connection,
-                    _StepHeartbeat(step_id, scan.organization_id),
+                    heartbeat or _no_heartbeat,
                     observed_at,
                     required=True,
                 )
@@ -535,9 +732,7 @@ class ScanPipeline:
                 connection_id=account.connection_id,
                 now=observed_at,
             )
-            snapshot = await connector.collect(
-                _StepHeartbeat(step_id, scan.organization_id), plan
-            )
+            snapshot = await connector.collect(heartbeat or _no_heartbeat, plan)
             await self._explain_role_drift(session, account, snapshot)
 
             # Persisted before interpretation, always. One row per subscription,
@@ -805,6 +1000,13 @@ class ScanPipeline:
             key.value: reading.collected_at
             for key, reading in (plan.carried.items() if plan else ())
         }
+        # And which scan made the call. Without it every row this scan writes
+        # claims the reading as its own, and a citation followed back lands on
+        # a scan that read nothing for that key.
+        carried_from = {
+            key.value: reading.source_scan_id
+            for key, reading in (plan.carried.items() if plan else ())
+        }
         await self._store_blobs(session, org_id, snapshot.payloads, digests, observed_at)
 
         for key, entry in snapshot.coverage.items():
@@ -827,6 +1029,9 @@ class ScanPipeline:
                     # rather than about the read itself, and one reading could
                     # then be carried for ever, each scan renewing it.
                     collected_at=carried_at.get(key, observed_at),
+                    # NULL for a reading this scan took, which is the common
+                    # case and the honest one: the row is the reading.
+                    source_scan_id=carried_from.get(key),
                     permissions=list(entry.get("permissions") or []),
                     # `[]` for a reading taken before this was recorded, which
                     # is a fact about CloudGuard's history rather than a claim
@@ -1095,6 +1300,15 @@ class ScanPipeline:
         # change how its findings rank today, including on a replay of an older
         # reading.
         declarations = await self._declarations_for(session, org_id, list(accounts))
+        # Every reading of every capture, in one statement. A rebuild used to
+        # fetch its own, so an analysis of a tenant with fifty subscriptions
+        # opened with fifty queries against the largest table in the schema
+        # before a single rule ran -- and the captures share hashes, because
+        # content addressing is the whole reason two subscriptions with the same
+        # empty listing store it once.
+        payloads = await _payloads_by_hash(
+            session, org_id, _manifest_hashes(stored)
+        )
 
         for row in stored:
             # The directory capture, read on its own terms. It is a reading of
@@ -1103,7 +1317,11 @@ class ScanPipeline:
             # has since re-read the same directory through the same connection.
             if row.cloud_account_id is None:
                 restored = await self._restore_directory(
-                    session, org_id, row, check_freshness=check_freshness
+                    session,
+                    org_id,
+                    row,
+                    check_freshness=check_freshness,
+                    payloads=payloads,
                 )
                 if restored is None:
                     state.is_current = False
@@ -1134,7 +1352,7 @@ class ScanPipeline:
                 state.is_current = False
 
             snapshot = RawSnapshot.from_json(
-                await _rebuild_capture(session, org_id, row)
+                await _rebuild_capture(session, org_id, row, payloads)
             )
             connector = get_connector(
                 account.provider,
@@ -1561,6 +1779,7 @@ class ScanPipeline:
         row: CloudSnapshot,
         *,
         check_freshness: bool = False,
+        payloads: dict[str, dict] | None = None,
     ) -> tuple[tuple[CloudConnection, NormalizedState], RawSnapshot, bool] | None:
         """Re-normalize a stored directory capture.
 
@@ -1603,7 +1822,7 @@ class ScanPipeline:
         )
 
         snapshot = RawSnapshot.from_json(
-            await _rebuild_capture(session, org_id, row)
+            await _rebuild_capture(session, org_id, row, payloads)
         )
         connector = get_connector(
             connection.provider,
@@ -2526,7 +2745,12 @@ class ScanPipeline:
                         # is older than this scan. Copied rather than joined so
                         # the age survives the reading's deletion.
                         collected_at=row.collected_at,
-                        source_scan_id=row.scan_id,
+                        # The scan that read the provider. For a carried
+                        # reading that is an earlier scan than the one holding
+                        # this row, which is the distinction this field exists
+                        # to make and could not make while it was copied from
+                        # ``row.scan_id``.
+                        source_scan_id=row.source_scan_id or row.scan_id,
                     )
                 )
 

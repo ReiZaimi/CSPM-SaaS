@@ -246,7 +246,8 @@ scope_id                    VARCHAR(200)
 
 tenant_id                   VARCHAR(64) — NULL until consent callback
 service_principal_object_id VARCHAR(64) — NULL until Graph lookup
-role_version                VARCHAR(16) — "v1"
+role_version                VARCHAR(16) — the deployed role, read back from
+                            Azure rather than stamped once (AZURE_INTEGRATION.md)
 
 consent_status              VARCHAR(16) — PENDING / GRANTED / REVOKED
 consented_at                TIMESTAMP

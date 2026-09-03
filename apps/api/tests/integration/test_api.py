@@ -843,6 +843,150 @@ class TestSubscriptionDiscovery:
         )
 
 
+class TestRecheckingAccess:
+    """What the access panel's button has to actually do.
+
+    Reported from a live tenant: the customer redeployed the scanner role, the
+    checks it enables started working, and the connection page went on saying
+    "v2, behind (v5)" with the redeploy banner up. Two things were wrong at
+    once. Nothing ever wrote ``role_version`` back after the row was created,
+    and "Re-check access" refetched the connection -- whose only probe runs
+    while a connection is *unverified*, so on a working connection it re-read
+    the same row and repainted the same answer.
+    """
+
+    async def _connection(self, org_id: uuid.UUID) -> uuid.UUID:
+        from datetime import UTC, datetime
+
+        from app.core.db import service_session
+        from app.core.enums import (
+            CloudAccountStatus,
+            ConnectionScope,
+            ConsentStatus,
+            Provider,
+        )
+        from app.models.cloud_connection import CloudConnection
+
+        async with service_session() as session:
+            connection = CloudConnection(
+                organization_id=org_id,
+                provider=Provider.AZURE,
+                name="prod",
+                scope_type=ConnectionScope.SUBSCRIPTION,
+                scope_id="00000000-0000-0000-0000-000000000001",
+                role_version="v2",
+                tenant_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                service_principal_object_id="99999999-8888-7777-6666-555555555555",
+                consent_status=ConsentStatus.GRANTED,
+                consented_at=datetime.now(UTC),
+                rbac_verified_at=datetime.now(UTC),
+                status=CloudAccountStatus.ACTIVE,
+            )
+            session.add(connection)
+            await session.commit()
+            return connection.id
+
+    @staticmethod
+    def _azure(monkeypatch, actions: tuple[str, ...]) -> None:
+        """Azure, reduced to the calls re-checking makes: does the read still
+        work, and which definitions is CloudGuard's principal assigned."""
+        definition_id = "/subscriptions/x/providers/Microsoft.Authorization/roleDefinitions/r"
+
+        class FakeArm:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+            async def list_subscriptions(self) -> list[dict]:
+                return [
+                    {
+                        "subscriptionId": "00000000-0000-0000-0000-000000000001",
+                        "displayName": "Production",
+                    }
+                ]
+
+            async def list_resources(self, subscription_id: str) -> list[dict]:
+                return []
+
+            async def list_role_assignments_at_scope(self, scope: str) -> list[dict]:
+                return [
+                    {
+                        "properties": {
+                            "principalId": "99999999-8888-7777-6666-555555555555",
+                            "roleDefinitionId": definition_id,
+                        }
+                    }
+                ]
+
+            async def get_role_definition(self, definition_id_: str) -> dict:
+                return {
+                    "properties": {
+                        "permissions": [
+                            {"actions": list(actions), "notActions": []}
+                        ]
+                    }
+                }
+
+        from app.services import cloud_connections as service
+
+        monkeypatch.setattr(service, "ArmClient", FakeArm)
+        monkeypatch.setattr(
+            "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
+        )
+
+    async def test_a_redeployed_role_is_recorded_and_the_prompt_clears(
+        self, client, cleanup_orgs, monkeypatch
+    ) -> None:
+        from app.connectors.azure.rbac import ARM_READ_ACTIONS, ROLE_VERSION
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Recheck Ltd"))
+        cleanup_orgs.append(org_id)
+        connection_id = await self._connection(org_id)
+        self._azure(monkeypatch, ARM_READ_ACTIONS)
+
+        response = await client.post(
+            f"/api/v1/cloud-connections/{connection_id}/recheck",
+            headers=auth_header(user),
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["role_version"] == ROLE_VERSION
+        assert data["role_upgrade_available"] is False
+        assert data["degraded_categories"] == []
+
+    async def test_a_role_still_behind_still_says_so(
+        self, client, cleanup_orgs, monkeypatch
+    ) -> None:
+        """The other direction, and the reason the probe is not optimistic: a
+        customer who has not redeployed yet must still be told which checks
+        cannot run, with the same words as before they pressed the button."""
+        from app.connectors.azure.rbac import ROLE_HISTORY
+
+        user = uuid.uuid4()
+        org_id = uuid.UUID(await make_org(client, user, "Behind Ltd"))
+        cleanup_orgs.append(org_id)
+        connection_id = await self._connection(org_id)
+        self._azure(monkeypatch, ROLE_HISTORY["v2"])
+
+        response = await client.post(
+            f"/api/v1/cloud-connections/{connection_id}/recheck",
+            headers=auth_header(user),
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["role_version"] == "v2"
+        assert data["role_upgrade_available"] is True
+        assert data["degraded_categories"] == ["database", "posture", "secrets"]
+
+
 class TestAssetList:
     """What the inventory endpoint has to carry.
 

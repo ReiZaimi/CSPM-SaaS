@@ -32,9 +32,11 @@ from app.connectors.azure.rbac import (
     ROLE_NAME,
     ROLE_VERSION,
     TemplateContext,
+    actions_granted_by,
     arm_template,
     categories_behind,
     role_is_current,
+    version_of_granted,
 )
 from app.connectors.base import ConnectionCheck
 from app.connectors.evidence import EvidenceCategory
@@ -497,11 +499,16 @@ def render_template(connection: CloudConnection) -> str:
             "principal to grant access to."
         )
 
+    # Rendered from the *current* role version, not the one recorded on this
+    # connection. Redeploying is how a customer gets the newer role, so a
+    # template stamped with their stale version deployed the current actions
+    # under the old role's name and definition id -- which then read back as
+    # still behind, and left "Redeploy the role" as a button that could be
+    # pressed forever without changing anything on this screen.
     context = TemplateContext(
         principal_id=connection.service_principal_object_id,
         scope_path=connection.scope_path,
         scope_type=connection.scope_type,
-        role_version=connection.role_version,
     )
     return arm_template(context)
 
@@ -556,6 +563,135 @@ def degraded_categories(connection: CloudConnection) -> dict[EvidenceCategory, s
         category: explanation
         for category in categories_behind(connection.role_version)
     }
+
+
+async def detect_role_version(connection: CloudConnection) -> str | None:
+    """Which role version Azure says is actually assigned, read from Azure.
+
+    ``role_version`` was stamped at creation and never written again, so the
+    column recorded which role a customer was *offered* on the day they
+    connected -- not which one they have. Redeploying therefore could not
+    change the access panel: the customer deployed v5, the row still said v2,
+    and both the "behind" line and the degraded-category banner stayed up for
+    good with no way to clear them.
+
+    Read from the assignments rather than from a version label, because the
+    label is not evidence. Every assignment CloudGuard's principal holds at the
+    connection's scope is resolved to its definition and the granted actions
+    unioned, which also makes the answer right for the customer who assigned
+    the built-in Reader instead of deploying the template at all.
+
+    Returns None when the question could not be answered -- no token, a failed
+    call, or a principal holding nothing this scanner recognises. None is not
+    "behind": it is "unknown", and the caller leaves the recorded version
+    alone rather than replacing a fact with a probe that did not land.
+    """
+    from app.connectors.azure.auth import TokenProvider
+
+    principal = connection.service_principal_object_id
+    scope = connection.scope_path
+    if connection.provider != Provider.AZURE or not principal or not scope:
+        return None
+    if not connection.tenant_id:
+        return None
+
+    try:
+        tokens = TokenProvider(connection.tenant_id)
+        async with ArmClient(tokens) as arm:
+            assignments = await arm.list_role_assignments_at_scope(scope)
+            definition_ids = {
+                str((a.get("properties") or {}).get("roleDefinitionId") or "")
+                for a in assignments
+                if str((a.get("properties") or {}).get("principalId") or "").lower()
+                == principal.lower()
+            }
+            definition_ids.discard("")
+            if not definition_ids:
+                return None
+
+            granted: set[str] = set()
+            for definition_id in sorted(definition_ids):
+                definition = await arm.get_role_definition(definition_id)
+                permissions = (definition.get("properties") or {}).get("permissions") or []
+                granted |= actions_granted_by(permissions)
+    except Exception as exc:
+        log.warning(
+            "azure.role_version_probe_failed",
+            connection_id=str(connection.id),
+            error=str(exc),
+        )
+        return None
+
+    return version_of_granted(granted)
+
+
+async def refresh_role_version(
+    session: AsyncSession, connection: CloudConnection
+) -> str | None:
+    """Record what the deployed role actually grants. Returns the new version.
+
+    Returns None when nothing changed, so a caller can tell "checked, same
+    answer" from "checked, and this connection just gained the checks it was
+    missing".
+    """
+    detected = await detect_role_version(connection)
+    if detected is None or detected == connection.role_version:
+        return None
+
+    previous = connection.role_version
+    connection.role_version = detected
+    await commit_unless_externally_managed(session)
+    log.info(
+        "azure.role_version_changed",
+        connection_id=str(connection.id),
+        previous=previous,
+        detected=detected,
+    )
+    return detected
+
+
+async def recheck_access(
+    session: AsyncSession, tenant: TenantContext, connection_id: UUID
+) -> tuple[CloudConnection, list[CloudAccount]]:
+    """Ask Azure again what CloudGuard is allowed to do here.
+
+    What "Re-check access" claimed to do all along. It refetched the
+    connection, and the only probe on that path runs while a connection is
+    *unverified* -- so on a working connection the button re-read the same row
+    and repainted the same three lines, including a role version nothing had
+    looked at since the day it was created.
+
+    Two questions, because the panel states two answers: whether the read
+    still works, and which role it works through. A probe that fails leaves
+    the recorded state alone -- one refused call is not proof access is gone,
+    and ``check_access_revoked`` is where that question is asked deliberately.
+    """
+    connection, subscriptions = await get_connection_with_subscriptions(
+        session, tenant, connection_id
+    )
+
+    if connection.consent_status != ConsentStatus.GRANTED:
+        return await try_auto_validate(session, connection), subscriptions
+
+    check = await _probe_silently(connection)
+    if check.ok:
+        connection.rbac_verified_at = datetime.now(UTC)
+        if connection.status == CloudAccountStatus.PENDING:
+            connection.status = CloudAccountStatus.ACTIVE
+            connection.status_detail = "Connection verified."
+        await commit_unless_externally_managed(session)
+
+    await refresh_role_version(session, connection)
+
+    # A connection verified by this call has never discovered anything, and the
+    # page it answers stops polling as soon as it reports itself ready.
+    if connection.rbac_verified_at and not connection.last_discovery_at:
+        await _auto_discover(session, connection)
+        _, subscriptions = await get_connection_with_subscriptions(
+            session, tenant, connection_id
+        )
+
+    return connection, subscriptions
 
 
 async def set_scan_schedule(
@@ -691,6 +827,14 @@ async def try_auto_validate(
     # Auto-discover subscriptions once validated
     if connection.rbac_verified_at and not connection.last_discovery_at:
         await _auto_discover(session, connection)
+
+    # A role believed to be behind is re-read on each detail request, so a
+    # customer who redeploys and comes back to the page finds the banner gone
+    # without having to press anything. Costs one ARM listing, and only while
+    # the connection is behind: once the current role is recorded, nothing
+    # here asks again.
+    if role_upgrade_available(connection):
+        await refresh_role_version(session, connection)
 
     return connection
 

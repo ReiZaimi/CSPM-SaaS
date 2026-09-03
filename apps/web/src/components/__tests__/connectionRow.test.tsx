@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -175,6 +175,47 @@ describe("a connection row", () => {
     await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
 
     expect(await screen.findByText("new since last read")).toBeInTheDocument();
+  });
+
+  it("re-checks access by asking Azure, not by re-reading the same row", async () => {
+    // Reported from a live tenant: the customer redeployed the role and the
+    // panel went on saying "behind". `refetch()` was the whole of the button,
+    // and the GET only probes a connection that is not verified yet -- so on a
+    // working connection it repainted the answer it already had.
+    const behind = connection({
+      role_version: "v2",
+      role_required_version: "v5",
+      role_upgrade_available: true,
+      degraded_categories: ["database", "secrets"],
+      template_url: "https://portal.azure.com/#create/Microsoft.Template/uri/x",
+    } as Partial<CloudConnection>);
+    const post = vi.spyOn(api, "post").mockResolvedValue({
+      data: {
+        ...behind,
+        role_version: "v5",
+        role_upgrade_available: false,
+        degraded_categories: [],
+      },
+      meta: {},
+    } as never);
+    mount(behind);
+
+    await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
+    expect(
+      await screen.findByText(/some checks cannot run until the role is redeployed/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /re-check access/i }));
+
+    expect(post).toHaveBeenCalledWith("/api/v1/cloud-connections/c1/recheck");
+    // And the panel is repainted from what Azure said, which is the half the
+    // customer could not get to at all.
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/some checks cannot run until the role is redeployed/i),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/v5, verified/i)).toBeInTheDocument();
   });
 
   it("scans the connection through one of its scannable subscriptions", async () => {

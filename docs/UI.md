@@ -212,6 +212,35 @@ Three things that follow from this and are easy to get wrong:
 
 ---
 
-## 5. Onboarding
+## 5. When the app itself fails
+
+Three failures are the client's own rather than any page's, and each is a
+production condition that does not exist in development — where modules are
+served from a running dev server, nothing redeploys under an open tab, and the
+API is on localhost and either answers or refuses at once.
+
+**A thrown error must not become a blank page.** React unmounts the whole tree
+when a render throws and nothing catches it. There is a boundary at the root and
+a second around the router's outlet, so a page that fails leaves the reader with
+the navigation they arrived by. It says, in as many words, that nothing about
+their environment has changed — an error screen in a security product is read as
+a statement about the cloud unless it says otherwise.
+
+**A release under an open tab is not an error.** Every page is a dynamic import,
+and a deploy replaces the hashed files an open tab was going to fetch. The
+boundary recognises that failure and reloads once, guarded in session storage
+against a loop.
+
+**Nothing may spin for ever.** Requests carry a timeout (`lib/api.ts`), because
+neither `fetch` nor TanStack Query has one, and a host that accepts a connection
+then goes quiet would otherwise leave the query loading until the tab closes. A
+401 clears the token so the router sends the reader to sign in; a 403 does not,
+because a viewer refused a write is signed in and should stay signed in.
+
+See `DECISIONS.md` §66.
+
+---
+
+## 6. Onboarding
 
 See `AZURE_INTEGRATION.md` §3 for the full onboarding flow and the connection-screen copy.

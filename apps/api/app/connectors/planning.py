@@ -32,6 +32,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from app.connectors.evidence import EvidenceKey, ProviderEndpoint
 
@@ -51,6 +52,12 @@ class CarriedReading:
     collected_at: datetime
     item_count: int = 0
     permissions: tuple[str, ...] = ()
+    # Which scan actually read the provider. Carried alongside the moment,
+    # because "when" and "by which reading" are two different questions and a
+    # citation needs both: the scan reusing this reading records its own id on
+    # every row it writes, so without this the provenance trail says the reuse
+    # took the reading.
+    source_scan_id: UUID | None = None
     # The calls the *original* read made. A carried reading answers "what was
     # this a reading of" with the contract it was actually taken under, which
     # is not necessarily the one the collector would use today.

@@ -1845,6 +1845,103 @@ class TestOrchestration:
             scan = await session.get(Scan, scan_id)
         assert scan.status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL)
 
+    async def test_a_worker_that_lost_its_step_settles_nothing(
+        self, replay, connected_account
+    ) -> None:
+        """The half of the lease that was missing, held against real SQL.
+
+        A worker paused past its lease has not died. Its step is reclaimed and
+        re-run, and then it comes back and marks the step SUCCEEDED -- while
+        another worker is still collecting the same subscription. ANALYZE waits
+        on collection *settling*, so the scan interpreted a subscription that
+        was still being written and reported it as a complete reading.
+
+        The attempt number is the fence: every settle is conditional on the row
+        still carrying the claim it was made under.
+        """
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+        # The first worker claims, then stops reporting.
+        async with service_session() as session:
+            steps = await orchestrator.steps_for(session, scan_id)
+            plan_step = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+            claimed = await orchestrator.claim(session, [plan_step.id])
+            assert claimed
+            await session.execute(
+                text("UPDATE scan_steps SET lease_until = :t WHERE id = :s"),
+                {"t": datetime.now(UTC) - timedelta(minutes=30), "s": plan_step.id},
+            )
+            await session.commit()
+            lost_attempt = 1
+
+        # The reaper returns it, and a second worker takes it.
+        async with service_session() as session:
+            await orchestrator.reap_expired_steps(session)
+        async with service_session() as session:
+            await orchestrator.claim(session, [plan_step.id])
+
+        # The first worker comes back and tries to settle its own attempt.
+        async with service_session() as session:
+            step = await session.get(ScanStep, plan_step.id)
+            settled = await orchestrator.finish(
+                session, step, ScanStepStatus.SUCCEEDED, attempt=lost_attempt
+            )
+        assert settled is False
+
+        async with service_session() as session:
+            step = await session.get(ScanStep, plan_step.id)
+        assert step.status == ScanStepStatus.RUNNING, (
+            "the step the second worker is running was settled by the first"
+        )
+        assert step.attempt == 2
+
+    async def test_a_renewal_from_a_worker_that_lost_its_step_is_refused(
+        self, replay, connected_account
+    ) -> None:
+        """Unfenced, the returning worker kept the lease of a step somebody else
+        was running alive -- so the mechanism that reports a lost step was the
+        thing hiding that two workers had it."""
+        org_id, account_id = connected_account
+        async with service_session() as session:
+            scan = Scan(
+                organization_id=org_id,
+                cloud_account_id=account_id,
+                status=ScanStatus.QUEUED,
+            )
+            session.add(scan)
+            await session.commit()
+            scan_id = scan.id
+            await orchestrator.create_initial_steps(session, scan)
+            await session.commit()
+
+        async with service_session() as session:
+            steps = await orchestrator.steps_for(session, scan_id)
+            plan_step = next(s for s in steps if s.kind == ScanStepKind.PLAN)
+            await orchestrator.claim(session, [plan_step.id])
+
+        async with service_session() as session:
+            assert await orchestrator.renew(session, plan_step.id, 1) is True
+            # A second claim, as the reaper and another worker would produce.
+            await session.execute(
+                text(
+                    "UPDATE scan_steps SET attempt = 2 WHERE id = :s"
+                ),
+                {"s": plan_step.id},
+            )
+            await session.commit()
+            assert await orchestrator.renew(session, plan_step.id, 1) is False
+
     async def test_a_reaped_step_is_not_a_reaped_scan(
         self, replay, connected_account
     ) -> None:
@@ -4444,3 +4541,103 @@ class TestRetention:
 
         assert first["snapshots"] > 0
         assert second["snapshots"] == 0
+
+    async def test_a_ceiling_caps_what_one_subscription_can_accumulate(
+        self, replay, connected_account
+    ) -> None:
+        """Ranked in PostgreSQL, so this is the test that matters.
+
+        A window is a policy about time and storage is not spent in time: a
+        customer scanning every half hour keeps 1,440 captures per subscription
+        inside a 30-day window, and one scanning weekly keeps 4. The ceiling is
+        what makes the two comparable, and the ranking behind it has to agree
+        with every other place that decides which capture is the newest.
+        """
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        newest = await fetch(
+            "SELECT id FROM cloud_snapshots WHERE organization_id = :o "
+            "AND cloud_account_id IS NOT NULL "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            {"o": org_id},
+        )
+
+        async with service_session() as session:
+            # Everything is well inside the window: the age limit must not be
+            # what does the work here.
+            pruned = await retention.prune_snapshots(
+                session, org_id, keep_days=30, keep_per_scope=1
+            )
+            await session.commit()
+
+        survivors = await fetch(
+            "SELECT id FROM cloud_snapshots WHERE organization_id = :o "
+            "AND cloud_account_id IS NOT NULL",
+            {"o": org_id},
+        )
+        directories = await fetch(
+            "SELECT id FROM cloud_snapshots WHERE organization_id = :o "
+            "AND cloud_account_id IS NULL",
+            {"o": org_id},
+        )
+
+        # Four, not two: each scan of this connection reads the subscription and
+        # the tenant directory, so three scans leave two series of three and the
+        # ceiling takes two from each.
+        assert pruned == 4
+        assert [row[0] for row in survivors] == [newest[0][0]]
+        assert len(directories) == 1
+
+    async def test_the_ceiling_counts_each_subscription_on_its_own(
+        self, replay, connected_tenant
+    ) -> None:
+        """Two subscriptions and a directory are three series, not one pile.
+
+        Counted together, a tenant of fifty subscriptions would keep a ceiling's
+        worth between them -- which for most of them is nothing, and the newest
+        capture of a scope is the one thing retention may never take.
+        """
+        from app.services import retention
+
+        org_id, connection_id = connected_tenant
+        await run_connection_scan(org_id, connection_id)
+        await run_connection_scan(org_id, connection_id)
+
+        async with service_session() as session:
+            pruned = await retention.prune_snapshots(
+                session, org_id, keep_days=30, keep_per_scope=1
+            )
+            await session.commit()
+
+        remaining = await fetch(
+            "SELECT cloud_account_id, connection_id, count(*) FROM cloud_snapshots "
+            "WHERE organization_id = :o GROUP BY cloud_account_id, connection_id",
+            {"o": org_id},
+        )
+
+        # Two subscriptions and one directory, each down to its newest capture.
+        assert pruned == 3
+        assert len(remaining) == 3
+        assert all(row[2] == 1 for row in remaining)
+
+    async def test_no_ceiling_leaves_the_window_in_charge(
+        self, replay, connected_account
+    ) -> None:
+        """The prune runs daily against every tenant, so the extra ranking scan
+        is only paid for where a ceiling is actually configured."""
+        from app.services import retention
+
+        org_id, account_id = connected_account
+        await run_scan(org_id, account_id)
+        await run_scan(org_id, account_id)
+
+        async with service_session() as session:
+            pruned = await retention.prune_snapshots(session, org_id, keep_days=30)
+            await session.commit()
+
+        assert pruned == 0

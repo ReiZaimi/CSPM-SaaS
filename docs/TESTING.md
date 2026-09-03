@@ -87,7 +87,7 @@ responses rather than calling a live tenant on every commit.
 apps/api    pytest -q                  # unit; no database needed
             pytest -q -m integration   # needs live PostgreSQL (CI provisions it)
             ruff check . && mypy app
-apps/web    npm test                   # vitest, 37 files
+apps/web    npm test                   # vitest, 43 files
             npm run typecheck && npm run lint && npm run build
 ```
 
