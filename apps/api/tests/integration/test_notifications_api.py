@@ -75,6 +75,16 @@ async def listed(client: AsyncClient, user: uuid.UUID) -> list[dict]:
     return response.json()["data"]
 
 
+async def subjects(client: AsyncClient, user: uuid.UUID) -> list[str]:
+    """Which listings this reader is still being told about.
+
+    Read back off the title rather than ``subject_id``, which the API does not
+    serialize: it is the uniqueness key the derivation writes with, and a
+    listing name a reader never asked about is not part of the contract.
+    """
+    return [row["title"].split(" could not")[0] for row in await listed(client, user)]
+
+
 async def test_a_dismissed_notification_stops_being_listed(client, cleanup_orgs) -> None:
     user = uuid.uuid4()
     org_id = await create_org_as(user, "Bell Ltd")
@@ -87,8 +97,7 @@ async def test_a_dismissed_notification_stops_being_listed(client, cleanup_orgs)
     )
 
     assert response.status_code == 200, response.text
-    remaining = await listed(client, user)
-    assert [row["subject_id"] for row in remaining] == ["storage_accounts"]
+    assert await subjects(client, user) == ["storage_accounts"]
 
 
 async def test_dismissing_is_a_decision_about_one_reader(client, cleanup_orgs) -> None:
@@ -109,7 +118,7 @@ async def test_dismissing_is_a_decision_about_one_reader(client, cleanup_orgs) -
     )
 
     assert await listed(client, reader) == []
-    assert [row["subject_id"] for row in await listed(client, colleague)] == ["users"]
+    assert await subjects(client, colleague) == ["users"]
 
 
 async def test_clearing_empties_the_panel_for_the_person_asking(
@@ -144,7 +153,7 @@ async def test_clearing_says_nothing_about_what_arrives_next(
 
     await announce(org_id, "key_vaults", 1)
 
-    assert [row["subject_id"] for row in await listed(client, user)] == ["key_vaults"]
+    assert await subjects(client, user) == ["key_vaults"]
 
 
 async def test_dismissing_something_that_is_not_there_is_a_404(
