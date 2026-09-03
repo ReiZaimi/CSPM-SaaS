@@ -170,6 +170,18 @@ cannot support.
 
 **Connection card** — per connection: the two grants, discovered subscriptions and their scope, a line naming where automatic scanning is now set and what it is set to, and **React to changes** (opens CloudGuard's webhook and hands over the `az eventgrid` command per subscription). The change control has to say that turning it on wires nothing up: creating that subscription is a write in the customer's tenant, and CloudGuard holds no write permission anywhere.
 
+**Removing a connection is a dialog, not a panel.** It is the one irreversible
+action in the product, and the confirmation is long — the three `az` commands
+that revoke access, why CloudGuard cannot run them itself, and a probe that asks
+Azure whether they worked. Expanded inside the row it pushed the rest of the
+connection off screen while somebody was deciding whether to delete an
+environment. As a modal it takes focus, Escape and "Keep it" are the same safe
+answer, and the revocation commands are fetched only once the dialog is open —
+a page of six connections must not ask six times for commands nobody wanted to
+see. The commands stay *inside* the removal flow because that is the only moment
+the customer is thinking about ending this, and deleting the connection destroys
+the principal id and scope needed to write them.
+
 ---
 
 ## 4. Colour

@@ -249,22 +249,23 @@ export function ConnectionRow({
               onRecheck={() => recheck.mutate()}
             />
 
-            {confirmingRemove ? (
-              <RemoveConfirm
-                connectionId={connection.id}
-                busy={remove.isPending}
-                onConfirm={() => remove.mutate()}
-                onCancel={() => setConfirmingRemove(false)}
-              />
-            ) : (
-              <Button
-                variant="ghost"
-                className="text-critical hover:bg-critical-bg"
-                onClick={() => setConfirmingRemove(true)}
-              >
-                {t.connection.remove}
-              </Button>
-            )}
+            <Button
+              variant="ghost"
+              className="text-critical hover:bg-critical-bg"
+              onClick={() => setConfirmingRemove(true)}
+            >
+              {t.connection.remove}
+            </Button>
+            {/* The confirmation is a modal, so the button stays where it is
+                rather than being replaced by a panel that pushed the rest of
+                the connection off screen. */}
+            <RemoveConfirm
+              connectionId={connection.id}
+              open={confirmingRemove}
+              busy={remove.isPending}
+              onOpenChange={setConfirmingRemove}
+              onConfirm={() => remove.mutate()}
+            />
           </div>
 
           {error && (

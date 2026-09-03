@@ -218,6 +218,84 @@ describe("a connection row", () => {
     expect(screen.getByText(/v5, verified/i)).toBeInTheDocument();
   });
 
+  it("asks about removal in a dialog, without moving the rest of the row", async () => {
+    // The confirmation is long -- three revocation commands, why CloudGuard
+    // cannot run them, and a probe -- and expanded in place it pushed the rest
+    // of the connection off screen while somebody decided whether to delete an
+    // environment.
+    vi.spyOn(api, "get").mockImplementation((path: string) =>
+      Promise.resolve(
+        path.endsWith("/revocation")
+          ? {
+              data: {
+                principal_id: "sp-1",
+                scope_path: "/subscriptions/x",
+                why_manual: "CloudGuard holds read-only access.",
+                steps: [
+                  {
+                    title: "Remove the scanner role assignment",
+                    detail: "Ends CloudGuard's ability to read Azure resources.",
+                    command: "az role assignment delete --assignee sp-1",
+                  },
+                ],
+              },
+              meta: {},
+            }
+          : { data: connection(), meta: {} },
+      ) as never,
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <ConnectionRow connection={connection()} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
+    // Nothing is asked for until the reader asks: a page of six connections
+    // must not fetch six sets of revocation commands nobody wanted to see.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove connection/i }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/remove this connection/i);
+    expect(await screen.findByText(/az role assignment delete/)).toBeInTheDocument();
+    // The row is still there behind it rather than replaced -- and inert, which
+    // is what a modal is for: the access panel's text is in the document, and
+    // its controls are out of the accessibility tree while the dialog is open.
+    expect(screen.getByText("None, by design")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /re-check access/i })).toBeNull();
+  });
+
+  it("closes on the safe answer, and never on a stray keypress", async () => {
+    // Escape and "Keep it" are the same action, and the destructive button is
+    // not the one either of them reaches.
+    vi.spyOn(api, "get").mockResolvedValue({ data: connection(), meta: {} } as never);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <ConnectionRow connection={connection()} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /show this connection/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /remove connection/i }),
+    );
+    await screen.findByRole("dialog");
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("scans the connection through one of its scannable subscriptions", async () => {
     // A scan is connection-scoped server-side: the worker resolves what sits
     // beneath, so one scannable subscription names the target for all of them.
