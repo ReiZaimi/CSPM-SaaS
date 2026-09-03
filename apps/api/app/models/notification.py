@@ -71,6 +71,37 @@ class Notification(UUIDPrimaryKey, TenantOwned, Base):
     )
 
 
+class NotificationDismissal(Base):
+    """One person deciding they are done with one notification.
+
+    Per reader rather than per organization, for the same reason read state is:
+    what happened happened to the estate, and whether somebody wants to keep
+    seeing it is a fact about them. A dismissal that removed the row for
+    everybody would let one person delete another's news.
+
+    Kept apart from the watermark rather than folded into it. Reading is a
+    boundary in time and dismissing is a decision about one row -- a reader who
+    dismisses the noisiest item still expects the rest to arrive.
+    """
+
+    __tablename__ = "notification_dismissals"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    notification_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("notifications.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class NotificationRead(Base):
     """How far one person has read, as a watermark rather than per row.
 

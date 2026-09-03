@@ -1,8 +1,9 @@
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 
 from app.core.deps import DbSession, Tenant
-from app.core.errors import envelope
+from app.core.errors import NotFound, envelope
 from app.schemas.notification import NotificationOut
 from app.services import notifications as service
 
@@ -51,3 +52,39 @@ async def mark_read(session: DbSession, tenant: Tenant) -> dict:
     )
     await session.commit()
     return envelope({"read_through": read_through.isoformat()})
+
+
+@router.delete("/{notification_id}")
+async def dismiss_notification(
+    notification_id: UUID, session: DbSession, tenant: Tenant
+) -> dict:
+    """Stop showing one notification to the person asking.
+
+    A dismissal rather than a delete. What happened belongs to the organization
+    and everybody in it reads the same rows, so removing one would be a reader
+    deciding what their colleagues get told. DELETE all the same: from the
+    caller's side the resource is their view of it, and that is what goes.
+
+    No role check, for the reason ``/read`` has none: a VIEWER who cannot put
+    down something they have already read would be shown it for ever.
+    """
+    dismissed = await service.dismiss(
+        session, tenant.organization_id, tenant.user.id, notification_id
+    )
+    if not dismissed:
+        raise NotFound()
+    await session.commit()
+    return envelope({"dismissed": str(notification_id)})
+
+
+@router.delete("")
+async def dismiss_all_notifications(session: DbSession, tenant: Tenant) -> dict:
+    """Clear the panel for the person asking.
+
+    Distinct from ``/read``, which moves a watermark and leaves everything in
+    place. This is the reader saying they are done with what is there, and it
+    says nothing about what arrives next.
+    """
+    count = await service.dismiss_all(session, tenant.organization_id, tenant.user.id)
+    await session.commit()
+    return envelope({"dismissed": count})

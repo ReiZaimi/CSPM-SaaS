@@ -58,6 +58,7 @@ GET    /rules                              GET    /rules/{rule_id}
 GET    /compliance                         GET    /compliance/{framework_id}
 
 GET    /notifications                      POST   /notifications/read
+DELETE /notifications                      DELETE /notifications/{id}
 
 GET    /dashboard
 GET    /reports/{kind}?format=pdf|html&days=30&sections=a,b
@@ -152,7 +153,22 @@ finding would be a filter rule inside a fortnight.
 cannot say three above a panel showing two. `POST /notifications/read` moves the
 caller's watermark to *now* rather than to the newest stored row — the sweep
 runs on a timer, and reading to the newest row would mark something seen before
-it was written. Rows are derived by a periodic job from `finding_events`,
+it was written.
+
+The two `DELETE`s dismiss rather than delete, and the distinction is the whole
+design. A notification belongs to the organization — what happened, happened —
+so removing the row would be one reader deciding what their colleagues get told.
+Both write a per-reader dismissal instead, and the listing excludes them before
+its limit rather than after, so a reader who puts down five still gets a full
+panel. Dismissing is also not marking read: the watermark is a boundary in time
+that moves on its own when the panel opens, while this is somebody saying they
+are done with one row, and it says nothing about what arrives next.
+
+Coverage-drop notifications carry CloudGuard's own sentence and never the
+provider's. The collector's explanation — the remedy, who can apply it, every
+permission a tenant did not grant — is the right paragraph on `/scans`, which is
+where the row links; in a bell it filled the panel with one item and pushed the
+rest out of sight. Rows are derived by a periodic job from `finding_events`,
 `evidence` and the graph, never written by the scanner: one source of truth
 about what happened, and a replay generates nothing because it writes no finding
 events.

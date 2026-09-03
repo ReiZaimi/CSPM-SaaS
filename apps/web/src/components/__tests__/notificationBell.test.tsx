@@ -33,15 +33,25 @@ const ROWS = [
 ];
 
 let posted: string[] = [];
+let deleted: string[] = [];
 
 function mount(rows: object[], unread: number, ok = true) {
   posted = [];
+  deleted = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (init?.method === "POST") {
         posted.push(url);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: {}, error: null, meta: {} }),
+        } as Response;
+      }
+      if (init?.method === "DELETE") {
+        deleted.push(url);
         return {
           ok: true,
           status: 200,
@@ -137,6 +147,44 @@ describe("the notification bell", () => {
 
     expect(await screen.findByText(/Nothing new/)).toBeInTheDocument();
     expect(screen.getByText(/verified fixes/)).toBeInTheDocument();
+  });
+
+  it("puts one row down without following its link", async () => {
+    // The button sits beside the link rather than inside it. Nested in the
+    // anchor it would be invalid markup, and the browser's answer to a click
+    // meant for the button would be to navigate.
+    mount(ROWS, 2);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Dismiss: Storage account/ }),
+    );
+
+    await waitFor(() =>
+      expect(deleted).toEqual([expect.stringContaining("/notifications/n-1")]),
+    );
+  });
+
+  it("clears the whole panel on request", async () => {
+    mount(ROWS, 2);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clear all" }));
+
+    await waitFor(() =>
+      expect(
+        deleted.some((url) => url.endsWith("/api/v1/notifications")),
+      ).toBe(true),
+    );
+  });
+
+  it("offers nothing to clear when there is nothing there", async () => {
+    mount([], 0);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
+
+    await screen.findByText(/Nothing new/);
+    expect(screen.queryByRole("button", { name: "Clear all" })).toBeNull();
   });
 
   it("renders nothing at all when the request fails", async () => {

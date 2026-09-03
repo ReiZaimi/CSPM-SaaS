@@ -25,14 +25,19 @@ worse layout.
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import literal, select
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import FindingEvent, NotificationKind, TaskOutcome
 from app.models.finding import Finding
 from app.models.history import FindingEventRecord
-from app.models.notification import Notification, NotificationRead
+from app.models.notification import (
+    Notification,
+    NotificationDismissal,
+    NotificationRead,
+)
 from app.models.resource import ResourceRecord
 from app.models.scan import Evidence
 from app.services import graph as graph_service
@@ -107,6 +112,19 @@ async def _write(
         )
     )
     return int(result.rowcount or 0)
+
+
+def _reading_name(evidence_key: str) -> str:
+    """An evidence key as a person would say it.
+
+    ``conditional_access_policies`` is the name of a collection task and the
+    right word everywhere the coverage report is read. In a sentence somebody is
+    handed unprompted it reads as a leaked identifier, so the underscores go and
+    the first letter comes up. Nothing is translated: the key still has to be
+    findable on the scan page it links to.
+    """
+    words = evidence_key.replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else evidence_key
 
 
 async def _reachable_findings(
@@ -266,20 +284,27 @@ async def _coverage_drops(
             subject_id=row.evidence_key,
             event_at=row.collected_at,
             title=(
-                f"Only part of {row.evidence_key} could be read"
+                f"Only part of {_reading_name(row.evidence_key)} could be read"
                 if partial
-                else f"{row.evidence_key} could not be read"
+                else f"{_reading_name(row.evidence_key)} could not be read"
             ),
+            # CloudGuard's own sentence, never the provider's.
+            #
+            # This used to carry ``row.detail``, which is the collector's full
+            # explanation -- the remedy, who can apply it, and every permission
+            # a tenant did not grant. That paragraph is right where somebody
+            # went to ask what went wrong, and wrong in a bell: it filled the
+            # panel with one item and buried the others behind a scroll.
+            #
             # PARTIAL is not a lesser failure. A listing missing an unknown
             # number of entries cannot support "none of them are public", which
             # is the same as not having read it -- and the sentence says so
             # rather than leaving a reader to infer it from a word.
             detail=(
-                row.detail
-                or (
-                    "Checks that depend on it have no verdict, so the score "
-                    "covers less of your estate than it did."
-                )
+                "Part of the listing is missing, so checks that read it have "
+                "no verdict."
+                if partial
+                else "Checks that read it have no verdict until it is read again."
             ),
             link="/scans",
         )
@@ -297,11 +322,21 @@ async def unread_for(
     panel showing two is the kind of thing people stop trusting the whole
     feature over.
     """
+    put_down = select(NotificationDismissal.notification_id).where(
+        NotificationDismissal.organization_id == organization_id,
+        NotificationDismissal.user_id == user_id,
+    )
     rows = list(
         (
             await session.execute(
                 select(Notification)
-                .where(Notification.organization_id == organization_id)
+                .where(
+                    Notification.organization_id == organization_id,
+                    # Excluded before the limit, not after: filtering a page of
+                    # twenty would show a reader who dismissed five a panel of
+                    # fifteen with nothing older filling the gap.
+                    Notification.id.notin_(put_down),
+                )
                 .order_by(Notification.event_at.desc())
                 .limit(limit)
             )
@@ -350,3 +385,71 @@ async def mark_read(
         )
     )
     return read_through
+
+
+# --------------------------------------------------------------- putting down
+async def dismiss(
+    session: AsyncSession,
+    organization_id: UUID,
+    user_id: UUID,
+    notification_id: UUID,
+) -> bool:
+    """Stop showing one notification to one reader.
+
+    False when the organization holds no such notification, so the route can say
+    404 rather than silently recording a dismissal of nothing -- which would
+    also be how a wrong id from another tenant looked like success.
+
+    The notification itself is never deleted. It is what happened, it is shared
+    by everybody in the organization, and one reader being done with it is not
+    an argument that it did not happen.
+    """
+    exists = (
+        await session.execute(
+            select(Notification.id).where(
+                Notification.id == notification_id,
+                Notification.organization_id == organization_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        return False
+
+    await session.execute(
+        insert(NotificationDismissal)
+        .values(
+            organization_id=organization_id,
+            user_id=user_id,
+            notification_id=notification_id,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["organization_id", "user_id", "notification_id"]
+        )
+    )
+    return True
+
+
+async def dismiss_all(
+    session: AsyncSession, organization_id: UUID, user_id: UUID
+) -> int:
+    """Clear everything this reader currently holds.
+
+    One INSERT ... SELECT rather than a read followed by a loop: the set to
+    dismiss is defined by a query, and reading it into Python first would let a
+    notification written between the two arrive already dismissed.
+    """
+    result = await session.execute(
+        insert(NotificationDismissal)
+        .from_select(
+            ["organization_id", "user_id", "notification_id"],
+            select(
+                Notification.organization_id,
+                literal(user_id, type_=PGUUID(as_uuid=True)),
+                Notification.id,
+            ).where(Notification.organization_id == organization_id),
+        )
+        .on_conflict_do_nothing(
+            index_elements=["organization_id", "user_id", "notification_id"]
+        )
+    )
+    return int(result.rowcount or 0)

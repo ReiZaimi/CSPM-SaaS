@@ -285,6 +285,50 @@ async def test_a_partial_reading_is_news_too(reachable) -> None:
     assert "part of" in session.written[0]["title"]
 
 
+async def test_a_coverage_drop_says_it_in_cloudguards_own_words(reachable) -> None:
+    """The provider's explanation belongs on the page this links to.
+
+    The collector's ``detail`` is the full account -- the remedy, who can apply
+    it, and every permission a tenant did not grant. It used to be copied
+    verbatim into the notification, where one item filled the panel and pushed
+    the rest of the news out of sight.
+    """
+    reachable(set())
+    provider_words = (
+        "Access denied. Admin consent for CloudGuard's directory permissions is "
+        "missing or incomplete. A Global Administrator must grant it under "
+        "Microsoft Entra ID > Enterprise applications > CloudGuard > Permissions."
+    )
+    session = FakeSession(
+        evidence=[
+            a_reading("conditional_access_policies", TaskOutcome.FAILED, provider_words)
+        ]
+    )
+
+    await service.derive(session, ORG)  # type: ignore[arg-type]
+
+    row = session.written[0]
+    assert provider_words not in (row["detail"] or "")
+    assert len(row["detail"]) < 120
+
+
+async def test_a_listing_is_named_as_a_person_would_say_it(reachable) -> None:
+    """``conditional_access_policies`` is the task's name and a leaked
+    identifier in a sentence somebody is handed unprompted."""
+    reachable(set())
+    session = FakeSession(
+        evidence=[a_reading("conditional_access_policies", TaskOutcome.FAILED)]
+    )
+
+    await service.derive(session, ORG)  # type: ignore[arg-type]
+
+    row = session.written[0]
+    assert row["title"] == "Conditional access policies could not be read"
+    # The key itself still keys the row, so the same failing listing is still
+    # announced once rather than once an hour.
+    assert row["subject_id"] == "conditional_access_policies"
+
+
 async def test_a_coverage_drop_is_keyed_on_the_listing_not_the_row(reachable) -> None:
     """So a listing failing on every scan is announced once, not hourly.
 

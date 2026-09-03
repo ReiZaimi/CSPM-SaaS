@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BellIcon, CircleCheckIcon, EyeOffIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  BellIcon,
+  CircleCheckIcon,
+  EyeOffIcon,
+  ShieldAlertIcon,
+  XIcon,
+} from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { AppNotification, NotificationKind } from "@/lib/types";
@@ -47,6 +53,21 @@ export function NotificationBell() {
 
   const markRead = useMutation({
     mutationFn: () => api.post("/api/v1/notifications/read"),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+  });
+
+  // Dismissing is not marking read. Read is a watermark in time and moves on
+  // its own the moment the panel opens; this is somebody saying they are done
+  // with a row, and it is the only thing that takes one out of the list.
+  const dismiss = useMutation({
+    mutationFn: (id: string) => api.del(`/api/v1/notifications/${id}`),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+  });
+
+  const clearAll = useMutation({
+    mutationFn: () => api.del("/api/v1/notifications"),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ["notifications"] }),
   });
@@ -114,11 +135,19 @@ export function NotificationBell() {
       </PopoverTrigger>
 
       <PopoverContent align="end" className="w-[min(24rem,calc(100vw-2rem))] p-0">
-        <div className="border-b px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
           <p className="text-sm font-medium">{t.notifications.title}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {t.notifications.subtitle}
-          </p>
+          {rows.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              onClick={() => clearAll.mutate()}
+              disabled={clearAll.isPending}
+            >
+              {t.notifications.clearAll}
+            </Button>
+          )}
         </div>
 
         {rows.length === 0 ? (
@@ -129,7 +158,11 @@ export function NotificationBell() {
           <ul className="max-h-96 divide-y overflow-y-auto">
             {rows.map((row) => (
               <li key={row.id}>
-                <Row row={row} onNavigate={() => setOpen(false)} />
+                <Row
+                  row={row}
+                  onNavigate={() => setOpen(false)}
+                  onDismiss={() => dismiss.mutate(row.id)}
+                />
               </li>
             ))}
           </ul>
@@ -140,26 +173,39 @@ export function NotificationBell() {
 }
 
 /**
- * One row. A link, never an action.
+ * One row: a link, and one way to put it down.
  *
- * Nothing is resolved, accepted or dismissed from here: those are decisions
- * about a finding, and a decision taken from a dropdown is one taken without
- * the evidence in front of you.
+ * Nothing is resolved or accepted from here -- those are decisions about a
+ * finding, and a decision taken from a dropdown is one taken without the
+ * evidence in front of you. Dismissing is not one of those: it is a decision
+ * about the panel, and it changes nothing about the estate.
+ *
+ * The dismiss button is a sibling of the link rather than a child of it. A
+ * button inside an anchor is invalid, and the browser's own answer to it --
+ * following the link on a click meant for the button -- is exactly the bug a
+ * reader would hit first.
  */
 function Row({
   row,
   onNavigate,
+  onDismiss,
 }: {
   row: AppNotification;
   onNavigate: () => void;
+  onDismiss: () => void;
 }) {
+  const t = useT();
   const body = (
-    <div className="flex gap-2.5 px-3 py-2.5">
+    <div className="flex gap-2.5 py-2.5 pl-3 pr-9">
       <KindIcon kind={row.kind} />
       <div className="min-w-0 flex-1">
         <p className="text-sm leading-snug text-foreground">{row.title}</p>
         {row.detail && (
-          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          // Two lines, and the rest is on the page this links to. A coverage
+          // failure carries the provider's whole explanation -- the remedy, who
+          // can apply it, every permission a tenant did not grant -- and one of
+          // those filled the panel and pushed the other news out of sight.
+          <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
             {row.detail}
           </p>
         )}
@@ -173,11 +219,29 @@ function Row({
     </div>
   );
 
-  if (!row.link) return body;
   return (
-    <Link to={row.link} onClick={onNavigate} className="block hover:bg-muted/60">
-      {body}
-    </Link>
+    <div className="relative">
+      {row.link ? (
+        <Link
+          to={row.link}
+          onClick={onNavigate}
+          className="block hover:bg-muted/60"
+        >
+          {body}
+        </Link>
+      ) : (
+        body
+      )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="absolute right-1 top-1.5 size-7 text-muted-foreground"
+        aria-label={t.notifications.dismissOne.replace("{title}", row.title)}
+        onClick={onDismiss}
+      >
+        <XIcon className="size-3.5" />
+      </Button>
+    </div>
   );
 }
 
