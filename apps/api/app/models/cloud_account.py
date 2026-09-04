@@ -53,8 +53,25 @@ class CloudAccount(UUIDPrimaryKey, TenantOwned, Timestamps, Base):
     )
     account_name: Mapped[str] = mapped_column(String(200), nullable=False)
 
+    # The trust boundary and the unit a scan reads. Azure vocabulary for a
+    # neutral pair: an AWS organization id and account id go in the same two
+    # columns, and a GCP organization and project would.
+    #
+    # Not renamed to ``provider_directory_id`` / ``provider_account_id``, which
+    # MULTI_CLOUD.md section 3 proposed. ``RawSnapshot.to_json`` writes these
+    # names into every stored capture, so renaming the columns without renaming
+    # the payload keys would leave two vocabularies, and renaming both would
+    # make every capture already taken unreplayable. The rename is worth doing
+    # against a migration of the stored snapshots, and is not worth doing
+    # inside the change that adds a second provider.
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     subscription_id: Mapped[str | None] = mapped_column(String(64))
+
+    # Provider-shaped identity for this account, mirroring the connection's.
+    # Empty for Azure, which needs nothing here.
+    provider_ref: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     consent_status: Mapped[ConsentStatus] = mapped_column(
         StrEnumType(ConsentStatus, 16), nullable=False, default=ConsentStatus.PENDING

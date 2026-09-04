@@ -30,6 +30,7 @@ cloud_accounts
   consented_scopes          JSONB
   consented_by_user_id
   rbac_verified_at          -- Reader role confirmed via a live test call
+  provider_ref              JSONB -- mirrors the connection's; empty for Azure
   status, last_scan_at, created_at, updated_at
 ```
 
@@ -200,6 +201,17 @@ cloud_connections          -- supersedes `cloud_accounts` as the unit a scan
   status, status_detail, last_discovery_at          -- separately consentable and
   scan_interval_hours        -- automatic scanning, off by default              -- separately revocable
   change_events_enabled, change_pending_since, last_change_event_at
+  provider_ref JSONB         -- what only one provider has a word for: the AWS
+                             -- scanner role's ARN and the external id its trust
+                             -- policy must require. A blob rather than columns
+                             -- because nothing neutral reads it -- tenant_id and
+                             -- scope_id are columns precisely because the
+                             -- scanner, the scheduler and the UI do. Holds no
+                             -- customer secret and must not start to
+                             -- (DECISIONS.md §70, migration 0034)
+  -- scope_type is one enum across all three clouds, named in each one's own
+  -- words: TENANT_ROOT / MANAGEMENT_GROUP / SUBSCRIPTION on Azure,
+  -- ORGANIZATION / ORGANIZATIONAL_UNIT / ACCOUNT on AWS
   -- role_version is read back from Azure rather than only stamped at creation.
   -- It records which role is *assigned*, resolved from the actions on the
   -- definitions the scanner's principal holds -- so redeploying the role

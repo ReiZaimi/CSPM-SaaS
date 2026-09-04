@@ -444,14 +444,30 @@ class ConnectionScope(StrEnum):
     """How much of a customer's cloud one connection covers.
 
     The choice is a real trade between coverage and least privilege, and it is
-    the customer's to make: TENANT_ROOT sees every subscription that exists now
-    or later and needs a correspondingly broad grant, while SUBSCRIPTION is the
-    narrowest thing that works. CloudGuard does not pick for them.
+    the customer's to make: the widest scope sees every account that exists now
+    or later and needs a correspondingly broad grant, while the narrowest is the
+    least that works. CloudGuard does not pick for them.
+
+    Three levels, three times over, because every cloud has the same shape --
+    a trust boundary, a grouping inside it, and the unit a scan actually reads::
+
+        Azure   TENANT_ROOT         MANAGEMENT_GROUP        SUBSCRIPTION
+        AWS     ORGANIZATION        ORGANIZATIONAL_UNIT     ACCOUNT
+
+    Named per provider rather than abstracted to "root / group / unit". The
+    reader of one of these rows is usually a support engineer matching it
+    against what the customer sees in a portal, and the portal says
+    "management group" or "organizational unit" -- an abstract name would be
+    accurate and would leave them translating (MULTI_CLOUD.md section 3).
     """
 
     TENANT_ROOT = "TENANT_ROOT"
     MANAGEMENT_GROUP = "MANAGEMENT_GROUP"
     SUBSCRIPTION = "SUBSCRIPTION"
+
+    ORGANIZATION = "ORGANIZATION"
+    ORGANIZATIONAL_UNIT = "ORGANIZATIONAL_UNIT"
+    ACCOUNT = "ACCOUNT"
 
 
 

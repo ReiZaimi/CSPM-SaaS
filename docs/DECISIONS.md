@@ -3059,6 +3059,64 @@ Nothing above the connector changed. The rule engine, `RuleContext`, the risk
 scorer and every rule still degrade one `EvidenceKey` at a time and have not
 learned that regions exist.
 
+## 70. Two neutral columns, one provider blob, and a rename not done
+
+`MULTI_CLOUD.md` §3 proposed renaming `tenant_id` and `subscription_id` to
+`provider_directory_id` and `provider_account_id`, plus a `provider_ref JSONB`
+for what is genuinely provider-shaped. Half of that is now built and half of it
+is deliberately not.
+
+**The blob is built.** `cloud_connections` and `cloud_accounts` each gain
+`provider_ref`. AWS needs two things Azure has no equivalent of — the scanner
+role's ARN, and the external id its trust policy must require — and neither is
+read by anything neutral. That is the line: `tenant_id` and `scope_id` are
+columns because the scanner, the scheduler and the UI read them; nothing outside
+one provider's own onboarding module ever looks inside `provider_ref`.
+
+It holds no customer secret and must not start to. The external id is a name the
+customer's trust policy pins against, not a credential to their cloud.
+`cloud_account.py` has claimed since v0.1 that CloudGuard stores nothing that
+could leak access to a customer's environment, and a JSONB column labelled
+"provider-shaped" is the obvious place for that to quietly stop being true.
+
+**The rename is not.** `RawSnapshot.to_json` writes `tenant_id` and
+`subscription_id` into every stored capture. Renaming the columns without the
+payload keys would leave two vocabularies for one pair of facts; renaming both
+would make every capture already taken unreplayable, which is the one thing the
+raw snapshot exists to prevent. The rename is worth doing against a migration
+of the stored snapshots, and it is not worth doing inside the change that adds
+the second provider — the same ordering `MULTI_CLOUD.md` §8 already argues for,
+now with a specific reason rather than a general one.
+
+The columns are neutral enough to carry AWS meanwhile: an organization id and an
+account id, in the two columns whose names happen to be Azure's.
+
+**`ConnectionScope` gained AWS's three levels** rather than growing a second
+enum. Every cloud has the same shape — a trust boundary, a grouping inside it,
+and the unit a scan reads — so it is one question with three answers per
+provider:
+
+```
+Azure   TENANT_ROOT     MANAGEMENT_GROUP      SUBSCRIPTION
+AWS     ORGANIZATION    ORGANIZATIONAL_UNIT   ACCOUNT
+```
+
+Named per provider rather than abstracted to "root / group / unit". Whoever
+reads one of these rows is usually a support engineer matching it against a
+portal, and the portal says "organizational unit". An abstract name would be
+accurate and would leave them translating.
+
+**AWS has one grant, recorded in two columns.** `consent_status` and
+`rbac_verified_at` exist because Azure's two grants fail independently — admin
+consent for Graph, and the ARM role — and a customer very often completes the
+first and forgets the second. AWS has one cross-account role, and one successful
+`sts:AssumeRole` proves everything there is to prove, so that single call sets
+both. The alternative was leaving `consent_status` permanently PENDING for a
+working connection, which would make `is_verified` false for a connection that
+verifies. Its docstring no longer says "both grants": that was true while Azure
+was the only provider, and is exactly the kind of sentence that stops being true
+without anyone noticing.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

@@ -62,11 +62,21 @@ Three hierarchies, one shape:
 | AWS | organization | account | organizational unit |
 | GCP | organization | project | folder |
 
-**Decision: two neutral columns plus a provider blob.** `provider_directory_id`
-(the trust boundary CloudGuard is trusted *by*) and `provider_account_id` (the
-unit a scan reads), with `provider_ref JSONB` for everything that is genuinely
-provider-shaped — the Entra service principal object id, the AWS role ARN and
-external id, the GCP workload identity pool.
+**Decided as two neutral columns plus a provider blob. Half built** — see
+`DECISIONS.md` §70. `provider_ref JSONB` exists on both tables and carries what
+is genuinely provider-shaped: the AWS role ARN and external id, later the GCP
+workload identity pool.
+
+The rename of `tenant_id` / `subscription_id` to `provider_directory_id` /
+`provider_account_id` is **not** done, for a reason this section did not have.
+`RawSnapshot.to_json` writes those two names into every stored capture, so
+renaming the columns alone leaves two vocabularies and renaming both makes every
+capture already taken unreplayable. It is worth doing against a migration of the
+stored snapshots, which is its own piece of work. The columns are neutral enough
+to carry AWS meanwhile — an organization id and an account id, under names that
+happen to be Azure's.
+
+`ConnectionScope` did gain AWS's three levels, in one enum rather than two.
 
 Rejected: renaming to fully abstract terms. "Scope" and "principal" read as
 nothing to the customer support engineer trying to match a row against what they

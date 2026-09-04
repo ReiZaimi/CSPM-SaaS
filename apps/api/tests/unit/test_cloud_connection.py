@@ -24,6 +24,45 @@ def connection(**kwargs: object) -> CloudConnection:
     return CloudConnection(**{**defaults, **kwargs})
 
 
+# --- the scope vocabulary --------------------------------------------------
+
+
+def test_every_cloud_names_the_same_three_levels() -> None:
+    """A trust boundary, a grouping, and the unit a scan reads.
+
+    One enum rather than one per provider, because it is one question. Named in
+    each provider's own words rather than abstracted, because whoever reads a
+    row is usually matching it against a portal that says "management group" or
+    "organizational unit" (MULTI_CLOUD.md section 3).
+    """
+    assert {s.value for s in ConnectionScope} == {
+        "TENANT_ROOT",
+        "MANAGEMENT_GROUP",
+        "SUBSCRIPTION",
+        "ORGANIZATION",
+        "ORGANIZATIONAL_UNIT",
+        "ACCOUNT",
+    }
+
+
+def test_a_scope_name_fits_the_column() -> None:
+    """The column is 24 characters and ORGANIZATIONAL_UNIT is 19.
+
+    Worth pinning rather than assuming: a scope too long to store fails at the
+    first write of a connection nobody has been able to make yet.
+    """
+    assert max(len(s.value) for s in ConnectionScope) <= 24
+
+
+def test_provider_ref_is_empty_rather_than_absent() -> None:
+    """Empty for Azure, which needs nothing in it.
+
+    A dict rather than NULL so no caller has to decide what the absence of a
+    provider reference means before reading a key out of it.
+    """
+    assert connection().provider_ref in ({}, None)
+
+
 # --- is_verified -----------------------------------------------------------
 
 
