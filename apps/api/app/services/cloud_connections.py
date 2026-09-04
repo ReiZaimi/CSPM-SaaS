@@ -1,18 +1,24 @@
-"""Connecting a customer's Azure environment, at a scope they choose.
+"""Connecting a customer's cloud, at a scope they choose.
 
-The redesigned flow (AZURE_CONNECTOR_REDESIGN.md) has two customer actions:
+The flow has two customer actions on Azure and one on AWS, and this module
+knows about neither. It holds what is the same in every cloud -- creating the
+connection, polling until the grant proves itself, writing the accounts
+discovered beneath it, the scan schedule, the change-event debounce, the scope
+choices -- and asks ``ProviderOnboarding`` for everything that is a cloud's own
+vocabulary (``connectors/onboarding.py``).
 
-1. Grant admin consent — the customer clicks "Connect with Microsoft",
-   approves Graph permissions, and Entra's callback reports the tenant.
-2. Deploy the scanner role — the customer clicks "Deploy to Azure", which
-   opens the Azure Portal with a pre-filled ARM template that creates the
-   custom role and assigns it to CloudGuard's service principal.
+That split is new. Until AWS existed this module imported Azure's token
+provider, its ARM and Graph clients and its role definitions directly, and
+``MULTI_CLOUD.md`` §2 called it the Azure-coupled half of the application --
+correctly, and deliberately, because an abstraction guessed from one example is
+usually wrong in the places that matter. §8 step 5 scheduled the split for when
+a second provider existed to split it for.
 
-Everything else is automatic: CloudGuard polls for the RBAC grant and
-discovers subscriptions once it detects access.
+The shape underneath is unchanged: CloudGuard hands the customer something to
+deploy, proves the grant by *using* it rather than by being told it exists, and
+then discovers what is beneath the scope rather than having it typed in.
 """
 
-import json
 import time
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -21,35 +27,18 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.azure.auth import (
-    REQUIRED_GRAPH_PERMISSIONS,
-    app_registration_manifest,
-    build_consent_url,
-)
-from app.connectors.azure.client import ArmClient, AzureApiError, GraphClient
-from app.connectors.azure.rbac import (
-    ARM_READ_ACTIONS,
-    ROLE_NAME,
-    ROLE_VERSION,
-    TemplateContext,
-    actions_granted_by,
-    arm_template,
-    categories_behind,
-    role_is_current,
-    version_of_granted,
-)
-from app.connectors.base import ConnectionCheck
 from app.connectors.evidence import EvidenceCategory
+from app.connectors.onboarding import DeploymentArtifact, ProviderOnboarding
+from app.connectors.registry import get_onboarding
 from app.core.config import settings
 from app.core.db import commit_unless_externally_managed
 from app.core.deps import TenantContext
 from app.core.enums import (
     CloudAccountStatus,
-    ConnectionScope,
     ConsentStatus,
     Provider,
 )
-from app.core.errors import CloudAccountNotFound, NotConfigured, ValidationFailed
+from app.core.errors import CloudAccountNotFound, ValidationFailed
 from app.core.logging import get_logger
 from app.core.signing import sign_state
 from app.models.cloud_account import CloudAccount
@@ -64,24 +53,52 @@ CONSENT_LINK_TTL_SECONDS = 1800
 TEMPLATE_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 
+def flow(connection: CloudConnection) -> ProviderOnboarding:
+    """How this connection's cloud grants access.
+
+    A function rather than a cached attribute: onboarding implementations are
+    stateless and take the connection they are about, so building one costs
+    nothing and holding one would only invite it to go stale against a row that
+    has since been reloaded.
+    """
+    return get_onboarding(connection.provider)
+
+
+def scope_path(connection: CloudConnection) -> str | None:
+    """The provider's own name for the scope this grant is written at.
+
+    Was a property on the model and is not one any more. It rendered an ARM
+    management-group path for whatever it was handed, so an AWS connection
+    would have carried a plausible-looking Azure scope on every API response --
+    the kind of wrong answer that is worse than no answer, because nothing about
+    it reads as a mistake.
+    """
+    return flow(connection).scope_path(connection)
+
+
 # ---------------------------------------------------------------------------
-# Create + consent URL (merged into one call)
+# Create + the link that starts the first grant
 # ---------------------------------------------------------------------------
 
 
 async def create_connection(
     session: AsyncSession, tenant: TenantContext, payload: CloudConnectionCreate
 ) -> tuple[CloudConnection, str | None]:
-    """Create a connection and return it with the consent redirect URL.
+    """Create a connection and return it with the URL that starts the grant.
 
-    One API call does both, so the frontend has everything it needs to
-    redirect the customer to Microsoft. The consent URL is best-effort:
-    if Azure is not configured on this deployment, the connection is still
-    created and the URL is None.
+    One API call does both, so the frontend has everything it needs to send the
+    customer where they have to go next. The URL is best-effort: a deployment
+    that is not configured for this provider still gets a connection, and the
+    reason lands in ``status_detail`` rather than in an exception. It is also
+    legitimately ``None`` for a provider whose only grant is the deployment
+    itself, which is AWS.
     """
-    if payload.scope_type != ConnectionScope.TENANT_ROOT and not payload.scope_id:
+    onboarding = get_onboarding(payload.provider)
+
+    if payload.scope_type != onboarding.root_scope and not payload.scope_id:
         raise ValidationFailed(
-            "A management group or subscription id is required for this scope"
+            "An id is required for this scope: only the whole directory can be "
+            "named without one"
         )
 
     connection = CloudConnection(
@@ -90,50 +107,34 @@ async def create_connection(
         name=payload.name,
         scope_type=payload.scope_type,
         scope_id=payload.scope_id,
-        role_version=ROLE_VERSION,
+        role_version=onboarding.grant_version(),
         consent_status=ConsentStatus.PENDING,
         status=CloudAccountStatus.PENDING,
-        status_detail="Grant admin consent to continue.",
+        status_detail=onboarding.initial_status_detail,
     )
     session.add(connection)
     await session.flush()
 
-    consent_url, problem = consent_url_for(connection)
+    start_url, problem = onboarding.start_url(connection)
     if problem:
         connection.status_detail = problem
-    return connection, consent_url
+    return connection, start_url
 
 
-def consent_url_for(connection: CloudConnection) -> tuple[str | None, str | None]:
-    """A fresh consent link, or the reason there cannot be one.
+def grant_start_url(connection: CloudConnection) -> tuple[str | None, str | None]:
+    """A fresh link to begin the grant, or the reason there cannot be one.
 
-    Regenerated on every read rather than stored, for two reasons. The state is
-    signed with a 30-minute TTL, so a URL persisted at creation would be dead
-    long before most customers get their administrator's attention. And it used
-    to be returned *only* from the create response, which meant a page reload
-    lost the consent button entirely and stranded the connection in PENDING
-    with no way forward but deleting it.
+    Regenerated on every read rather than stored. Azure's is signed with a
+    30-minute TTL, so a URL persisted at creation would be dead long before most
+    customers get their administrator's attention -- and it used to be returned
+    *only* from the create response, which meant a page reload lost the consent
+    button entirely and stranded the connection in PENDING with no way forward
+    but deleting it.
 
-    The failure reason is returned rather than swallowed. A deployment whose
-    Entra credentials are wrong cannot produce this URL at all, and the
-    customer needs to see that instead of a card with nothing on it.
+    ``(None, None)`` is a complete answer for a provider with no such step, and
+    not a failure to produce one.
     """
-    try:
-        state = sign_state(
-            {
-                "cloud_connection_id": str(connection.id),
-                "organization_id": str(connection.organization_id),
-                "issued_at": time.time(),
-            }
-        )
-        return build_consent_url(state), None
-    except NotConfigured as exc:
-        return None, str(exc)
-    except Exception as exc:  # pragma: no cover -- signing failure is unexpected
-        log.warning(
-            "azure.consent_url_failed", connection_id=str(connection.id), error=str(exc)
-        )
-        return None, f"Could not build a consent link: {exc}"
+    return flow(connection).start_url(connection)
 
 
 # ---------------------------------------------------------------------------
@@ -230,104 +231,58 @@ async def _list_subscriptions(
     )
 
 
-READY_TO_DEPLOY = "Admin consent granted. Deploy the scanner role next."
+async def grant_problem(connection: CloudConnection) -> str | None:
+    """What the grant failed to cover, named, or None when it covered everything.
 
-# Marks a status detail as being about the directory grant rather than the
-# subscription one. Checked as a prefix so a later step can tell the two apart
-# without a schema change: everything else on this connection may be healthy
-# while this is not, and the message must not be replaced by a cheerful one.
-GRANT_INCOMPLETE_PREFIX = "Admin consent did not grant"
-
-
-async def graph_grant_problem(connection: CloudConnection) -> str | None:
-    """What consent failed to grant, named, or None when it granted everything.
-
-    Consent resolves ``/.default`` to whatever CloudGuard's app registration
-    declares at the moment it is clicked, so a registration whose permissions
-    are missing -- or declared as delegated rather than application -- produces
-    a consent screen that looks entirely successful and a token carrying no
-    directory permissions at all. Nothing downstream could tell: the callback
-    recorded GRANTED on Entra's redirect alone, and the first evidence anyone
-    saw was the identity category failing mid-scan with "Insufficient
-    privileges to complete the operation", a sentence naming neither the
-    permission nor who can grant it.
-
-    The token answers it before any call is made. Read for diagnosis only --
-    Microsoft stays the enforcer (see ``granted_permissions``).
+    Only some clouds can grant less than was asked for and report success. Entra
+    resolves ``/.default`` against whatever CloudGuard's app registration
+    declares at the moment consent is clicked, so a registration missing its
+    permissions produces a consent screen that looks entirely normal and a token
+    carrying nothing. A provider without that failure mode answers None, which
+    is why this is asked of every one of them rather than of Azure.
     """
-    from app.connectors.azure.auth import (
-        REQUIRED_GRAPH_PERMISSIONS,
-        TokenProvider,
-        missing_permissions,
-    )
-
-    if not connection.tenant_id:
-        return None
-
-    try:
-        tokens = TokenProvider(connection.tenant_id)
-        absent = missing_permissions(tokens.graph_token())
-    except Exception as exc:
-        # Not evidence of a missing grant. A tenant that cannot issue a token
-        # has a different problem, and the probes report that one.
-        log.warning(
-            "azure.grant_check_failed",
-            connection_id=str(connection.id),
-            error=str(exc),
-        )
-        return None
-
-    if not absent:
-        return None
-
-    total = len(REQUIRED_GRAPH_PERMISSIONS)
-    if len(absent) == total:
-        scale = f"any of the {total} directory permissions CloudGuard needs"
-    else:
-        scale = f"{len(absent)} of the {total} directory permissions CloudGuard needs"
-    return (
-        f"{GRANT_INCOMPLETE_PREFIX} {scale}: {', '.join(absent)}. Subscription "
-        "scanning is unaffected; the identity checks cannot run until this is "
-        "granted. Add these to CloudGuard's app registration as *application* "
-        "permissions -- delegated ones do not appear in a service token -- then "
-        "re-run admin consent for this tenant, because consent covers only what "
-        "the registration declared at the moment it was granted."
-    )
+    return await flow(connection).grant_problem(connection)
 
 
 # ---------------------------------------------------------------------------
-# Consent callback
+# Recording the first grant
 # ---------------------------------------------------------------------------
 
 
 async def record_consent(
     session: AsyncSession, connection_id: UUID, tenant_id: str
 ) -> CloudConnection:
-    """Mark consent granted after Entra's callback.
+    """Mark the first grant made, after the provider's callback.
 
-    ``tenant_id`` arrives from Entra, not from the customer, and this is the
-    only place it is ever written.
+    ``tenant_id`` arrives from the provider, not from the customer, and this is
+    the only place it is ever written. That is the whole tenant-binding
+    guarantee: when it came from a request body, any user could name an
+    organization somebody else had already consented for and validate against
+    their environment.
     """
     connection = await session.get(CloudConnection, connection_id)
     if connection is None:
         raise CloudAccountNotFound("Connection not found")
+    onboarding = flow(connection)
 
     connection.consent_status = ConsentStatus.GRANTED
     connection.consented_at = datetime.now(UTC)
     connection.tenant_id = tenant_id or connection.tenant_id
-    connection.status_detail = READY_TO_DEPLOY
+    connection.status_detail = onboarding.ready_to_deploy_detail
 
     if connection.tenant_id:
-        problem = await _resolve_service_principal(connection)
-        if problem and not connection.service_principal_object_id:
-            connection.status_detail = problem
+        lookup = await onboarding.ensure_principal(connection)
+        if lookup.object_id:
+            connection.service_principal_object_id = lookup.object_id
+        elif lookup.problem:
+            connection.status_detail = lookup.problem
 
         # Checked here because here is where the answer first exists, and
         # because the alternative is a customer discovering it several minutes
-        # into a scan. It does not change ``consent_status``: consent did
+        # into a scan. It does not change ``consent_status``: the grant did
         # happen, and the subscription half of the connection is unaffected --
         # what is missing is what the registration offered to grant.
-        gap = await graph_grant_problem(connection)
+        gap = await onboarding.grant_problem(connection)
         if gap:
             connection.status_detail = gap
 
@@ -335,106 +290,53 @@ async def record_consent(
     return connection
 
 
-async def ensure_service_principal(
+async def ensure_principal(
     session: AsyncSession, connection: CloudConnection
 ) -> bool:
-    """Resolve the service principal now if consent has not yielded one yet.
+    """Resolve the identity a grant points at, if this cloud has one.
 
     Entra creates the principal during consent, but it is not always queryable
     by the time the callback fires a moment later -- directory replication gets
     there when it gets there. The callback therefore treats the lookup as best
-    effort, which left a hole: the artifact step needs that object id, comes
+    effort, which left a hole: the artefact step needs that object id, comes
     *before* validation, and validation was the only thing that retried. A
     customer whose lookup lost that race had no way forward at all.
 
-    So the artifact endpoints resolve on demand. Retrying is the fix, and this
-    is what makes retrying do something.
+    So the artefact endpoints resolve on demand. Retrying is the fix, and this
+    is what makes retrying do something. A provider with nothing to resolve says
+    it is ready and this returns immediately.
     """
-    if connection.service_principal_object_id:
-        return True
-    if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
-        return False
+    onboarding = flow(connection)
+    lookup = await onboarding.ensure_principal(connection)
 
-    problem = await _resolve_service_principal(connection)
-    if connection.service_principal_object_id:
-        # A resolved principal does not mean the directory grant is whole, and
-        # overwriting the message that says so would hide it behind a
-        # reassurance. Re-checked only while that message stands, so the happy
-        # path costs nothing and a re-consent still clears it.
-        detail = READY_TO_DEPLOY
-        if (connection.status_detail or "").startswith(GRANT_INCOMPLETE_PREFIX):
-            detail = await graph_grant_problem(connection) or READY_TO_DEPLOY
-        connection.status_detail = detail
-        await commit_unless_externally_managed(session)
+    if lookup.object_id and lookup.object_id != connection.service_principal_object_id:
+        connection.service_principal_object_id = lookup.object_id
+
+    if lookup.ready:
+        if lookup.object_id:
+            # A resolved principal does not mean the grant is whole, and
+            # overwriting the message that says so would hide it behind a
+            # reassurance. Re-checked only while that message stands, so the
+            # happy path costs nothing and a re-consent still clears it.
+            detail = onboarding.ready_to_deploy_detail
+            prefix = onboarding.grant_incomplete_prefix
+            if prefix and (connection.status_detail or "").startswith(prefix):
+                detail = await onboarding.grant_problem(connection) or detail
+            connection.status_detail = detail
+            await commit_unless_externally_managed(session)
         return True
 
     # Committed so it survives the request and reaches the card. Without this
     # the connection kept reporting the cheerful "deploy the scanner role next"
     # under a spinner, while the thing that would let anyone deploy had failed.
-    if problem:
-        connection.status_detail = problem
+    if lookup.problem:
+        connection.status_detail = lookup.problem
         await commit_unless_externally_managed(session)
     return False
 
 
-async def _resolve_service_principal(connection: CloudConnection) -> str | None:
-    """Look the principal up. Returns None on success, or why it failed.
-
-    Returning the reason rather than swallowing it is the point. Every way this
-    can fail used to collapse into the same silent nothing, and the connection
-    card showed a spinner that would never stop -- identical whether Entra
-    needed another few seconds or the app registration had no permissions to
-    grant in the first place. Those need different actions from different
-    people, so they have to read differently.
-    """
-    from app.connectors.azure.auth import TokenProvider
-
-    if not connection.tenant_id:
-        return "No Entra tenant is bound to this connection yet."
-
-    try:
-        tokens = TokenProvider(connection.tenant_id)
-        async with GraphClient(tokens) as graph:
-            principal = await graph.find_service_principal(settings.azure_client_id)
-    except AzureApiError as exc:
-        log.warning(
-            "azure.service_principal_lookup_failed",
-            connection_id=str(connection.id),
-            status_code=exc.azure_status_code,
-            error=str(exc),
-        )
-        if exc.azure_status_code in (401, 403):
-            # The overwhelmingly likely cause, and not something the customer
-            # can fix in their own tenant: consent can only grant permissions
-            # the app registration actually declares, so a registration with
-            # none grants nothing and every Graph call is refused afterwards.
-            return (
-                "Microsoft Graph refused this lookup. CloudGuard's own app "
-                "registration is most likely missing its API permissions, so "
-                "admin consent had nothing to grant. This is a setup step on "
-                "CloudGuard's side (AZURE_INTEGRATION.md §2.1)."
-            )
-        return f"Microsoft Graph could not be read: {exc}"
-    except Exception as exc:
-        log.warning(
-            "azure.service_principal_lookup_failed",
-            connection_id=str(connection.id),
-            error=str(exc),
-        )
-        return f"Could not reach Microsoft Graph for this tenant: {exc}"
-
-    if principal and principal.get("id"):
-        connection.service_principal_object_id = str(principal["id"])
-        return None
-
-    return (
-        "Admin consent completed, but CloudGuard's service principal is not "
-        "visible in this directory yet. Entra can take a minute to publish it."
-    )
-
-
 # ---------------------------------------------------------------------------
-# ARM template
+# The deployable artefact
 # ---------------------------------------------------------------------------
 
 
@@ -480,9 +382,14 @@ def public_api_base() -> str | None:
     return None
 
 
-def template_url(connection: CloudConnection) -> str | None:
-    """The full URL for the ARM template endpoint, or None if not ready."""
-    if not connection.service_principal_object_id or not connection.scope_path:
+def artifact_url(connection: CloudConnection) -> str | None:
+    """Where the provider's console fetches the artefact, or None if not ready.
+
+    Token-gated rather than authenticated: Azure Portal fetches it from the
+    customer's browser with no CloudGuard session, and CloudFormation fetches
+    it server-side with none either.
+    """
+    if not flow(connection).artifact_ready(connection):
         return None
     base = public_api_base()
     if not base:
@@ -491,150 +398,74 @@ def template_url(connection: CloudConnection) -> str | None:
     return f"{base}/api/v1/cloud-connections/{connection.id}/template?token={token}"
 
 
-def render_template(connection: CloudConnection) -> str:
-    """Generate the ARM template JSON for this connection."""
-    if not connection.service_principal_object_id or not connection.scope_path:
-        raise ValidationFailed(
-            "Admin consent has not completed yet, so there is no service "
-            "principal to grant access to."
-        )
+def render_artifact(connection: CloudConnection) -> DeploymentArtifact:
+    """The deployable artefact for this connection, rendered now.
 
-    # Rendered from the *current* role version, not the one recorded on this
-    # connection. Redeploying is how a customer gets the newer role, so a
-    # template stamped with their stale version deployed the current actions
-    # under the old role's name and definition id -- which then read back as
-    # still behind, and left "Redeploy the role" as a button that could be
-    # pressed forever without changing anything on this screen.
-    context = TemplateContext(
-        principal_id=connection.service_principal_object_id,
-        scope_path=connection.scope_path,
-        scope_type=connection.scope_type,
-    )
-    return arm_template(context)
-
-
-def role_upgrade_available(connection: CloudConnection) -> bool:
-    """Whether this connection's deployed role is older than the one CloudGuard
-    now needs.
-
-    ``CloudConnection.role_version`` has been stamped at creation since
-    connections existed, and until now nothing ever read it back. That made the
-    version a label rather than a mechanism: bumping ``ROLE_VERSION`` to ship a
-    check needing a new ARM action would leave every existing customer silently
-    collecting UNKNOWN for it, with no prompt and no explanation.
+    Rendered from the *current* permission set, not the version recorded on the
+    connection. Redeploying is how a customer gets the newer grant, so an
+    artefact stamped with their stale version deployed the current actions under
+    the old name -- which then read back as still behind, and left "redeploy" as
+    a button that could be pressed forever without changing anything.
     """
-    return connection.provider == Provider.AZURE and not role_is_current(
-        connection.role_version
-    )
+    return flow(connection).artifact(connection)
 
 
-def required_role_version(connection: CloudConnection) -> str | None:
-    """The role version this connection should be on, or None if it has no such
+def deployment_url(connection: CloudConnection) -> str | None:
+    """The one-click deploy link, or None while the artefact is not ready.
+
+    Deploy to Azure, or CloudFormation's Launch Stack. The URL the console
+    fetches is built here, because it needs a signed token and this API's own
+    public origin; what to wrap it in is the provider's answer.
+    """
+    url = artifact_url(connection)
+    if not url:
+        return None
+    return flow(connection).launch_url(connection, url)
+
+
+def grant_upgrade_available(connection: CloudConnection) -> bool:
+    """Whether this connection's deployed grant is older than the current one.
+
+    ``role_version`` has been stamped at creation since connections existed, and
+    until it was read back the version was a label rather than a mechanism:
+    bumping it to ship a check needing a new permission would leave every
+    existing customer silently collecting UNKNOWN for it, with no prompt and no
+    explanation.
+    """
+    return flow(connection).grant_is_behind(connection)
+
+
+def required_grant_version(connection: CloudConnection) -> str | None:
+    """The version this connection should be on, or None if it has no such
     notion.
 
-    Asked of the service rather than read from ``rbac.ROLE_VERSION`` by the
-    route, because the route layer is provider-neutral and a role version is
-    not: the day a second connector lands, "the version to redeploy toward" is
-    that provider's answer, not Azure's constant. The seam test is what caught
-    the first attempt, which imported the constant into the route.
+    Asked of the provider rather than read from a constant by the route,
+    because the route layer is neutral and a role version is not.
     """
-    if connection.provider != Provider.AZURE:
-        return None
-    return ROLE_VERSION
+    return flow(connection).required_grant_version(connection)
 
 
 def degraded_categories(connection: CloudConnection) -> dict[EvidenceCategory, str]:
-    """Collection categories this connection's role cannot fully serve.
+    """Collection categories this connection's grant cannot fully serve.
 
-    Returns category -> the sentence to show the customer. Empty when the role
-    is current, and empty for any provider that has no such notion, so the
-    scanner can call it without knowing which cloud it is looking at.
+    Category -> the sentence to show the customer. Empty when the grant is
+    current, and empty for any provider that has no such notion, so the scanner
+    can call it without knowing which cloud it is looking at.
     """
-    if not role_upgrade_available(connection):
-        return {}
-
-    explanation = (
-        f"CloudGuard's scanner role was updated to {ROLE_VERSION} and this "
-        f"connection still has {connection.role_version}, which does not grant "
-        "the permissions these checks need. Redeploy the role from the "
-        "connection page to enable them."
-    )
-    return {
-        category: explanation
-        for category in categories_behind(connection.role_version)
-    }
+    return flow(connection).degraded_categories(connection)
 
 
-async def detect_role_version(connection: CloudConnection) -> str | None:
-    """Which role version Azure says is actually assigned, read from Azure.
-
-    ``role_version`` was stamped at creation and never written again, so the
-    column recorded which role a customer was *offered* on the day they
-    connected -- not which one they have. Redeploying therefore could not
-    change the access panel: the customer deployed v5, the row still said v2,
-    and both the "behind" line and the degraded-category banner stayed up for
-    good with no way to clear them.
-
-    Read from the assignments rather than from a version label, because the
-    label is not evidence. Every assignment CloudGuard's principal holds at the
-    connection's scope is resolved to its definition and the granted actions
-    unioned, which also makes the answer right for the customer who assigned
-    the built-in Reader instead of deploying the template at all.
-
-    Returns None when the question could not be answered -- no token, a failed
-    call, or a principal holding nothing this scanner recognises. None is not
-    "behind": it is "unknown", and the caller leaves the recorded version
-    alone rather than replacing a fact with a probe that did not land.
-    """
-    from app.connectors.azure.auth import TokenProvider
-
-    principal = connection.service_principal_object_id
-    scope = connection.scope_path
-    if connection.provider != Provider.AZURE or not principal or not scope:
-        return None
-    if not connection.tenant_id:
-        return None
-
-    try:
-        tokens = TokenProvider(connection.tenant_id)
-        async with ArmClient(tokens) as arm:
-            assignments = await arm.list_role_assignments_at_scope(scope)
-            definition_ids = {
-                str((a.get("properties") or {}).get("roleDefinitionId") or "")
-                for a in assignments
-                if str((a.get("properties") or {}).get("principalId") or "").lower()
-                == principal.lower()
-            }
-            definition_ids.discard("")
-            if not definition_ids:
-                return None
-
-            granted: set[str] = set()
-            for definition_id in sorted(definition_ids):
-                definition = await arm.get_role_definition(definition_id)
-                permissions = (definition.get("properties") or {}).get("permissions") or []
-                granted |= actions_granted_by(permissions)
-    except Exception as exc:
-        log.warning(
-            "azure.role_version_probe_failed",
-            connection_id=str(connection.id),
-            error=str(exc),
-        )
-        return None
-
-    return version_of_granted(granted)
-
-
-async def refresh_role_version(
+async def refresh_grant_version(
     session: AsyncSession, connection: CloudConnection
 ) -> str | None:
-    """Record what the deployed role actually grants. Returns the new version.
+    """Record what the deployed grant actually allows. Returns the new version.
 
     Returns None when nothing changed, so a caller can tell "checked, same
     answer" from "checked, and this connection just gained the checks it was
-    missing".
+    missing". A provider that cannot answer returns None too, and the recorded
+    version is left alone rather than replaced by a probe that did not land.
     """
-    detected = await detect_role_version(connection)
+    detected = await flow(connection).detect_grant_version(connection)
     if detected is None or detected == connection.role_version:
         return None
 
@@ -642,7 +473,7 @@ async def refresh_role_version(
     connection.role_version = detected
     await commit_unless_externally_managed(session)
     log.info(
-        "azure.role_version_changed",
+        "connection.grant_version_changed",
         connection_id=str(connection.id),
         previous=previous,
         detected=detected,
@@ -653,18 +484,18 @@ async def refresh_role_version(
 async def recheck_access(
     session: AsyncSession, tenant: TenantContext, connection_id: UUID
 ) -> tuple[CloudConnection, list[CloudAccount]]:
-    """Ask Azure again what CloudGuard is allowed to do here.
+    """Ask the provider again what CloudGuard is allowed to do here.
 
     What "Re-check access" claimed to do all along. It refetched the
     connection, and the only probe on that path runs while a connection is
     *unverified* -- so on a working connection the button re-read the same row
-    and repainted the same three lines, including a role version nothing had
+    and repainted the same three lines, including a grant version nothing had
     looked at since the day it was created.
 
-    Two questions, because the panel states two answers: whether the read
-    still works, and which role it works through. A probe that fails leaves
-    the recorded state alone -- one refused call is not proof access is gone,
-    and ``check_access_revoked`` is where that question is asked deliberately.
+    Two questions, because the panel states two answers: whether the read still
+    works, and which grant it works through. A probe that fails leaves the
+    recorded state alone -- one refused call is not proof access is gone, and
+    ``check_access_revoked`` is where that question is asked deliberately.
     """
     connection, subscriptions = await get_connection_with_subscriptions(
         session, tenant, connection_id
@@ -673,7 +504,7 @@ async def recheck_access(
     if connection.consent_status != ConsentStatus.GRANTED:
         return await try_auto_validate(session, connection), subscriptions
 
-    check = await _probe_silently(connection)
+    check = await flow(connection).probe(connection)
     if check.ok:
         connection.rbac_verified_at = datetime.now(UTC)
         if connection.status == CloudAccountStatus.PENDING:
@@ -681,7 +512,7 @@ async def recheck_access(
             connection.status_detail = "Connection verified."
         await commit_unless_externally_managed(session)
 
-    await refresh_role_version(session, connection)
+    await refresh_grant_version(session, connection)
 
     # A connection verified by this call has never discovered anything, and the
     # page it answers stops polling as soon as it reports itself ready.
@@ -704,21 +535,21 @@ async def set_scan_schedule(
 
     Refused on a connection that cannot scan yet: scheduling one would queue a
     scan every interval that fails for the same reason each time, which reads
-    to the customer as a broken product rather than as consent they have not
+    to the customer as a broken product rather than as access they have not
     granted.
 
-    Takes effect on the next tick rather than immediately -- with one
-    exception that falls out of the query rather than being special-cased. A
-    connection that has never been scanned is overdue by definition, so
-    switching scheduling on for a fresh connection starts a scan within
-    minutes, which is what somebody who just enabled it expects.
+    Takes effect on the next tick rather than immediately -- with one exception
+    that falls out of the query rather than being special-cased. A connection
+    that has never been scanned is overdue by definition, so switching
+    scheduling on for a fresh connection starts a scan within minutes, which is
+    what somebody who just enabled it expects.
     """
     connection = await get_connection(session, tenant, connection_id)
 
     if interval_hours is not None and not connection.is_verified:
         raise ValidationFailed(
             "This connection is not ready to scan yet, so there is nothing to "
-            "schedule. Grant admin consent and assign the Reader role first."
+            "schedule. Finish granting CloudGuard read access first."
         )
 
     connection.scan_interval_hours = interval_hours
@@ -732,16 +563,6 @@ async def set_scan_schedule(
     )
     await commit_unless_externally_managed(session)
     return connection
-
-
-def deploy_to_azure_url(connection: CloudConnection) -> str | None:
-    """The Deploy to Azure button URL, or None if the template isn't ready."""
-    tpl_url = template_url(connection)
-    if not tpl_url:
-        return None
-    from urllib.parse import quote
-
-    return f"https://portal.azure.com/#create/Microsoft.Template/uri/{quote(tpl_url, safe='')}"
 
 
 # ---------------------------------------------------------------------------
@@ -802,15 +623,15 @@ async def try_auto_validate(
 
     # Retry the lookup if it is still missing, through the committing wrapper.
     # The bare call left a resolved id in memory only: when the probe below
-    # then failed -- which it does every poll until the role is deployed --
-    # nothing committed, so the id was rediscovered from Graph on every single
-    # poll and never actually stored.
-    if not await ensure_service_principal(session, connection):
+    # then failed -- which it does every poll until the grant is deployed --
+    # nothing committed, so the id was rediscovered from the provider on every
+    # single poll and never actually stored.
+    if not await ensure_principal(session, connection):
         return connection
 
-    # Attempt RBAC validation if not yet verified
+    # Attempt validation if not yet verified
     if not connection.rbac_verified_at:
-        check = await _probe_silently(connection)
+        check = await flow(connection).probe(connection)
         if check.ok:
             connection.status = CloudAccountStatus.ACTIVE
             connection.rbac_verified_at = datetime.now(UTC)
@@ -828,70 +649,27 @@ async def try_auto_validate(
     if connection.rbac_verified_at and not connection.last_discovery_at:
         await _auto_discover(session, connection)
 
-    # A role believed to be behind is re-read on each detail request, so a
+    # A grant believed to be behind is re-read on each detail request, so a
     # customer who redeploys and comes back to the page finds the banner gone
-    # without having to press anything. Costs one ARM listing, and only while
-    # the connection is behind: once the current role is recorded, nothing
-    # here asks again.
-    if role_upgrade_available(connection):
-        await refresh_role_version(session, connection)
+    # without having to press anything. Costs one listing, and only while the
+    # connection is behind: once the current grant is recorded, nothing here
+    # asks again.
+    if grant_upgrade_available(connection):
+        await refresh_grant_version(session, connection)
 
     return connection
-
-
-async def _probe_silently(connection: CloudConnection) -> ConnectionCheck:
-    """Verify ARM access. Returns ok=False silently on failure."""
-    from app.connectors.azure.auth import TokenProvider
-
-    tenant_id = connection.tenant_id or ""
-    check = ConnectionCheck(ok=False, tenant_id=tenant_id)
-
-    try:
-        tokens = TokenProvider(tenant_id)
-    except Exception:
-        return check
-
-    try:
-        async with ArmClient(tokens) as arm:
-            subscriptions = await arm.list_subscriptions()
-            if not subscriptions:
-                return check
-            check.permissions_verified.append(
-                f"Azure Resource Manager: {len(subscriptions)} subscription(s) readable"
-            )
-            check.subscription_id = str(subscriptions[0].get("subscriptionId") or "")
-
-            # Confirm we can actually read resources in at least one subscription
-            try:
-                await arm.list_resources(check.subscription_id)
-                check.permissions_verified.append("Resource listing confirmed")
-            except AzureApiError:
-                return check
-    except Exception:
-        return check
-
-    check.ok = True
-    check.detail = "Connection verified"
-    return check
 
 
 async def _auto_discover(
     session: AsyncSession, connection: CloudConnection
 ) -> list[CloudAccount]:
-    """Discover subscriptions automatically after validation."""
-    from app.connectors.azure.auth import TokenProvider
+    """Write what the provider says is beneath this connection's scope.
 
-    try:
-        tokens = TokenProvider(connection.tenant_id or "")
-        async with ArmClient(tokens) as arm:
-            subscriptions = await arm.list_subscriptions()
-    except Exception as exc:
-        log.warning(
-            "azure.auto_discover_failed",
-            connection_id=str(connection.id),
-            error=str(exc),
-        )
-        return []
+    The provider answers *what exists*; everything below decides what that means
+    for rows CloudGuard already holds -- which is neutral, and stayed here when
+    the listing itself moved behind the seam.
+    """
+    found = await flow(connection).discover(connection)
 
     existing: dict[str, CloudAccount] = {
         account.subscription_id: account
@@ -908,28 +686,26 @@ async def _auto_discover(
     now = datetime.now(UTC)
     accounts: list[CloudAccount] = []
 
-    for subscription in subscriptions:
-        subscription_id = str(subscription.get("subscriptionId") or "")
-        if not subscription_id:
-            continue
-        display_name = str(subscription.get("displayName") or subscription_id)
-
-        account = existing.get(subscription_id)
+    for discovered in found:
+        account = existing.get(discovered.account_id)
         if account is None:
             account = CloudAccount(
                 organization_id=connection.organization_id,
                 connection_id=connection.id,
                 provider=connection.provider,
-                account_name=display_name,
-                display_name=display_name,
+                account_name=discovered.display_name,
+                display_name=discovered.display_name,
                 tenant_id=connection.tenant_id or "",
-                subscription_id=subscription_id,
+                subscription_id=discovered.account_id,
+                provider_ref=dict(discovered.provider_ref),
                 discovered_at=now,
                 in_scope=True,
             )
             session.add(account)
         else:
-            account.display_name = display_name
+            account.display_name = discovered.display_name
+            if discovered.provider_ref:
+                account.provider_ref = dict(discovered.provider_ref)
 
         account.consent_status = connection.consent_status
         account.rbac_verified_at = connection.rbac_verified_at
@@ -938,33 +714,33 @@ async def _auto_discover(
         )
         accounts.append(account)
 
-    # Disable subscriptions that have vanished
+    # Disable accounts that have vanished
     seen = {a.subscription_id for a in accounts}
-    for subscription_id, account in existing.items():
-        if subscription_id not in seen:
+    for account_id, account in existing.items():
+        if account_id not in seen:
             account.status = CloudAccountStatus.DISABLED
             account.status_detail = "No longer visible to this connection"
 
     # Only stamped when something was actually found. ``try_auto_validate``
     # treats this column as "discovery is done", so latching it on an empty
-    # result freezes the connection with no subscriptions for good. An empty
-    # listing right after a role deployment is not an answer -- ARM's
-    # subscription list is eventually consistent and takes minutes to catch up
-    # with a fresh assignment.
+    # result freezes the connection with no accounts for good. An empty listing
+    # right after a grant is deployed is not an answer -- a provider's account
+    # list is eventually consistent and takes minutes to catch up with a fresh
+    # assignment.
     if accounts:
         connection.last_discovery_at = now
     else:
         log.warning(
-            "azure.discovery_found_nothing",
+            "connection.discovery_found_nothing",
             connection_id=str(connection.id),
             tenant_id=connection.tenant_id,
         )
     # Flush before returning, not only commit. ``commit_unless_externally_managed``
     # does nothing inside a request -- ``rls_session`` owns that transaction --
-    # so a freshly discovered subscription went back to the caller with no
-    # primary key, and serializing it raised a 500 on the one endpoint whose
-    # job is to recover a connection that has none. The flush assigns the ids
-    # without ending the transaction, which matters: RLS settings here are
+    # so a freshly discovered account went back to the caller with no primary
+    # key, and serializing it raised a 500 on the one endpoint whose job is to
+    # recover a connection that has none. The flush assigns the ids without
+    # ending the transaction, which matters: RLS settings here are
     # transaction-scoped, and a commit would tear them down.
     await session.flush()
     await commit_unless_externally_managed(session)
@@ -992,17 +768,16 @@ async def rediscover_subscriptions(
     if not connection.is_verified:
         raise ValidationFailed(
             "This connection is not verified yet, so there is nothing to "
-            "discover with. Grant admin consent and deploy the scanner role "
-            "first."
+            "discover with. Finish granting CloudGuard read access first."
         )
 
     accounts = await _auto_discover(session, connection)
     if not accounts:
         raise ValidationFailed(
-            "CloudGuard could not see any subscriptions with this connection. "
-            "Check that the scanner role is assigned at the scope you deployed "
-            "it to, and that the subscriptions sit beneath it. A role assigned "
-            "moments ago can take a few minutes to appear."
+            "CloudGuard could not see any accounts with this connection. Check "
+            "that the grant is in place at the scope you deployed it to, and "
+            "that the accounts sit beneath it. A grant made moments ago can "
+            "take a few minutes to appear."
         )
     return connection, accounts
 
@@ -1051,16 +826,6 @@ async def set_subscription_scope(
 # ---------------------------------------------------------------------------
 
 
-def graph_permissions() -> list[str]:
-    from app.connectors.azure.auth import REQUIRED_GRAPH_PERMISSIONS
-
-    return list(REQUIRED_GRAPH_PERMISSIONS)
-
-
-def arm_actions() -> list[str]:
-    return list(ARM_READ_ACTIONS)
-
-
 SETUP_CANCELLED_DETAIL = (
     "Setup cancelled. Nothing was scanned. Resume when you are ready, or "
     "remove the connection."
@@ -1097,10 +862,11 @@ async def set_setup_cancelled(
         connection.status_detail = SETUP_CANCELLED_DETAIL
     else:
         connection.status = CloudAccountStatus.PENDING
+        onboarding = flow(connection)
         connection.status_detail = (
-            READY_TO_DEPLOY
+            onboarding.ready_to_deploy_detail
             if connection.consent_status == ConsentStatus.GRANTED
-            else "Grant admin consent to continue."
+            else onboarding.initial_status_detail
         )
 
     await commit_unless_externally_managed(session)
@@ -1115,76 +881,18 @@ async def set_setup_cancelled(
 def revocation_steps(connection: CloudConnection) -> dict:
     """What the customer must run to take CloudGuard's access away.
 
-    CloudGuard cannot do this itself, and that is a design decision rather than
-    a gap. Deleting its own role assignment needs
-    ``Microsoft.Authorization/roleAssignments/delete``, and removing its service
-    principal needs Graph ``Application.ReadWrite.All`` -- write permissions on
-    the two most sensitive surfaces in a tenant. A CloudGuard holding the first
-    could strip access from the customer's own administrators; holding the
-    second it could rewrite any application in the directory. Both are far more
-    dangerous than the read access they would revoke, and asking every customer
-    to grant them permanently to support a rare teardown is the wrong trade.
-
-    So the commands are generated instead, filled in for this connection, and
-    :func:`check_access_revoked` proves afterwards whether they worked. Read
-    access is the one thing CloudGuard can honestly report on, because losing it
-    is observable.
+    CloudGuard cannot do this itself in any cloud, and that is a design decision
+    rather than a gap: revoking its own access needs write permissions on the
+    two most sensitive surfaces a tenant has, which are far more dangerous than
+    the read access they would withdraw. So the commands are generated instead,
+    filled in for this connection, and :func:`check_access_revoked` proves
+    afterwards whether they worked.
     """
-    principal = connection.service_principal_object_id
-    scope = connection.scope_path
-    role = f"{ROLE_NAME} ({connection.role_version})"
-
-    steps: list[dict[str, str]] = []
-    if principal and scope:
-        steps.append(
-            {
-                "title": "Remove the scanner role assignment",
-                "detail": "Ends CloudGuard's ability to read Azure resources.",
-                "command": (
-                    f"az role assignment delete --assignee {principal} --scope {scope}"
-                ),
-            }
-        )
-        steps.append(
-            {
-                "title": "Delete the custom role definition",
-                "detail": "Optional. Removes the now-unused role from the scope.",
-                "command": f'az role definition delete --name "{role}" --scope {scope}',
-            }
-        )
-    if principal:
-        steps.append(
-            {
-                "title": "Remove CloudGuard from your directory",
-                "detail": (
-                    "Withdraws admin consent by deleting the enterprise "
-                    "application, ending directory access as well."
-                ),
-                "command": f"az ad sp delete --id {principal}",
-            }
-        )
-
-    return {
-        "principal_id": principal,
-        "scope_path": scope,
-        "role_name": role,
-        "tenant_id": connection.tenant_id,
-        "steps": steps,
-        # Stated plainly so nobody expects a button that cannot exist.
-        "why_manual": (
-            "CloudGuard holds read-only access and no write permission of any "
-            "kind, so it cannot remove its own access. These run under your "
-            "credentials, not CloudGuard's."
-        ),
-        "portal_url": (
-            "https://portal.azure.com/#view/Microsoft_AAD_IAM/"
-            "StartboardApplicationsMenuBlade/~/AppAppsPreview"
-        ),
-    }
+    return flow(connection).revocation_steps(connection)
 
 
 async def check_access_revoked(connection: CloudConnection) -> dict:
-    """Ask Azure whether CloudGuard can still read this environment.
+    """Ask the provider whether CloudGuard can still read this environment.
 
     The one honest confirmation available: revocation is verified by the access
     failing, using the same read-only probe that verified it working. A product
@@ -1193,16 +901,15 @@ async def check_access_revoked(connection: CloudConnection) -> dict:
     everywhere else.
     """
     if not connection.tenant_id:
-        return {"revoked": True, "detail": "No tenant is bound to this connection."}
+        return {"revoked": True, "detail": "No directory is bound to this connection."}
 
-    check = await _probe_silently(connection)
+    check = await flow(connection).probe(connection)
     if check.ok:
         return {
             "revoked": False,
             "detail": (
-                "CloudGuard can still read this environment. The role "
-                "assignment is in place; Azure can take a minute to apply a "
-                "removal."
+                "CloudGuard can still read this environment. The grant is in "
+                "place; a provider can take a minute to apply a removal."
             ),
         }
     return {
@@ -1260,7 +967,7 @@ async def set_change_events(
     if enabled and not connection.is_verified:
         raise ValidationFailed(
             "This connection is not ready to scan yet, so a change in it could "
-            "not be read. Grant admin consent and assign the Reader role first."
+            "not be read. Finish granting CloudGuard read access first."
         )
 
     connection.change_events_enabled = enabled
@@ -1366,48 +1073,16 @@ async def _scannable_accounts(
     return [account for account in rows if account.is_scannable]
 
 
-def azure_app_registration() -> dict:
-    """What CloudGuard's own Entra app registration must declare.
+def self_registration(provider: Provider) -> dict | None:
+    """What CloudGuard's *own* identity in a cloud must declare.
 
-    Moved out of the route rather than left there, and the reason is the seam:
-    everything above the connector line is meant to be provider-neutral, and a
-    router importing Azure's Graph permissions made that false. This module is
-    already the one place the onboarding flow is Azure-shaped, and
-    ``MULTI_CLOUD.md`` §8 step 5 schedules splitting it for when a second
-    provider exists to split it *for*.
+    The half of the deployment no customer artefact can touch: Azure's
+    application permissions live on CloudGuard's app registration, not on
+    anything a template creates in the customer's tenant. That half had only
+    ever existed as a list in a code comment, which is why a registration
+    missing seven of nine permissions still produced a consent screen that
+    looked entirely normal.
 
-    The content is unchanged. It is the other half of the deployment -- the ARM
-    template grants subscription access in the customer's tenant, while
-    directory access comes from application permissions on CloudGuard's own
-    registration, which no template a customer runs can touch.
+    ``None`` for a provider with no such half.
     """
-    manifest = app_registration_manifest()
-    return {
-        "required_permissions": REQUIRED_GRAPH_PERMISSIONS,
-        "required_resource_access": manifest,
-        # Shell-safe by construction. An angle-bracket placeholder reads as a
-        # placeholder and parses as input redirection, so a copied command fails
-        # with "No such file or directory" and names the placeholder as the
-        # missing file -- an error that says nothing about what went wrong.
-        "lookup_command": (
-            'APP_ID=$(az ad app list --display-name CloudGuard '
-            '--query "[0].appId" -o tsv)'
-        ),
-        "apply_command": (
-            'az ad app update --id "$APP_ID" '
-            f"--required-resource-accesses '{json.dumps(manifest)}'"
-        ),
-        "verify_command": (
-            'az ad app show --id "$APP_ID" '
-            '--query "requiredResourceAccess[].resourceAccess[].id" -o tsv'
-        ),
-        "grant_command": (
-            "# Then, in each customer tenant, a Global Administrator "
-            "re-runs the consent link from this page."
-        ),
-        "note": (
-            "Consent grants what the registration declares at the moment it is "
-            "granted. Adding a permission afterwards does not extend an existing "
-            "grant -- every already-connected tenant must consent again."
-        ),
-    }
+    return get_onboarding(provider).self_registration()

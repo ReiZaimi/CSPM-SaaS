@@ -56,9 +56,16 @@ class CloudConnection(Base, UUIDPrimaryKey, TenantOwned, Timestamps):
     scope_type: Mapped[ConnectionScope] = mapped_column(
         StrEnumType(ConnectionScope, 24), nullable=False, default=ConnectionScope.TENANT_ROOT
     )
-    # The management group or subscription id. NULL for TENANT_ROOT, whose scope
-    # is the tenant's root management group -- an id that equals the tenant id
-    # and so is not known until consent completes.
+    # The management group, organizational unit or account id this connection
+    # covers. NULL at the widest scope, which every cloud names after the trust
+    # boundary itself -- on Azure that is the tenant's root management group, an
+    # id equal to the tenant id and so not known until consent completes.
+    #
+    # What the id means, and the path a grant is written at, are the provider's
+    # answers: ``cloud_connections.scope_path`` used to be a property here and
+    # rendered an ARM management-group path for anything it was handed, which
+    # would have put a plausible-looking Azure scope on every AWS connection.
+    # It lives in ``ProviderOnboarding.scope_path`` now.
     scope_id: Mapped[str | None] = mapped_column(String(200))
 
     # Which generation of the custom role the artifact was built from, so the UI
@@ -162,18 +169,3 @@ class CloudConnection(Base, UUIDPrimaryKey, TenantOwned, Timestamps):
             and self.tenant_id is not None
             and self.rbac_verified_at is not None
         )
-
-    @property
-    def scope_path(self) -> str | None:
-        """The ARM scope an assignment is created at.
-
-        A tenant's root management group is named with the tenant id, so
-        TENANT_ROOT resolves only once consent has told us what that is.
-        """
-        if self.scope_type == ConnectionScope.SUBSCRIPTION:
-            return f"/subscriptions/{self.scope_id}" if self.scope_id else None
-        if self.scope_type == ConnectionScope.MANAGEMENT_GROUP:
-            group = self.scope_id
-        else:
-            group = self.tenant_id
-        return f"/providers/Microsoft.Management/managementGroups/{group}" if group else None

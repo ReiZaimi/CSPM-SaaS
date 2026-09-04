@@ -9,12 +9,22 @@ from typing import Any
 
 from app.connectors.azure import change_events as azure_change_events
 from app.connectors.azure.connector import AzureConnector
+from app.connectors.azure.onboarding import AzureOnboarding
 from app.connectors.base import CloudConnector
+from app.connectors.onboarding import ProviderOnboarding
 from app.core.enums import Provider
 from app.core.errors import NotConfigured
 
 CONNECTORS: dict[Provider, type[CloudConnector]] = {
     Provider.AZURE: AzureConnector,
+}
+
+# How a customer grants access to this provider, and how CloudGuard proves they
+# did. Beside the connector lookup rather than inside the onboarding service,
+# because the service is now provider-neutral and holding this map would be the
+# one import that made it Azure-shaped again.
+ONBOARDING: dict[Provider, type[ProviderOnboarding]] = {
+    Provider.AZURE: AzureOnboarding,
 }
 
 # The module that reads a provider's change events. Beside the connector lookup
@@ -47,6 +57,22 @@ def get_connector_class(provider: Provider | str) -> type[CloudConnector]:
 
 def get_connector(provider: Provider | str, **kwargs: Any) -> CloudConnector:
     return get_connector_class(provider)(**kwargs)  # type: ignore[abstract]
+
+
+def get_onboarding(provider: Provider | str) -> ProviderOnboarding:
+    """How this provider's access is granted, checked and revoked.
+
+    Separate from the connector because it is asked before one can exist: the
+    whole point of onboarding is the period when there is no verified access to
+    build a connector against.
+    """
+    resolved = Provider(provider)
+    implementation = ONBOARDING.get(resolved)
+    if implementation is None:
+        raise NotConfigured(
+            f"No onboarding flow is implemented for {resolved.value}."
+        )
+    return implementation()
 
 
 def get_change_feed(provider: Provider | str) -> ModuleType:

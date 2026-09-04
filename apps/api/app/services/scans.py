@@ -20,6 +20,7 @@ from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding, FindingEvidence
 from app.models.scan import Evidence, Scan, ScanStep
+from app.services import cloud_connections
 
 OPEN_STATUSES = [FindingStatus.OPEN, FindingStatus.IN_PROGRESS]
 
@@ -371,7 +372,9 @@ async def scan_context(session: AsyncSession, scan: Scan) -> dict:
         "tenant_id": first.tenant_id if first else None,
         "connection_name": connection.name if connection else None,
         "scope_type": connection.scope_type.value if connection else None,
-        "scope_path": connection.scope_path if connection else None,
+        "scope_path": (
+            cloud_connections.scope_path(connection) if connection else None
+        ),
         # The identity that did the reading, named the way the customer sees it.
         "service_principal_object_id": (
             connection.service_principal_object_id if connection else None

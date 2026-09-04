@@ -22,6 +22,7 @@ import pytest
 
 from app.api.routes import cloud_connections as routes
 from app.connectors.azure import rbac
+from app.connectors.azure.onboarding import AzureOnboarding
 from app.connectors.azure.plan import AzurePlanBuilder
 from app.connectors.azure.rbac import (
     ARM_READ_ACTIONS,
@@ -35,7 +36,11 @@ from app.connectors.azure.rbac import (
 from app.connectors.evidence import EvidenceCategory
 from app.core.enums import CloudAccountStatus, ConnectionScope, ConsentStatus, Provider
 from app.models.cloud_connection import CloudConnection
-from app.services.cloud_connections import degraded_categories, role_upgrade_available
+from app.services.cloud_connections import (
+    degraded_categories,
+    grant_upgrade_available,
+    scope_path,
+)
 
 
 def build_test_plan():
@@ -154,7 +159,7 @@ def test_a_current_role_is_missing_nothing() -> None:
 
 def test_a_current_connection_prompts_no_upgrade() -> None:
     connection = make_connection(ROLE_VERSION)
-    assert role_upgrade_available(connection) is False
+    assert grant_upgrade_available(connection) is False
     assert degraded_categories(connection) == {}
 
 
@@ -193,10 +198,10 @@ def test_drift_names_both_versions_and_says_what_to_do(
     role_v2: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The message replaces "403 Forbidden", so it has to carry the instruction."""
-    monkeypatch.setattr("app.services.cloud_connections.ROLE_VERSION", "v2")
+    monkeypatch.setattr("app.connectors.azure.onboarding.ROLE_VERSION", "v2")
     connection = make_connection("v1")
 
-    assert role_upgrade_available(connection) is True
+    assert grant_upgrade_available(connection) is True
     degraded = degraded_categories(connection)
 
     assert set(degraded) == {"storage"}
@@ -205,11 +210,24 @@ def test_drift_names_both_versions_and_says_what_to_do(
     assert "redeploy" in message.lower()
 
 
-def test_non_azure_connections_have_no_role_to_be_behind(role_v2: None) -> None:
-    """The scanner calls this without knowing which cloud it is looking at."""
-    connection = make_connection("v1", provider=Provider.AWS)
-    assert role_upgrade_available(connection) is False
-    assert degraded_categories(connection) == {}
+def test_a_provider_with_no_onboarding_is_refused_rather_than_defaulted(
+    role_v2: None,
+) -> None:
+    """This used to answer False for any cloud that was not Azure.
+
+    That was the right answer while the question was "is the *Azure* role
+    behind", and it stopped being one the moment the question was routed by
+    provider. Answering False for an unimplemented cloud would say its grant is
+    current -- a reassurance about something nobody has written -- which is the
+    same failure the connector registry refuses by raising.
+    """
+    from app.core.errors import NotConfigured
+
+    connection = make_connection("v1", provider=Provider.GCP)
+    with pytest.raises(NotConfigured):
+        grant_upgrade_available(connection)
+    with pytest.raises(NotConfigured):
+        degraded_categories(connection)
 
 
 # ------------------------------------------------------- the versions after v2
@@ -379,7 +397,7 @@ class TestTheConnectionPayloadExplainsTheGap:
             scope_type=ConnectionScope.TENANT_ROOT,
             role_version="v3",
         )
-        assert service.required_role_version(azure) == rbac.ROLE_VERSION
+        assert service.required_grant_version(azure) == rbac.ROLE_VERSION
 
     def test_a_stale_role_names_the_checks_that_cannot_run(self) -> None:
         """The same categories the scanner uses to explain its own gaps, so the
@@ -522,7 +540,7 @@ class TestTheDeployedRoleIsRecorded:
                 self.tenant_id = tenant_id
 
         monkeypatch.setattr(auth, "TokenProvider", FakeTokens)
-        monkeypatch.setattr("app.services.cloud_connections.ArmClient", FakeArm)
+        monkeypatch.setattr("app.connectors.azure.onboarding.ArmClient", FakeArm)
         FakeArm.assignments = []
         FakeArm.definitions = {}
         FakeArm.fails = False
@@ -559,9 +577,9 @@ class TestTheDeployedRoleIsRecorded:
         self._deploy(ARM_READ_ACTIONS)
         session = FakeSession()
 
-        assert await service.refresh_role_version(session, connection) == ROLE_VERSION
+        assert await service.refresh_grant_version(session, connection) == ROLE_VERSION
         assert connection.role_version == ROLE_VERSION
-        assert role_upgrade_available(connection) is False
+        assert grant_upgrade_available(connection) is False
         assert degraded_categories(connection) == {}
         assert session.commits == 1
 
@@ -573,9 +591,9 @@ class TestTheDeployedRoleIsRecorded:
         connection = self._connection("v2")
         self._deploy(ARM_READ_ACTIONS)
 
-        await service.refresh_role_version(FakeSession(), connection)
+        await service.refresh_grant_version(FakeSession(), connection)
 
-        assert FakeArm.scopes_read == [connection.scope_path]
+        assert FakeArm.scopes_read == [scope_path(connection)]
 
     async def test_an_unchanged_role_is_not_rewritten(self) -> None:
         from app.services import cloud_connections as service
@@ -584,7 +602,7 @@ class TestTheDeployedRoleIsRecorded:
         self._deploy(ARM_READ_ACTIONS)
         session = FakeSession()
 
-        assert await service.refresh_role_version(session, connection) is None
+        assert await service.refresh_grant_version(session, connection) is None
         assert session.commits == 0
 
     async def test_a_failed_probe_leaves_the_recorded_version_alone(self) -> None:
@@ -596,20 +614,19 @@ class TestTheDeployedRoleIsRecorded:
         connection = self._connection("v2")
         FakeArm.fails = True
 
-        assert await service.detect_role_version(connection) is None
-        assert await service.refresh_role_version(FakeSession(), connection) is None
+        assert await AzureOnboarding().detect_grant_version(connection) is None
+        assert await service.refresh_grant_version(FakeSession(), connection) is None
         assert connection.role_version == "v2"
 
     async def test_assignments_to_other_principals_are_not_cloudguard_s(self) -> None:
         """Every assignment at a subscription is listed, most of them the
         customer's own people. Reading somebody else's Owner grant as
         CloudGuard's role would report v5 for a connection with no access."""
-        from app.services import cloud_connections as service
 
         connection = self._connection("v2")
         self._deploy(ARM_READ_ACTIONS, principal="00000000-0000-0000-0000-00000000beef")
 
-        assert await service.detect_role_version(connection) is None
+        assert await AzureOnboarding().detect_grant_version(connection) is None
         assert connection.role_version == "v2"
 
     async def test_a_role_deployed_at_the_old_version_still_reads_current(self) -> None:
@@ -620,12 +637,11 @@ class TestTheDeployedRoleIsRecorded:
         today's actions. The name stayed "(v2)" and the actions were v5's --
         which is exactly why identification reads actions and not names.
         """
-        from app.services import cloud_connections as service
 
         connection = self._connection("v2")
         self._deploy(ARM_READ_ACTIONS)
 
-        assert await service.detect_role_version(connection) == ROLE_VERSION
+        assert await AzureOnboarding().detect_grant_version(connection) == ROLE_VERSION
 
 
 def test_the_redeploy_template_grants_the_current_role() -> None:
@@ -635,14 +651,14 @@ def test_the_redeploy_template_grants_the_current_role() -> None:
     screen was asking for."""
     import json
 
-    from app.services.cloud_connections import render_template
+    from app.services.cloud_connections import render_artifact
 
     connection = make_connection("v2")
     connection.id = uuid.uuid4()
     connection.tenant_id = "8e482025-7ac9-4323-81e5-bc9fa528afd7"
     connection.service_principal_object_id = "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
 
-    template = json.loads(render_template(connection))
+    template = json.loads(render_artifact(connection).body)
     definition = template["resources"][0]
 
     assert f"'{ROLE_VERSION}'" in definition["name"]

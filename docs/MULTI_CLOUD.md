@@ -39,10 +39,10 @@ exactly that, in their own vocabulary.
 `service_principal_object_id`, `consent_status`. These are not neutral columns
 with Azure values — they are Azure concepts.
 
-**Eleven import sites reach into `connectors/azure` from outside it** —
-`services/cloud_connections.py`, `services/cloud_accounts.py`,
-`api/routes/cloud_connections.py`, `connectors/registry.py`. Onboarding is the
-Azure-coupled half of the application; scanning is not.
+~~**Eleven import sites reach into `connectors/azure` from outside it.**~~
+Down to the registry, which is where mapping a provider to its implementation
+belongs. Onboarding sits behind `ProviderOnboarding` (`DECISIONS.md` §71) and
+`test_provider_seam.py` has no scheduled exceptions left.
 
 ~~**There is no region dimension.**~~ Built. See §4 — it was the largest
 structural difference, and it was not a naming problem: readings are now scoped
@@ -245,8 +245,14 @@ class of misleading number the coverage ledger exists to prevent.
    two instances to generalize from.
 4. Scope vocabulary migration, driven by what the second connector actually
    needed rather than by this document's guess.
-5. Onboarding services split by provider — the eleven import sites, which are
-   worth untangling only when there is a second thing to untangle them for.
+5. ~~Onboarding services split by provider.~~ Done, and step 2 forced it
+   rather than the other way round: the AWS connector could not be reached
+   without a connection, and a connection could not be made without a flow that
+   was not Azure's. `ProviderOnboarding` is what the two clouds turned out to
+   have in common — deploy something generated from the declared permission
+   set, prove the grant by using it, discover what is beneath the scope — with
+   the steps a provider lacks answering "nothing to do" rather than being
+   special-cased by the caller (`DECISIONS.md` §71).
 
 Steps 3 through 5 are deliberately after step 2. Every one of them is a
 refactor whose right shape is knowable from two examples and guessable from one.

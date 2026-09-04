@@ -24,7 +24,12 @@ import pathlib
 
 import pytest
 
-from app.connectors.registry import CONNECTORS, get_connector_class
+from app.connectors.registry import (
+    CONNECTORS,
+    ONBOARDING,
+    get_connector_class,
+    get_onboarding,
+)
 from app.core.enums import Provider
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
@@ -37,6 +42,8 @@ APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 ALLOWED_PREFIXES = (
     "connectors/azure/",
     "rules/azure/",
+    "connectors/aws/",
+    "rules/aws/",
     # The two registries. Mapping a provider to its implementation is the whole
     # job of one and half the job of the other, so naming providers there is the
     # design rather than a leak from it.
@@ -44,17 +51,19 @@ ALLOWED_PREFIXES = (
     "rules/registry.py",
 )
 
-# The leak that is scheduled rather than accidental.
+# Nothing is exempt any more.
 #
-# ``MULTI_CLOUD.md`` §8 step 5 puts the onboarding split *after* a second
-# connector exists, and gives the reason: it is a refactor whose right shape is
-# knowable from two examples and guessable from one. Consent URLs, the RBAC
-# artefact and the client are genuinely Azure-shaped, and splitting them now
-# would be inventing an abstraction for a provider nobody has written.
+# ``services/cloud_connections.py`` was, by schedule rather than by accident:
+# ``MULTI_CLOUD.md`` §8 step 5 put the onboarding split *after* a second
+# connector, because it is a refactor whose right shape is knowable from two
+# examples and guessable from one. AWS is that second example, and the split
+# happened -- consent URLs, the deployable artefact, the probe and the account
+# listing now sit behind ``ProviderOnboarding``.
 #
-# Listed by name so it stays one known exception rather than becoming a habit --
-# a new leak lands in the failure message beside it.
-SCHEDULED_EXCEPTIONS = {"services/cloud_connections.py"}
+# Kept as an empty set rather than deleted, so a future exception has to be
+# written down beside a reason instead of quietly appearing in the allow-list
+# above.
+SCHEDULED_EXCEPTIONS: set[str] = set()
 
 
 def neutral_modules() -> list[pathlib.Path]:
@@ -93,8 +102,9 @@ def provider_imports(path: pathlib.Path) -> list[str]:
 def test_nothing_neutral_imports_a_provider_package() -> None:
     """The seam, checked rather than asserted in a docstring.
 
-    The registries are exempt by design and the onboarding service by schedule;
-    anything else here is a place a second connector would have to be threaded
+    The registries are exempt by design and nothing else is: the onboarding
+    service was the last scheduled exception and no longer needs one. Anything
+    appearing here is a place a second connector would have to be threaded
     through by hand, found now rather than during a migration.
     """
     leaks = {
@@ -137,3 +147,31 @@ def test_an_unimplemented_provider_is_refused_rather_than_defaulted() -> None:
         get_connector_class(Provider.AWS)
     with pytest.raises(NotConfigured):
         get_connector_class(Provider.GCP)
+
+
+def test_every_registered_provider_can_onboard_a_customer() -> None:
+    """Onboarding is now a seam too, and a seam is only real if something asks.
+
+    The abstract methods make an incomplete implementation fail at construction
+    rather than at the moment a customer presses a button, which is the whole
+    reason they are abstract: a provider missing ``probe`` would have verified
+    every connection to it by not checking.
+    """
+    for provider in ONBOARDING:
+        onboarding = get_onboarding(provider)
+        assert onboarding.provider == provider
+        assert onboarding.root_scope
+        assert onboarding.grant_version()
+        assert onboarding.initial_status_detail
+
+
+def test_a_provider_with_no_onboarding_is_refused_rather_than_defaulted() -> None:
+    """The same rule the connector registry follows, for the same reason.
+
+    Handing back Azure's flow for AWS would send a customer to a Microsoft
+    consent screen for an Amazon account.
+    """
+    from app.core.errors import NotConfigured
+
+    with pytest.raises(NotConfigured):
+        get_onboarding(Provider.GCP)

@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from app.core.config import settings
 from app.core.db import service_session
 from app.core.deps import DbSession, Tenant
-from app.core.enums import ConsentStatus, Role
+from app.core.enums import ConsentStatus, Provider, Role
 from app.core.errors import CloudAccountNotFound, envelope
 from app.core.signing import SignedStateError, verify_state
 from app.models.cloud_account import CloudAccount
@@ -42,13 +42,13 @@ def _serialize(
 ) -> dict:
     data = CloudConnectionOut.model_validate(connection).model_dump(mode="json")
     data["is_verified"] = connection.is_verified
-    data["scope_path"] = connection.scope_path
+    data["scope_path"] = service.scope_path(connection)
     data["subscription_count"] = subscription_count
-    data["template_url"] = service.deploy_to_azure_url(connection)
+    data["template_url"] = service.deployment_url(connection)
     # Lets the card stop showing a spinner once waiting has stopped being a
     # plausible explanation for the silence.
     data["deploy_stalled"] = service.deploy_stalled(connection)
-    data["role_upgrade_available"] = service.role_upgrade_available(connection)
+    data["role_upgrade_available"] = service.grant_upgrade_available(connection)
     # What to redeploy to, and what is lost until they do. The boolean above
     # says a newer role exists; on its own it can only produce "something is
     # out of date", which is a notification rather than a decision. These two
@@ -56,7 +56,7 @@ def _serialize(
     # checks report UNKNOWN until you redeploy" -- and the categories come from
     # the same function the scanner uses to explain the gaps, so the screen and
     # the scan cannot disagree about which checks are affected.
-    data["role_required_version"] = service.required_role_version(connection)
+    data["role_required_version"] = service.required_grant_version(connection)
     data["degraded_categories"] = sorted(
         category.value for category in service.degraded_categories(connection)
     )
@@ -86,7 +86,7 @@ def _serialize(
     # connection stuck in PENDING with no route forward. The signed state also
     # expires in 30 minutes, so a stored one would usually be dead anyway.
     if connection.consent_status != ConsentStatus.GRANTED:
-        fresh, problem = service.consent_url_for(connection)
+        fresh, problem = service.grant_start_url(connection)
         consent_url = consent_url or fresh
         if problem:
             data["status_detail"] = problem
@@ -157,11 +157,11 @@ async def arm_template(
         connection = await session.get(CloudConnection, connection_id)
         if connection is None:
             raise CloudAccountNotFound("Connection not found")
-        body = service.render_template(connection)
+        artifact = service.render_artifact(connection)
 
     return JSONResponse(
-        content=json.loads(body),
-        media_type="application/json",
+        content=json.loads(artifact.body),
+        media_type=artifact.media_type,
         headers={
             "Content-Disposition": 'inline; filename="cloudguard-scanner.json"',
             **TEMPLATE_CORS_HEADERS,
@@ -185,7 +185,7 @@ async def app_registration(tenant: Tenant) -> dict:
     eye in a portal.
     """
     tenant.require_role(Role.OWNER, Role.ADMIN)
-    return envelope(service.azure_app_registration())
+    return envelope(service.self_registration(Provider.AZURE) or {})
 
 
 @router.get("/azure/consent/callback", include_in_schema=False)

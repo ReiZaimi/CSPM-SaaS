@@ -9,14 +9,20 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.core.enums import ConnectionScope, ConsentStatus
+from app.connectors.azure.onboarding import AzureOnboarding
+from app.core.enums import ConnectionScope, ConsentStatus, Provider
 from app.core.errors import ValidationFailed
 from app.models.cloud_connection import CloudConnection
-from app.services.cloud_connections import render_template
+from app.services.cloud_connections import render_artifact, scope_path
 
 
 def connection(**kwargs: object) -> CloudConnection:
     defaults: dict = {
+        # Stated rather than left to the column default, which is applied at
+        # flush and so is absent from a connection built in memory. Every
+        # onboarding question is now routed by provider, so an unset one is not
+        # "Azure" -- it is a provider the registry has never heard of.
+        "provider": Provider.AZURE,
         "name": "Production",
         "scope_type": ConnectionScope.TENANT_ROOT,
         "consent_status": ConsentStatus.PENDING,
@@ -103,12 +109,12 @@ def test_both_grants_verify() -> None:
 def test_tenant_root_scope_is_unknown_before_consent() -> None:
     """A tenant's root management group is named with the tenant id, which
     nobody types -- so there is genuinely no scope to grant at yet."""
-    assert connection().scope_path is None
+    assert scope_path(connection()) is None
 
 
 def test_tenant_root_scope_resolves_once_consent_reports_the_tenant() -> None:
     c = connection(tenant_id="contoso-tenant")
-    assert c.scope_path == (
+    assert scope_path(c) == (
         "/providers/Microsoft.Management/managementGroups/contoso-tenant"
     )
 
@@ -119,17 +125,19 @@ def test_management_group_scope_uses_the_named_group() -> None:
         scope_id="platform-mg",
         tenant_id="contoso-tenant",
     )
-    assert c.scope_path == "/providers/Microsoft.Management/managementGroups/platform-mg"
+    assert scope_path(c) == (
+        "/providers/Microsoft.Management/managementGroups/platform-mg"
+    )
 
 
 def test_subscription_scope_is_the_narrowest_grant() -> None:
     c = connection(scope_type=ConnectionScope.SUBSCRIPTION, scope_id="sub-1")
-    assert c.scope_path == "/subscriptions/sub-1"
+    assert scope_path(c) == "/subscriptions/sub-1"
 
 
 def test_subscription_scope_without_an_id_has_no_path() -> None:
     c = connection(scope_type=ConnectionScope.SUBSCRIPTION)
-    assert c.scope_path is None
+    assert scope_path(c) is None
 
 
 # --- template preconditions ------------------------------------------------
@@ -150,7 +158,7 @@ def granted(**kwargs: object) -> CloudConnection:
 
 def test_template_refuses_before_consent() -> None:
     with pytest.raises(ValidationFailed, match="consent"):
-        render_template(connection())
+        render_artifact(connection())
 
 
 def test_template_refuses_while_the_principal_is_unpublished() -> None:
@@ -160,15 +168,16 @@ def test_template_refuses_while_the_principal_is_unpublished() -> None:
     step they already finished. The directory simply has not caught up.
     """
     with pytest.raises(ValidationFailed, match="consent"):
-        render_template(granted())
+        render_artifact(granted())
 
 
 def test_template_renders_once_the_principal_is_known() -> None:
-    body = render_template(
+    artifact = render_artifact(
         granted(
             service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
         ),
     )
+    body = artifact.body
     assert "9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9" in body
 
 
@@ -212,14 +221,14 @@ def test_template_url_falls_back_to_the_consent_callback_origin() -> None:
 def test_no_template_url_rather_than_a_guessed_one() -> None:
     """A hidden button is recoverable; a link to the wrong host is not."""
     from app.core.config import settings
-    from app.services.cloud_connections import template_url
+    from app.services.cloud_connections import artifact_url
 
     original = (settings.api_url, settings.azure_redirect_uri)
     try:
         settings.api_url = ""
         settings.azure_redirect_uri = ""
         ready = granted(service_principal_object_id="9a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9")
-        assert template_url(ready) is None
+        assert artifact_url(ready) is None
     finally:
         settings.api_url, settings.azure_redirect_uri = original
 
@@ -246,12 +255,16 @@ async def resolve_with(monkeypatch, raises: Exception | None = None, found=None)
                 raise raises
             return found
 
-    monkeypatch.setattr(service, "GraphClient", FakeGraph)
+    assert service  # the neutral caller; the lookup itself lives behind the seam
+    monkeypatch.setattr(
+        "app.connectors.azure.onboarding.GraphClient", FakeGraph
+    )
     monkeypatch.setattr(
         "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
     )
     assert client_module  # imported for the AzureApiError type used by callers
-    return await service._resolve_service_principal(granted())
+    lookup = await AzureOnboarding().ensure_principal(granted())
+    return lookup.problem
 
 
 async def test_a_refused_lookup_names_the_app_registration(monkeypatch) -> None:
@@ -288,7 +301,7 @@ def test_consent_url_is_regenerated_not_stored(monkeypatch) -> None:
     """
     from app.connectors.azure import auth
     from app.core.config import Settings
-    from app.services.cloud_connections import consent_url_for
+    from app.services.cloud_connections import grant_start_url
 
     monkeypatch.setattr(
         auth,
@@ -302,7 +315,7 @@ def test_consent_url_is_regenerated_not_stored(monkeypatch) -> None:
             azure_consent_state_secret="a-real-random-32-character-string-here",
         ),
     )
-    url, problem = consent_url_for(connection())
+    url, problem = grant_start_url(connection())
     assert problem is None
     assert url is not None and url.startswith("https://login.microsoftonline.com/")
 
@@ -311,7 +324,7 @@ def test_a_misconfigured_deployment_returns_the_reason(monkeypatch) -> None:
     """Not None-and-silence: without the reason the card renders empty."""
     from app.connectors.azure import auth
     from app.core.config import Settings
-    from app.services.cloud_connections import consent_url_for
+    from app.services.cloud_connections import grant_start_url
 
     monkeypatch.setattr(
         auth,
@@ -326,7 +339,7 @@ def test_a_misconfigured_deployment_returns_the_reason(monkeypatch) -> None:
             azure_consent_state_secret="a-real-random-32-character-string-here",
         ),
     )
-    url, problem = consent_url_for(connection())
+    url, problem = grant_start_url(connection())
     assert url is None
     assert problem is not None and "Secret ID" in problem
 

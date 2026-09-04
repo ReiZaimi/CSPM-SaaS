@@ -3117,6 +3117,82 @@ verifies. Its docstring no longer says "both grants": that was true while Azure
 was the only provider, and is exactly the kind of sentence that stops being true
 without anyone noticing.
 
+## 71. Onboarding moves behind the seam, and the seam has no exceptions left
+
+Scanning was provider-neutral from v0.1 and onboarding never was.
+`services/cloud_connections.py` imported Azure's token provider, its ARM and
+Graph clients and its role definitions at six call sites, and
+`tests/unit/test_provider_seam.py` listed it as `SCHEDULED_EXCEPTIONS` — a leak
+by schedule rather than by accident, because `MULTI_CLOUD.md` §8 step 5 put the
+split after a second connector and gave the reason: a refactor whose right shape
+is knowable from two examples and guessable from one.
+
+AWS is the second example. `ProviderOnboarding`
+(`app/connectors/onboarding.py`) is what the two turned out to have in common,
+and it is a shape rather than a set of operations:
+
+1. the customer names a scope and a connection is created;
+2. CloudGuard hands them something to deploy, **generated from the declared
+   permission set** rather than hand-maintained;
+3. CloudGuard proves the grant by *using* it, never by being told it exists;
+4. the accounts beneath the scope are discovered rather than typed in.
+
+What differs is how many grants there are. Azure has two that fail
+independently — Entra admin consent for Graph, and an ARM role — with a service
+principal to resolve between them. AWS has one cross-account role and nothing to
+consent to.
+
+**The steps a provider does not have return "nothing to do" rather than being
+special-cased by the caller.** `start_url` answers `(None, None)`,
+`ensure_principal` answers `ready=True`, `grant_problem` answers `None`. This is
+the load-bearing part: a caller that branched on provider would be the thing
+this split exists to remove, and a connection with no consent step must not sit
+forever waiting for one.
+
+### What stayed neutral
+
+The service kept everything that is the same in every cloud and is most of its
+length: creating and listing connections, the polling loop and its patience
+window, writing discovered accounts and disabling the ones that vanished, the
+scan schedule, the change-event debounce, the scope choices, the audit entries.
+`_auto_discover` is the clearest split — the provider answers *what exists*, and
+the neutral half decides what that means for rows already held.
+
+### Two things this changed on purpose
+
+**`CloudConnection.scope_path` is not a model property any more.** It rendered
+an ARM management-group path for whatever it was handed, so an AWS connection
+would have carried a plausible-looking Azure scope on every API response — a
+wrong answer that reads as a right one. It is `ProviderOnboarding.scope_path`
+now, reached through `cloud_connections.scope_path`.
+
+**An unimplemented provider raises rather than answering "current".**
+`role_upgrade_available` used to return False for any cloud that was not Azure.
+That was correct while the question was "is the Azure role behind" and stopped
+being correct the moment the question was routed by provider: False would say a
+grant nobody has written is up to date. `get_onboarding` refuses, exactly as
+`get_connector_class` does.
+
+### The names
+
+`role_version` stayed as a column and stopped being the word in code.
+`grant_version`, `grant_upgrade_available`, `refresh_grant_version`,
+`render_artifact`, `deployment_url` — the same mechanism, named for what every
+cloud has rather than for what Azure calls it. The column keeps its name because
+renaming it is a migration that buys nothing; the code does not, because the
+code is what a reader uses to decide whether a concept is Azure-only.
+
+One implementation detail is load-bearing and easy to undo by tidying:
+`azure/onboarding.py` imports `app.connectors.azure.auth` as a **module** and
+calls `auth.TokenProvider(...)`, rather than importing the name. The service it
+came from imported inside each function, which read as an accident and was not:
+every test of this path replaces `TokenProvider` with one that issues a prepared
+token, and a name bound at import time would not see it.
+
+`SCHEDULED_EXCEPTIONS` is now empty rather than deleted, so the next exception
+has to be written down beside a reason instead of quietly appearing in the
+allow-list above it.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

@@ -16,9 +16,10 @@ import jwt
 import pytest
 
 from app.connectors.azure.auth import REQUIRED_GRAPH_PERMISSIONS
+from app.connectors.azure.onboarding import GRANT_INCOMPLETE_PREFIX
 from app.core.enums import CloudAccountStatus, ConnectionScope, ConsentStatus, Provider
 from app.models.cloud_connection import CloudConnection
-from app.services.cloud_connections import GRANT_INCOMPLETE_PREFIX, graph_grant_problem
+from app.services.cloud_connections import grant_problem
 
 
 def token_granting(*permissions: str) -> str:
@@ -65,7 +66,7 @@ def tokens(monkeypatch: pytest.MonkeyPatch):
 # ------------------------------------------------------- at the consent callback
 async def test_a_complete_grant_is_no_problem(tokens, monkeypatch) -> None:
     monkeypatch.setattr(tokens, "token", token_granting(*REQUIRED_GRAPH_PERMISSIONS))
-    assert await graph_grant_problem(connection()) is None
+    assert await grant_problem(connection()) is None
 
 
 async def test_a_grant_of_nothing_names_every_permission(tokens, monkeypatch) -> None:
@@ -74,7 +75,7 @@ async def test_a_grant_of_nothing_names_every_permission(tokens, monkeypatch) ->
     all, and consent that looks entirely successful."""
     monkeypatch.setattr(tokens, "token", token_granting())
 
-    problem = await graph_grant_problem(connection())
+    problem = await grant_problem(connection())
 
     assert problem is not None
     assert problem.startswith(GRANT_INCOMPLETE_PREFIX)
@@ -88,7 +89,7 @@ async def test_the_message_says_what_still_works(tokens, monkeypatch) -> None:
     looking for the wrong thing."""
     monkeypatch.setattr(tokens, "token", token_granting())
 
-    problem = await graph_grant_problem(connection()) or ""
+    problem = await grant_problem(connection()) or ""
 
     assert "Subscription scanning is unaffected" in problem
     assert "application" in problem, "and how the registration must declare them"
@@ -100,7 +101,7 @@ async def test_a_partial_grant_names_only_what_is_absent(tokens, monkeypatch) ->
         tokens, "token", token_granting("Directory.Read.All", "User.Read.All")
     )
 
-    problem = await graph_grant_problem(connection()) or ""
+    problem = await grant_problem(connection()) or ""
 
     assert "Directory.Read.All," not in problem
     assert "RoleManagement.Read.Directory" in problem
@@ -114,11 +115,11 @@ async def test_a_tenant_that_cannot_issue_a_token_is_not_a_missing_grant(
     change a directory that is configured correctly."""
     monkeypatch.setattr(tokens, "fails", True)
 
-    assert await graph_grant_problem(connection()) is None
+    assert await grant_problem(connection()) is None
 
 
 async def test_no_tenant_yet_is_not_a_missing_grant(tokens) -> None:
-    assert await graph_grant_problem(connection(tenant_id=None)) is None
+    assert await grant_problem(connection(tenant_id=None)) is None
 
 
 # ------------------------------------------------------------- at scan time

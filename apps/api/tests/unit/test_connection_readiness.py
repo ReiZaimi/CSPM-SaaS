@@ -29,10 +29,10 @@ from app.models.cloud_connection import CloudConnection
 @pytest.fixture(autouse=True)
 def _no_azure_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """The serializer builds consent and template URLs, neither under test."""
-    monkeypatch.setattr(routes.service, "deploy_to_azure_url", lambda c: None)
-    monkeypatch.setattr(routes.service, "consent_url_for", lambda c: (None, None))
+    monkeypatch.setattr(routes.service, "deployment_url", lambda c: None)
+    monkeypatch.setattr(routes.service, "grant_start_url", lambda c: (None, None))
     monkeypatch.setattr(routes.service, "deploy_stalled", lambda c: False)
-    monkeypatch.setattr(routes.service, "role_upgrade_available", lambda c: False)
+    monkeypatch.setattr(routes.service, "grant_upgrade_available", lambda c: False)
 
 
 def verified_connection() -> CloudConnection:
