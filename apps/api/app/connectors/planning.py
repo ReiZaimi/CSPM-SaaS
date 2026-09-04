@@ -93,6 +93,14 @@ class CollectionPlan:
     def carried_for(self, key: EvidenceKey) -> CarriedReading | None:
         return self.carried.get(key)
 
+    # A regional key cannot be carried, and the mapping above is why: it is
+    # keyed by evidence, and a key read in seventeen regions is seventeen
+    # readings that one entry could not hold without silently keeping whichever
+    # region was written last. Reuse is opt-in per key through
+    # :attr:`EvidenceKey.reuse_window`, which defaults to never, so a provider
+    # gets this right by leaving it alone -- and a test pins that no regional
+    # key declares a window.
+
     def restrict(self, keys: Iterable[EvidenceKey]) -> "CollectionPlan":
         """The same plan seen through what one provider plan can produce."""
         offered = frozenset(keys)

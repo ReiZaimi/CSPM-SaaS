@@ -213,6 +213,10 @@ def test_the_payloads_stay_out_of_the_serialized_coverage() -> None:
     # and a set comparison catches a new key carrying one in far better than a
     # membership check would.
     assert set(serialized) == {
+        # The bare evidence key and the region, stated rather than recoverable
+        # by splitting the entry name apart.
+        "key",
+        "region",
         "category",
         "outcome",
         "detail",

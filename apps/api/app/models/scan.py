@@ -288,7 +288,15 @@ class Evidence(UUIDPrimaryKey, TenantOwned, Base):
             "scan_id",
             "cloud_account_id",
             "evidence_key",
+            "region",
             name="uq_evidence_scan_account_key",
+            # Both NULLable columns here mean "this reading is not scoped that
+            # way" -- a directory reading belongs to no subscription, a global
+            # listing to no region -- and two readings that are both unscoped
+            # are the same reading. Under Postgres's default the NULLs would be
+            # distinct from each other and the constraint would stop protecting
+            # exactly the rows it was added for.
+            postgresql_nulls_not_distinct=True,
         ),
         Index("ix_evidence_outcome", "organization_id", "outcome"),
         # What the evidence planner will ask: what do we already hold for this
@@ -329,6 +337,14 @@ class Evidence(UUIDPrimaryKey, TenantOwned, Base):
     evidence_key: Mapped[str] = mapped_column(String(64), nullable=False)
     # The permission bucket it belongs to, e.g. "storage".
     category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # Which region this was a reading of, for a provider that reads per region.
+    #
+    # NULL means the listing is global, which is every Azure reading and, on
+    # AWS, IAM, S3 and Organizations. Beside ``evidence_key`` rather than folded
+    # into it because a rule depends on the key: seventeen rows here are one
+    # answer to "did we see the security groups", and the aggregation that
+    # decides whether that answer is trustworthy lives in the coverage report.
+    region: Mapped[str | None] = mapped_column(String(32))
     outcome: Mapped[TaskOutcome] = mapped_column(
         StrEnumType(TaskOutcome, 16), nullable=False
     )

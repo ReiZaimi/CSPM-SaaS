@@ -1,12 +1,13 @@
 # CloudGuard — Designing for AWS and GCP
 
-Design only. Nothing here is implemented, and deliberately so: most of it should
-not be built until a second provider actually exists, because an abstraction
-guessed at from one example is usually wrong in the places that matter.
+Written as design only, while Azure was the only provider: most of it should not
+be built until a second one exists, because an abstraction guessed at from one
+example is usually wrong in the places that matter.
 
-What this document is for is the opposite — deciding which of today's shapes are
-load-bearing and must not drift while Azure is the only provider, and naming the
-one defect worth fixing before any of it starts.
+That is no longer entirely true of the document. AWS is now being built, and the
+sections it has reached say so — with what the work actually needed replacing
+what this file guessed, since the guesses are only worth keeping where they held.
+Everything still marked as design is still design.
 
 ---
 
@@ -43,8 +44,9 @@ with Azure values — they are Azure concepts.
 `api/routes/cloud_connections.py`, `connectors/registry.py`. Onboarding is the
 Azure-coupled half of the application; scanning is not.
 
-**There is no region dimension.** See §4 — it is the largest structural
-difference, and it is not a naming problem.
+~~**There is no region dimension.**~~ Built. See §4 — it was the largest
+structural difference, and it was not a naming problem: readings are now scoped
+by region while verdicts stay per evidence key (`DECISIONS.md` §69).
 
 **Rules could judge another cloud's resources.** Fixed ahead of the rest, since it was cheap while still theoretical. See §6.
 
@@ -98,15 +100,28 @@ aggregator, or Cloud Control API can answer "what exists, where" in one call;
 GCP's Cloud Asset Inventory does the same per organization. Then fan out detail
 calls only to regions that hold something.
 
-**Decision: (b) primary, (a) fallback.** Same reasoning as preferring Defender
-for Cloud over a second scanner: let the provider do the fan-out it is built for,
-and keep our own enumeration for what the aggregator cannot answer or the
-customer has not enabled. Fallback matters — Resource Explorer is opt-in, and a
-customer without it must still be scannable rather than reported as empty.
+**Decided here as (b) primary, (a) fallback. Built as (a).** The reasoning for
+(b) still holds — let the provider do the fan-out it is built for — but the
+fallback is the part every customer needs, because Resource Explorer is opt-in
+and a customer without it must be scannable rather than reported as empty. So
+(a) is what exists, and (b) is an optimization to add on top of a working
+enumeration rather than the thing the first connector rests on.
 
-The honest cost of (b): the aggregator is a second thing that can be stale or
-disabled, and a stale index reads as a complete one. It gets a `PARTIAL`, for
-exactly the reason a truncated listing does.
+The honest cost of (b), when it comes: the aggregator is a second thing that can
+be stale or disabled, and a stale index reads as a complete one. It gets a
+`PARTIAL`, for exactly the reason a truncated listing does.
+
+**What (a) actually cost, now that it is built** (`DECISIONS.md` §69). Rather
+less than this section feared, and in a different place. `CollectionTask` gained
+a `region` and the executor absorbed the fan-out without changing shape, as
+predicted. What it did not predict: the region could not go into the
+`EvidenceKey`, because that is what a rule declares and a rule has no business
+knowing which regions a customer enabled — so readings are scoped by key *and*
+region while verdicts stay per key, and a key is trustworthy only if every
+region's reading of it was. The `evidence` unique constraint had to grow the
+column too. And a wave needed a concurrency cap for the first time, since
+seventeen regions × nine listings in one wave is a shape designed to be
+throttled.
 
 ---
 

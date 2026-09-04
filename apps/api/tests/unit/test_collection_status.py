@@ -54,7 +54,15 @@ def test_the_model_keys_a_reading_to_its_subscription() -> None:
         "scan_id",
         "cloud_account_id",
         "evidence_key",
+        # And to its region, where the provider reads per region. Seventeen
+        # regional readings of one key are seventeen rows, and without this
+        # they would be one row overwritten sixteen times.
+        "region",
     ]
+    # Both nullable columns mean "not scoped that way", so two unscoped
+    # readings are the same reading. Postgres would otherwise call their NULLs
+    # distinct and the constraint would protect nothing it was added for.
+    assert constraint.dialect_options["postgresql"]["nulls_not_distinct"] is True
 
 
 def test_a_reading_carries_the_category_the_rules_degrade_on() -> None:

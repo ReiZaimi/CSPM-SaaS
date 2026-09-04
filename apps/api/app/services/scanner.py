@@ -1018,7 +1018,15 @@ class ScanPipeline:
                     cloud_account_id=account_id,
                     connection_id=connection_id,
                     provider=snapshot.provider,
-                    evidence_key=key,
+                    # The bare key, and the region beside it. ``key`` here is
+                    # the entry name, which for a regional reading is
+                    # ``security_groups@eu-west-1`` -- unique within a capture,
+                    # and not what a rule declares a dependency on. Captures
+                    # taken before regions existed carry no ``key`` field, and
+                    # their entry name is already the bare key, which is what
+                    # the fallback says.
+                    evidence_key=entry.get("key") or key,
+                    region=entry.get("region"),
                     category=entry.get("category", ""),
                     outcome=TaskOutcome(entry.get("outcome", TaskOutcome.FAILED.value)),
                     detail=entry.get("detail") or None,

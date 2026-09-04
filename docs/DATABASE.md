@@ -227,6 +227,14 @@ evidence                   -- per scan, per evidence key: did this listing
   id, organization_id, scan_id, cloud_account_id, connection_id    -- actually
   provider, evidence_key, category, outcome, detail                 -- arrive?
   item_count, collected_at
+  region                     -- which region this was a reading of, for a
+                             -- provider that reads per region. NULL means the
+                             -- listing is global: every Azure row, and on AWS
+                             -- IAM, S3 and Organizations. Beside evidence_key
+                             -- rather than folded into it, because a rule
+                             -- depends on the key -- seventeen rows here are
+                             -- one answer to "did we see the security groups"
+                             -- (DECISIONS.md §69, migration 0033)
   source_scan_id             -- which scan read the provider, where that is not
                              -- scan_id. A reading inside its reuse window is
                              -- carried into the next scan, which writes a row
@@ -247,6 +255,10 @@ evidence                   -- per scan, per evidence key: did this listing
   -- The row that makes UNKNOWN honest. A rule declares the keys it reads and
   -- degrades only when one of *those* failed -- not when a sibling listing in
   -- the same category did (RULE_ENGINE.md)
+  -- UNIQUE NULLS NOT DISTINCT (scan_id, cloud_account_id, evidence_key,
+  -- region). Both nullable columns mean "not scoped that way", so two unscoped
+  -- readings are the same reading; under Postgres's default their NULLs would
+  -- be distinct and the constraint would protect nothing
 
 evidence_blobs             -- the verbatim JSON, deduplicated by content hash
   organization_id, content_hash        -- (both) the primary key

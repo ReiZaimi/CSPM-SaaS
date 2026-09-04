@@ -2967,6 +2967,98 @@ check rather than the reachability rule beside it. And the ARM action matcher
 moved from the normalizer into `rbac.py`, where the vocabulary it interprets
 already lives, because three callers now need the same reading of a wildcard.
 
+## 69. A reading is scoped by region; a verdict is not
+
+The first thing AWS breaks is not a name. Azure's ARM lists a subscription's
+resources globally, so one evidence key meant one reading, and every layer of
+the collector took that for granted: the executor indexed tasks by key, the
+coverage report indexed results by key, and `evidence` was unique on
+`(scan_id, cloud_account_id, evidence_key)`. AWS reads almost everything per
+region. An account with seventeen enabled regions produces seventeen readings
+of `security_groups`, which the executor would have called a duplicate task and
+the database would have refused.
+
+The temptation is to put the region into the key — `security_groups_eu_west_1`
+— and it is wrong for a reason that is not aesthetic. `EvidenceKey` is what a
+rule declares in `requires_evidence`, and a rule has no business knowing which
+regions a customer has enabled. A rule asking for the security groups is asking
+about the estate.
+
+So the two are separated. A **reading** is identified by key and region; a
+**verdict** is reached per key.
+
+* `CollectionTask` and `TaskResult` carry an optional `region`, and a
+  `scoped_key` of `security_groups@eu-west-1`. `None` — every Azure task —
+  leaves the scoped key equal to the bare one, so nothing about a
+  single-region-free provider changed.
+* `CoverageReport` files results and payloads under the scoped key, so
+  seventeen readings are seventeen rows rather than one overwritten sixteen
+  times.
+* `key_is_trustworthy` aggregates back: a key is trustworthy only if **every**
+  region's reading of it was. Not any. Sixteen good regions and one denied is a
+  partial view of the estate, and "nothing is open" is not a conclusion a
+  partial view supports — the same position `PARTIAL` already takes on a
+  listing truncated at the page cap.
+* `key_problems()` therefore reports one gap per key and names the regions
+  inside the reason. Per region would hand the rule engine a key it has never
+  heard of; without the region a customer would be told their security groups
+  failed and left to check seventeen of them.
+
+Dependencies follow the same split. `depends_on` names bare keys, and a key
+becomes available only once every one of its regional tasks has been scheduled
+— counted down rather than marked on the first, or a dependent task would fan
+out from one region's results and report the rest as absent.
+
+### What the capture holds
+
+A regional key's payload is a list of blocks:
+
+```json
+{"security_groups": [{"region": "eu-west-1", "items": [ ... ]}, ...]}
+```
+
+The provider's own JSON is untouched inside `items`, which is what keeps the
+capture verbatim and replayable. The region sits beside it rather than being
+recovered later from an identifier, because several AWS services return ARNs
+with an empty region field and a normalizer would have to guess.
+
+`coverage` entries now state `key` and `region` explicitly instead of leaving
+them to be parsed back out of the entry name. A record that has to be recovered
+by splitting a string is a record that is a function of how the string happens
+to be spelled.
+
+### Two smaller things this forced
+
+**A wave is now bounded.** Concurrency was unlimited because a wave was eleven
+ARM listings. A regional fan-out puts one listing per region in a wave, and a
+customer with seventeen regions would open a hundred and fifty concurrent calls
+— a shape designed to be throttled, since AWS throttles per region per service.
+`CollectionRun` takes `max_concurrency`; a provider that asks for nothing keeps
+exactly the behaviour it had.
+
+**A regional key cannot be carried forward.** `CollectionPlan.carried` is keyed
+by evidence, and one entry cannot hold seventeen readings without silently
+keeping whichever was written last. Reuse is opt-in per key through
+`reuse_window`, which defaults to never, so a provider gets this right by
+leaving it alone.
+
+### The migration
+
+`evidence` gains `region`, and the unique constraint is rebuilt over
+`(scan_id, cloud_account_id, evidence_key, region)` with `NULLS NOT DISTINCT`.
+Both nullable columns there mean "this reading is not scoped that way" — a
+directory reading belongs to no subscription, a global listing to no region —
+and two readings that are both unscoped are the same reading. Under Postgres's
+default the NULLs would be distinct from each other and the constraint would
+stop protecting the rows it exists for. Migration 0033 removes any duplicate
+first rather than failing on a customer's database; it is expected to match
+nothing, because the only rows the old constraint could not separate are
+directory readings and a scan takes one directory capture.
+
+Nothing above the connector changed. The rule engine, `RuleContext`, the risk
+scorer and every rule still degrade one `EvidenceKey` at a time and have not
+learned that regions exist.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

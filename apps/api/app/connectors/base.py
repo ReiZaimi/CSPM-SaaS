@@ -66,7 +66,13 @@ class RawSnapshot:
     # from ``now()`` would quietly make it a function of when it was asked.
     collected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: str = "1.0"
-    # category -> provider payload, e.g. {"network_security_groups": [...]}
+    # evidence key -> provider payload, e.g. {"network_security_groups": [...]}
+    #
+    # A key a provider reads per region holds blocks instead:
+    # ``{"security_groups": [{"region": "eu-west-1", "items": [...]}, ...]}``.
+    # The provider's own payload is untouched inside ``items``, which is what
+    # keeps the capture verbatim; the region is beside it because most listings
+    # do not repeat it and a normalizer would otherwise have to guess it back.
     data: dict[str, Any] = field(default_factory=dict)
     # category -> error message. The customer-facing view: what the scan banner
     # shows and what a stale role deployment explains, because a permission is
