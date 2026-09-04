@@ -55,7 +55,13 @@ class AzureConnector(CloudConnector):
         tenant_id: str,
         subscription_id: str | None = None,
         http_client: httpx.AsyncClient | None = None,
+        provider_ref: dict[str, Any] | None = None,
     ) -> None:
+        # Accepted and unused. Azure keeps nothing per customer -- CloudGuard
+        # authenticates as its own multi-tenant application against the tenant
+        # consent bound it to -- and taking the argument anyway is what lets the
+        # pipeline construct any connector without knowing which one it holds.
+        self.provider_ref = provider_ref or {}
         self.tenant_id = tenant_id
         self.subscription_id = subscription_id
         self._http = http_client

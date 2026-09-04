@@ -207,6 +207,15 @@ class NormalizedState:
 class CloudConnector(ABC):
     provider: Provider
 
+    #: Every connector is constructed the same way, from the row a scan already
+    #: holds: the trust boundary, the account beneath it, and whatever else that
+    #: provider needs to reach it. The third is ``provider_ref`` -- Azure needs
+    #: nothing in it because CloudGuard authenticates as its own multi-tenant
+    #: application, and AWS needs the role ARN and external id to assume.
+    #:
+    #: A constructor argument rather than a lookup, so the pipeline can build a
+    #: connector for any provider without knowing which one it is holding.
+
     @abstractmethod
     async def validate_connection(self) -> ConnectionCheck:
         """Prove read access works, by actually calling the provider."""

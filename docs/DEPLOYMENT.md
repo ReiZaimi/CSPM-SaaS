@@ -259,6 +259,20 @@ Node installed on your machine.
    AZURE_TENANT_ID=
    AZURE_REDIRECT_URI=https://<your-railway-api-domain>/api/v1/cloud-connections/azure/consent/callback
 
+   # Optional until you create CloudGuard's own AWS principal — the identity a
+   # customer's scanner role trusts. See AWS_INTEGRATION.md §2. Leave blank
+   # until then; AWS simply is not offered as a provider.
+   #
+   # The key grants nothing but sts:AssumeRole against roles that already name
+   # it, and every one of those roles additionally requires an external id
+   # CloudGuard generated per connection and never published.
+   #
+   # AWS_PRINCIPAL_ARN is what the deployed template names, so it must match
+   # exactly: a wrong value fails when the customer clicks deploy.
+   AWS_ACCESS_KEY_ID=
+   AWS_SECRET_ACCESS_KEY=
+   AWS_PRINCIPAL_ARN=arn:aws:iam::<cloudguard-account-id>:user/cloudguard-scanner
+
    SENTRY_DSN=
 
    # Optional, both with defaults, both about disk rather than correctness.

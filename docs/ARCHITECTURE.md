@@ -70,7 +70,7 @@ cloudguard/
 |       |   |-- domain/          # CloudResource -- the evaluation-time view, no DB, no SDK
 |       |   |-- connectors/     # base.py, collection.py, planning.py, evidence.py,
 |       |   |                     # onboarding.py, registry.py -- all provider-neutral
-|       |   |-- connectors/azure/
+|       |   |-- connectors/azure/, connectors/aws/
 |       |   |-- context/         # asset context: inferred, then overruled by declaration
 |       |   |-- graph/           # AssetGraph: attack paths, escalation chains, choke points
 |       |   |-- rules/azure/{identity,rbac,network,storage,compute,database,logging,secrets,posture}/

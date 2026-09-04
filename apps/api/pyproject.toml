@@ -18,6 +18,11 @@ dependencies = [
   "httpx==0.28.1",
   "pyjwt==2.10.1",
   "msal==1.31.1",
+  # AWS. The connector stores the provider's own response verbatim, exactly as
+  # the Azure one does -- what this handles is the layer beneath that, which
+  # Azure does not have: SigV4, and three different wire protocols across the
+  # services CloudGuard reads (DECISIONS.md §72).
+  "aiobotocore==3.9.0",
   "structlog==24.4.0",
   "sentry-sdk[fastapi]==2.19.2",
   "jinja2==3.1.5",

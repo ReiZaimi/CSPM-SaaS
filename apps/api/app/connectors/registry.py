@@ -7,6 +7,7 @@ Adding AWS later is a line in this dict plus a package under ``connectors/``.
 from types import ModuleType
 from typing import Any
 
+from app.connectors.aws.connector import AwsConnector
 from app.connectors.azure import change_events as azure_change_events
 from app.connectors.azure.connector import AzureConnector
 from app.connectors.azure.onboarding import AzureOnboarding
@@ -17,6 +18,7 @@ from app.core.errors import NotConfigured
 
 CONNECTORS: dict[Provider, type[CloudConnector]] = {
     Provider.AZURE: AzureConnector,
+    Provider.AWS: AwsConnector,
 }
 
 # How a customer grants access to this provider, and how CloudGuard proves they
@@ -49,8 +51,7 @@ def get_connector_class(provider: Provider | str) -> type[CloudConnector]:
     implementation = CONNECTORS.get(provider)
     if implementation is None:
         raise NotConfigured(
-            f"No connector is implemented for {provider.value}. "
-            "Azure is the only supported provider in this release."
+            f"No connector is implemented for {provider.value}."
         )
     return implementation
 

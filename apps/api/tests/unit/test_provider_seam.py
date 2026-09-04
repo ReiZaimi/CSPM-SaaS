@@ -138,13 +138,15 @@ def test_every_registered_provider_answers_the_questions_asked_of_a_class() -> N
 
 
 def test_an_unimplemented_provider_is_refused_rather_than_defaulted() -> None:
-    """AWS is in the ``Provider`` enum as an extension point. Returning Azure's
-    connector for it would be the worst possible answer: a scan that appears to
-    work and reads the wrong cloud."""
+    """GCP is in the ``Provider`` enum as an extension point and nothing else.
+
+    Returning Azure's connector for it would be the worst possible answer: a
+    scan that appears to work and reads the wrong cloud. AWS used to be listed
+    here for the same reason and is now implemented, which is the only way an
+    entry should ever leave this test.
+    """
     from app.core.errors import NotConfigured
 
-    with pytest.raises(NotConfigured):
-        get_connector_class(Provider.AWS)
     with pytest.raises(NotConfigured):
         get_connector_class(Provider.GCP)
 

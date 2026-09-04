@@ -3193,6 +3193,107 @@ token, and a name bound at import time would not see it.
 has to be written down beside a reason instead of quietly appearing in the
 allow-list above it.
 
+## 72. The AWS connector, and an SDK where Azure has none
+
+`MULTI_CLOUD.md` §8 step 2 is built: `app/connectors/aws/` sits behind the same
+`CloudConnector` contract Azure does, and nothing above the seam changed to
+accommodate it except the region dimension, which landed in the collection
+executor (§69) rather than in the connector.
+
+### aiobotocore, and why that is not a reversal
+
+`DECISIONS.md` has said "REST over Azure SDKs" since v0.1, and the reason was
+never a preference for HTTP: it was that the raw JSON had to be stored verbatim
+so a scan could be re-evaluated later against better rules. Azure makes that
+easy — ARM is one uniform paginated shape over one auth scheme.
+
+AWS is not one shape. EC2 and IAM speak a query protocol answering XML, S3
+speaks REST-XML, and everything else speaks JSON — three parsers, three
+pagination idioms, and SigV4 underneath all of them. Hand-rolling that is a
+large body of code whose failure mode is a subtly wrong canonical request, and
+the property it would buy is one `aiobotocore` already gives: what it returns is
+the provider's own response, parsed, and that is what the snapshot stores.
+
+So the principle is unchanged and the implementation differs: **store what the
+provider said, whatever it takes to obtain it.**
+
+Two properties are kept from the Azure client because they are not the SDK's job
+and the scan depends on them. Pagination is capped, and stopping at the cap is
+recorded as PARTIAL rather than returning a shorter list — a list missing an
+unknown number of entries cannot support "none of them are public". And a
+refusal carries the operation that raised it, so `AccessDenied` on one listing
+costs one evidence key.
+
+`ResponseMetadata` is stripped from every response. It is a fact about the HTTP
+round trip, changes on every call, and would make two identical readings hash
+differently — defeating the evidence store's whole reason for being content
+addressed.
+
+### The plan's shape is a function of a call
+
+This is the part with no Azure precedent. `ec2:DescribeRegions` is read *before*
+the plan exists, because the plan emits one task per (listing × region) and
+cannot be written without the answer.
+
+The case that needed care is when that read fails. A key with **no reading at
+all** raises no gap — so a rule sees no error, evaluates against an empty
+payload, and returns PASS over an estate nobody looked at. That is the worst
+outcome this product can produce. So when the region listing fails, the plan
+still emits one task per regional key, region-less, each depending on the region
+listing; the executor records them SKIPPED, the gap reaches the rules, and every
+regional check reports UNKNOWN. `test_aws_plan.py` pins it, and the reason is
+written there so the tasks are not removed as redundant.
+
+An account reporting *zero* enabled regions is treated the same way: an empty
+region list is a failure to answer, not an answer.
+
+### One grant, and where it is kept
+
+Azure has two grants that fail independently; AWS has one cross-account role.
+The role ARN and its **external id** live in `provider_ref` on the account row,
+and every connector now takes `provider_ref` in its constructor — Azure accepts
+it and ignores it, which is what lets the pipeline build a connector for any
+provider without branching on which.
+
+Per *account* rather than per connection, because an organization-wide
+connection assumes one role in each member account. The same stack is deployed
+everywhere, so the ARNs differ only by account id and discovery can write them
+without asking.
+
+The external id is generated server-side, never accepted from a request body,
+and `RoleAssumer` refuses to assume a role without one. An assume-role call with
+no external id succeeds against a role whose trust policy does not require one,
+which is exactly the misconfiguration CloudGuard must not participate in.
+
+### What the policy grants, and how much of it is ours
+
+`aws/iam.py` mirrors `azure/rbac.py`, with one difference that changes what a
+mistake costs. ARM validates a role definition atomically, so a single wrong
+action string fails the whole deployment and the customer sees "Deployment
+Failed". **IAM accepts a policy naming an action that does not exist** and simply
+grants nothing — the deployment succeeds, the customer sees green, and the read
+fails mid-scan with `AccessDenied`. That is worse, not better.
+
+So the bulk comes from AWS's own `SecurityAudit` and `ViewOnlyAccess` managed
+policies, which cannot contain a typo of ours, and the inline policy holds only
+what they do not. Every action in it is a read: no `s3:GetObject`, no
+`kms:Decrypt`, no `secretsmanager:GetSecretValue`. CloudGuard can tell a
+customer their bucket is public without being able to read a byte out of it, and
+that claim is checkable from one tuple.
+
+`iam:GenerateCredentialReport` is the one action that reads as a write and is
+not. It creates nothing and changes no configuration; it asks IAM to compile a
+report about state that already exists, and without it every credential-age
+check reports UNKNOWN.
+
+### Nothing here has been run against AWS
+
+Every action string, response key and pagination shape comes from the published
+reference. The modules say so in their docstrings, the action list carries
+`# UNVERIFIED`, and `docs/AWS_INTEGRATION.md` §1 holds the checklist that turns
+it from plausible into verified. Until that has been run, AWS is reachable
+through the API and is not offered in the UI.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

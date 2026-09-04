@@ -715,6 +715,7 @@ class ScanPipeline:
                 account.provider,
                 tenant_id=account.tenant_id,
                 subscription_id=account.subscription_id,
+                provider_ref=account.provider_ref,
             )
             # What this reading is for, decided before it is taken: every key
             # some enabled rule reads, plus the ones the product itself is
@@ -889,6 +890,7 @@ class ScanPipeline:
             connection.provider,
             tenant_id=connection.tenant_id,
             subscription_id=None,
+            provider_ref=connection.provider_ref,
         )
         plan = await plan_collection(
             session,
@@ -1366,6 +1368,7 @@ class ScanPipeline:
                 account.provider,
                 tenant_id=account.tenant_id,
                 subscription_id=account.subscription_id,
+                provider_ref=account.provider_ref,
             )
             account_state = connector.normalize(snapshot)
             # Normalization is a pure function of the capture, so this is where
@@ -1836,6 +1839,7 @@ class ScanPipeline:
             connection.provider,
             tenant_id=connection.tenant_id,
             subscription_id=None,
+            provider_ref=connection.provider_ref,
         )
         state = connector.normalize(snapshot)
         return (connection, state), snapshot, row.id == newest

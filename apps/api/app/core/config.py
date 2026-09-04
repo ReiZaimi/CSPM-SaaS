@@ -114,6 +114,26 @@ class Settings(BaseSettings):
     azure_redirect_uri: str = ""
     azure_consent_state_secret: str = ""
 
+    # --- AWS: CloudGuard's own principal, the one a customer's role trusts ---
+    #
+    # A long-lived access key rather than an instance role, because the API runs
+    # on Railway rather than in AWS and there is no instance identity to inherit.
+    # It grants nothing but ``sts:AssumeRole`` against roles that already name
+    # it, so the blast radius of losing it is bounded by what customers have
+    # chosen to trust -- and every one of those roles additionally requires an
+    # external id CloudGuard generated and never published.
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    # What a customer's trust policy names. Read from configuration rather than
+    # derived from the credentials, because the artefact a customer deploys has
+    # to state it exactly and a wrong value fails at the moment they click
+    # deploy rather than at the moment CloudGuard calls.
+    aws_principal_arn: str = ""
+    # Where the CloudFormation template is published for the console to fetch.
+    # Empty means the console link is not offered and the template is served
+    # from this API, token-gated, the way the ARM template is.
+    aws_template_url: str = ""
+
     sentry_dsn: str = ""
 
     # NoDecode is load-bearing. pydantic-settings treats any list field as
@@ -146,6 +166,20 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @property
+    def aws_configured(self) -> bool:
+        """True when CloudGuard's own AWS identity is present.
+
+        Optional, exactly as ``azure_configured`` is: a deployment that has not
+        reached the AWS setup step is not broken, it simply cannot offer AWS as
+        a provider yet.
+        """
+        return bool(
+            self.aws_access_key_id
+            and self.aws_secret_access_key
+            and self.aws_principal_arn
+        )
 
     @property
     def azure_configured(self) -> bool:

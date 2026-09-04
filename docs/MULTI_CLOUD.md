@@ -229,18 +229,29 @@ class of misleading number the coverage ledger exists to prevent.
    `tests/unit/test_provider_seam.py` fails the build on the next one. This step
    was not in the original list because nobody had checked.
 1. ~~Fix `matches()`.~~ Done, along with the aggregate-path hole beside it.
-2. Second provider's connector, plan and normalizer — behind the existing
-   `CloudConnector` seam, changing nothing above it.
+2. ~~Second provider's connector, plan and normalizer.~~ Built —
+   `app/connectors/aws/`, behind the existing `CloudConnector` seam
+   (`DECISIONS.md` §72). It changed nothing above the seam except the region
+   dimension, which landed in the collection executor rather than in the
+   connector.
 
-   **Not startable from a desk.** Every part of it is a string that has to be
-   verified against a live account: IAM action names, SigV4 signing, the STS
-   assume-role round trip, the CloudFormation template, which `Describe*` calls
-   answer what. `rbac.py` records what happens when one of those is written on
-   the strength of looking plausible — ARM validates a role definition
-   atomically, so a single wrong action fails the whole deployment and the
-   customer sees "Deployment Failed". A connector written without an AWS
-   account to try it against would be a large body of code claiming to scan a
-   cloud nobody had scanned, and the seam would then *look* finished.
+   **This section said it was not startable from a desk, and it was started
+   from one.** The warning stands and is now a live liability rather than a
+   prediction. Every IAM action name, response key, pagination shape and the
+   CloudFormation template is written from the published reference and has been
+   called by nothing. IAM makes this worse than the Azure case it was arguing
+   from: ARM refuses a role definition atomically, so a wrong action fails the
+   deployment visibly, while IAM accepts a policy naming an action that does not
+   exist and simply grants nothing — the customer sees a successful deployment
+   and a scan that fails later.
+
+   So the risk was taken deliberately and is bounded by two things rather than
+   by optimism. Every unverified string is marked in the code, and AWS is
+   reachable through the API but **not offered in the UI** until
+   `AWS_INTEGRATION.md` §1's checklist has been run against a real account.
+   Without that gate this would be exactly what the paragraph warned about: a
+   large body of code claiming to scan a cloud nobody had scanned, with the seam
+   *looking* finished.
 3. The permission-manifest pattern generalized out of `rbac.py`, once there are
    two instances to generalize from.
 4. Scope vocabulary migration, driven by what the second connector actually
