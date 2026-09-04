@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Any
 
 from app.connectors.aws.connector import AwsConnector
+from app.connectors.aws.onboarding import AwsOnboarding
 from app.connectors.azure import change_events as azure_change_events
 from app.connectors.azure.connector import AzureConnector
 from app.connectors.azure.onboarding import AzureOnboarding
@@ -27,6 +28,7 @@ CONNECTORS: dict[Provider, type[CloudConnector]] = {
 # one import that made it Azure-shaped again.
 ONBOARDING: dict[Provider, type[ProviderOnboarding]] = {
     Provider.AZURE: AzureOnboarding,
+    Provider.AWS: AwsOnboarding,
 }
 
 # The module that reads a provider's change events. Beside the connector lookup

@@ -163,7 +163,7 @@ async def arm_template(
         content=json.loads(artifact.body),
         media_type=artifact.media_type,
         headers={
-            "Content-Disposition": 'inline; filename="cloudguard-scanner.json"',
+            "Content-Disposition": f'inline; filename="{artifact.filename}"',
             **TEMPLATE_CORS_HEADERS,
         },
     )

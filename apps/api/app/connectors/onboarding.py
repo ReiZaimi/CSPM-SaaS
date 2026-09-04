@@ -88,6 +88,10 @@ class DeploymentArtifact:
 
     body: str
     media_type: str = "application/json"
+    # What the provider's console saves it as. Named by the provider rather than
+    # by the route, because the route serves both and "cloudguard-scanner.json"
+    # is an ARM template's name.
+    filename: str = "cloudguard-scanner.json"
 
 
 class ProviderOnboarding(ABC):
@@ -113,6 +117,15 @@ class ProviderOnboarding(ABC):
     #: step can tell it apart from a healthy message without a schema change.
     #: Empty for a provider that cannot be partially granted.
     grant_incomplete_prefix: str = ""
+
+    #: Whether this cloud has a consent step separate from the deployment.
+    #:
+    #: Azure does: admin consent for Graph and an ARM role, granted by different
+    #: people at different moments and failing independently. AWS does not --
+    #: the stack *is* the grant, and one successful assume-role proves the whole
+    #: of it. A connection with no consent step must not sit forever waiting for
+    #: one, which is what this flag exists to prevent.
+    has_separate_consent: bool = True
 
     # ---------------------------------------------------------------- grants
 
@@ -157,6 +170,25 @@ class ProviderOnboarding(ABC):
         return PrincipalLookup()
 
     # ------------------------------------------------------------- artefacts
+
+    def requires_scope_id(self, scope_type: ConnectionScope) -> bool:
+        """Whether this scope has to name something the customer types.
+
+        The widest scope usually does not: an Azure tenant root is named by the
+        tenant, which consent reports. AWS has no equivalent -- there is nothing
+        to assume a role *in* until an account is named -- so it requires one at
+        every scope, which is why this is a question rather than a comparison.
+        """
+        return scope_type != self.root_scope
+
+    def initial_provider_ref(self, connection: CloudConnection) -> dict[str, Any]:
+        """What this cloud needs recorded before anything is deployed.
+
+        AWS generates its external id here, which is the one moment it can be
+        generated safely: server-side, per connection, before any artefact names
+        it. Empty for Azure, which keeps nothing per customer.
+        """
+        return {}
 
     @abstractmethod
     def artifact_ready(self, connection: CloudConnection) -> bool:

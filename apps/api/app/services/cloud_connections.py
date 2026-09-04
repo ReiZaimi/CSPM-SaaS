@@ -27,6 +27,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.connectors.base import ConnectionCheck
 from app.connectors.evidence import EvidenceCategory
 from app.connectors.onboarding import DeploymentArtifact, ProviderOnboarding
 from app.connectors.registry import get_onboarding
@@ -95,10 +96,10 @@ async def create_connection(
     """
     onboarding = get_onboarding(payload.provider)
 
-    if payload.scope_type != onboarding.root_scope and not payload.scope_id:
+    if onboarding.requires_scope_id(payload.scope_type) and not payload.scope_id:
         raise ValidationFailed(
-            "An id is required for this scope: only the whole directory can be "
-            "named without one"
+            "An id is required for this scope. Only a scope the provider can "
+            "name for itself may be left blank."
         )
 
     connection = CloudConnection(
@@ -112,6 +113,11 @@ async def create_connection(
         status=CloudAccountStatus.PENDING,
         status_detail=onboarding.initial_status_detail,
     )
+    # Before the row is written, because the external id has to exist before
+    # anything can name it -- and because generating it later would mean a
+    # connection that briefly had none.
+    connection.provider_ref = onboarding.initial_provider_ref(connection)
+
     session.add(connection)
     await session.flush()
 
@@ -229,6 +235,29 @@ async def _list_subscriptions(
         .scalars()
         .all()
     )
+
+
+def _record_single_grant(
+    connection: CloudConnection,
+    onboarding: ProviderOnboarding,
+    check: ConnectionCheck,
+) -> None:
+    """For a cloud with one grant, the probe is the consent.
+
+    Azure records two grants because two people grant them and they fail
+    independently. AWS has one, so leaving ``consent_status`` at PENDING for a
+    working connection would make ``is_verified`` false for a connection that
+    verifies -- and the trust boundary arrives from the same call rather than
+    from a callback, because there is no callback (``DECISIONS.md`` §70).
+    """
+    if onboarding.has_separate_consent:
+        return
+    connection.consent_status = ConsentStatus.GRANTED
+    connection.consented_at = connection.consented_at or datetime.now(UTC)
+    # From the provider, never from the customer. The same guarantee the Entra
+    # callback gives, reached by a different route.
+    if check.tenant_id and not connection.tenant_id:
+        connection.tenant_id = check.tenant_id
 
 
 async def grant_problem(connection: CloudConnection) -> str | None:
@@ -501,15 +530,20 @@ async def recheck_access(
         session, tenant, connection_id
     )
 
-    if connection.consent_status != ConsentStatus.GRANTED:
+    if (
+        flow(connection).has_separate_consent
+        and connection.consent_status != ConsentStatus.GRANTED
+    ):
         return await try_auto_validate(session, connection), subscriptions
 
-    check = await flow(connection).probe(connection)
+    onboarding = flow(connection)
+    check = await onboarding.probe(connection)
     if check.ok:
         connection.rbac_verified_at = datetime.now(UTC)
         if connection.status == CloudAccountStatus.PENDING:
             connection.status = CloudAccountStatus.ACTIVE
             connection.status_detail = "Connection verified."
+        _record_single_grant(connection, onboarding, check)
         await commit_unless_externally_managed(session)
 
     await refresh_grant_version(session, connection)
@@ -618,7 +652,14 @@ async def try_auto_validate(
     if connection.status == CloudAccountStatus.DISABLED:
         return connection
 
-    if connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id:
+    onboarding = flow(connection)
+    # A cloud with a separate consent step has nothing to probe until consent
+    # has happened and reported the trust boundary. A cloud without one has
+    # nothing to wait for: the stack is the grant, and the probe is what
+    # discovers whether it is deployed yet.
+    if onboarding.has_separate_consent and (
+        connection.consent_status != ConsentStatus.GRANTED or not connection.tenant_id
+    ):
         return connection
 
     # Retry the lookup if it is still missing, through the committing wrapper.
@@ -631,11 +672,12 @@ async def try_auto_validate(
 
     # Attempt validation if not yet verified
     if not connection.rbac_verified_at:
-        check = await flow(connection).probe(connection)
+        check = await onboarding.probe(connection)
         if check.ok:
             connection.status = CloudAccountStatus.ACTIVE
             connection.rbac_verified_at = datetime.now(UTC)
             connection.status_detail = "Connection verified."
+            _record_single_grant(connection, onboarding, check)
             await commit_unless_externally_managed(session)
         elif deploy_stalled(connection):
             # Committed so the message survives the request. Status is left

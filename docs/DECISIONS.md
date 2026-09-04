@@ -3294,6 +3294,69 @@ reference. The modules say so in their docstrings, the action list carries
 it from plausible into verified. Until that has been run, AWS is reachable
 through the API and is not offered in the UI.
 
+## 73. Onboarding AWS: one grant, three steps, and an id generated once
+
+`ProviderOnboarding` (§71) was written against two clouds; this is the second
+one filled in. The shape held — name a scope, deploy something generated from
+the declared permission set, prove the grant by using it, discover what is
+beneath — and every difference falls out of AWS having one grant where Azure has
+two.
+
+**No consent step, so nothing waits for one.** The polling loop refused to probe
+until consent had reported the trust boundary, which is right for Azure and
+would have left every AWS connection permanently PENDING. `has_separate_consent`
+is the flag, and the point of it is that the caller does not branch on provider:
+a cloud without a consent step says so, and the loop probes immediately because
+the stack *is* the grant.
+
+**One probe sets both columns.** A successful `sts:AssumeRole` proves everything
+there is to prove, so it writes `consent_status`, `consented_at` and
+`rbac_verified_at` together. The organization id arrives from
+`organizations:DescribeOrganization` on the same probe rather than from a
+callback that does not exist — still from the provider, never typed, which is
+the guarantee the Entra callback gives reached by a different route. An account
+outside an organization answers with an error, and that is not a failure: a
+standalone account is a boundary of one and names itself.
+
+**Every scope names an account, including the widest.** Azure's tenant root
+needs no id because consent reports the tenant; AWS has no call it can make
+until it knows an account to assume a role in. That is `requires_scope_id`
+rather than a comparison against `root_scope`, because the two clouds disagree
+about the answer and only one of them can be the default.
+
+### The external id
+
+Generated in `initial_provider_ref`, before the row is written, and never
+accepted from a request body. An id the customer chooses is an id an attacker
+can choose.
+
+`RoleAssumer` refuses to assume a role without one. That refusal is not
+belt-and-braces: an assume-role call with no external id **succeeds** against a
+role whose trust policy does not require one, so the only way to be sure
+CloudGuard is not participating in that misconfiguration is to make the call
+impossible to write.
+
+It is shared across every account under one connection, and correctly — it
+identifies the relationship, not the account. The role ARNs differ only by
+account id, because the same stack is deployed into each, so discovery writes
+them rather than collecting them.
+
+### Reading the deployed version
+
+From the role's inline policy document, not from the stack's version tag. A tag
+is a label and a label is not evidence — the same reason the Azure equivalent
+resolves role definitions rather than trusting a name, and it gets the answer
+right for the customer who attached a broader policy of their own instead of
+deploying the stack.
+
+### The gate
+
+AWS is registered in both registries and reachable through the API. It is **not
+offered in the UI** until `AWS_INTEGRATION.md` §1's ten-item checklist has been
+run against a live account. Shipping the picker first would be the failure
+`MULTI_CLOUD.md` §8 named: a large body of code claiming to scan a cloud nobody
+had scanned, with the seam looking finished.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
