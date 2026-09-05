@@ -107,6 +107,8 @@ ACTION_KEYS: dict[str, tuple[AwsEvidence, ...]] = {
     "access-analyzer:ListAnalyzers": (AwsEvidence.ACCESS_ANALYZERS,),
     "securityhub:DescribeHub": (AwsEvidence.SECURITYHUB_STATUS,),
     "config:DescribeConfigurationRecorderStatus": (AwsEvidence.CONFIG_RECORDERS,),
+    "logs:DescribeMetricFilters": (AwsEvidence.LOG_METRIC_FILTERS,),
+    "cloudwatch:DescribeAlarms": (AwsEvidence.CLOUDWATCH_ALARMS,),
 }
 
 
@@ -454,6 +456,27 @@ class AwsPlanBuilder:
                 "FlowLogs",
                 "ec2:DescribeFlowLogs",
                 "2016-11-15",
+            ),
+            # Every filter in the region, not only the ones on a trail's log
+            # group. Which log group matters is the *rule's* question, and a
+            # collector that decided it here would have to know what the rules
+            # are looking for -- and would collect nothing for an account whose
+            # trail listing failed.
+            (
+                AwsEvidence.LOG_METRIC_FILTERS,
+                "logs",
+                "describe_metric_filters",
+                "metricFilters",
+                "logs:DescribeMetricFilters",
+                "2014-03-28",
+            ),
+            (
+                AwsEvidence.CLOUDWATCH_ALARMS,
+                "cloudwatch",
+                "describe_alarms",
+                "MetricAlarms",
+                "cloudwatch:DescribeAlarms",
+                "2010-08-01",
             ),
         ]
 
@@ -1044,6 +1067,8 @@ _REGIONAL_TASK_KEYS: tuple[AwsEvidence, ...] = (
     AwsEvidence.CONFIG_RECORDERS,
     AwsEvidence.NETWORK_ACLS,
     AwsEvidence.VPC_FLOW_LOGS,
+    AwsEvidence.LOG_METRIC_FILTERS,
+    AwsEvidence.CLOUDWATCH_ALARMS,
     AwsEvidence.SECURITYHUB_STATUS,
     AwsEvidence.ACCESS_ANALYZERS,
     AwsEvidence.EC2_INSTANCES,

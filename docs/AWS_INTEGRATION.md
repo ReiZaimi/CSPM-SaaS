@@ -42,8 +42,10 @@ the read fails several minutes into a scan with `AccessDenied`.
 | 13 | `iam:ListInstanceProfiles` returns the role behind each profile | Without it the graph's first capability hop draws nothing |
 | 14 | A region with GuardDuty, Security Hub or Access Analyzer switched off answers with an error rather than an empty list | The client treats those codes as an answer; a different code would read as a failed read |
 | 15 | `config:DescribeConfigurationRecorderStatus` names recorders the way `DescribeConfigurationRecorders` does | They are joined on `name`, and a mismatch reads as "not recording" |
+| 16 | A trail's `CloudWatchLogsLogGroupArn` has the shape `arn:aws:logs:<region>:<account>:log-group:<name>:*` | The log group name is parsed out of it; a different shape reads as "no filter on the trail's log group" |
+| 17 | `logs:DescribeMetricFilters` returns `metricTransformations` with `metricNamespace` and `metricName` as spelled | The alarm is matched to the filter on exactly that pair |
 
-Once all fifteen pass: remove the `# UNVERIFIED` markers in
+Once all seventeen pass: remove the `# UNVERIFIED` markers in
 `app/connectors/aws/iam.py`, drop the warnings from the module docstrings in
 `app/connectors/aws/`, and enable AWS in the provider picker.
 

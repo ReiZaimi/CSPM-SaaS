@@ -26,9 +26,11 @@ from app.rules.aws.logging.trails import (
     AwsConfigRecorderRule,
     AwsEbsDefaultEncryptionRule,
     AwsFlowLogRule,
+    AwsRootUsageMonitoringRule,
     AwsTrailBucketLoggingRule,
     AwsTrailEncryptionRule,
     AwsTrailValidationRule,
+    AwsUnauthorizedApiMonitoringRule,
 )
 from app.rules.aws.network.exposure import (
     AwsDefaultSecurityGroupRule,
@@ -176,6 +178,8 @@ RULE_REGISTRY: list[SecurityRule] = [
     AwsTrailBucketLoggingRule(),
     AwsConfigRecorderRule(),
     AwsFlowLogRule(),
+    AwsUnauthorizedApiMonitoringRule(),
+    AwsRootUsageMonitoringRule(),
     AwsEbsDefaultEncryptionRule(),
     AwsGuardDutyRule(),
     AwsSecurityHubRule(),

@@ -141,6 +141,13 @@ class AwsEvidence(EvidenceKey):
     # Whether anything records network flows in a VPC. The one log that answers
     # "what talked to what" after the fact, and off by default.
     VPC_FLOW_LOGS = "vpc_flow_logs"
+    # The two halves of "somebody is told when this happens". A metric filter
+    # turns matching log lines into a CloudWatch metric; an alarm turns that
+    # metric into a notification. Separate keys because they are separate calls
+    # to separate services and separately deniable -- and because a filter with
+    # no alarm on it is the most common way this control is half-done.
+    LOG_METRIC_FILTERS = "log_metric_filters"
+    CLOUDWATCH_ALARMS = "cloudwatch_alarms"
 
     # --- posture: somebody else's conclusions, read as evidence ------------
     GUARDDUTY_DETECTORS = "guardduty_detectors"
@@ -215,6 +222,8 @@ _CATEGORIES: dict[AwsEvidence, EvidenceCategory] = {
     AwsEvidence.CLOUDTRAIL_TRAILS: EvidenceCategory.LOGGING,
     AwsEvidence.CONFIG_RECORDERS: EvidenceCategory.LOGGING,
     AwsEvidence.VPC_FLOW_LOGS: EvidenceCategory.LOGGING,
+    AwsEvidence.LOG_METRIC_FILTERS: EvidenceCategory.LOGGING,
+    AwsEvidence.CLOUDWATCH_ALARMS: EvidenceCategory.LOGGING,
     AwsEvidence.GUARDDUTY_DETECTORS: EvidenceCategory.POSTURE,
     AwsEvidence.SECURITYHUB_STATUS: EvidenceCategory.POSTURE,
 }
@@ -245,6 +254,8 @@ _REGIONAL: frozenset[AwsEvidence] = frozenset(
         AwsEvidence.GUARDDUTY_DETECTORS,
         AwsEvidence.NETWORK_ACLS,
         AwsEvidence.VPC_FLOW_LOGS,
+        AwsEvidence.LOG_METRIC_FILTERS,
+        AwsEvidence.CLOUDWATCH_ALARMS,
         AwsEvidence.SECURITYHUB_STATUS,
         AwsEvidence.ACCESS_ANALYZERS,
     }

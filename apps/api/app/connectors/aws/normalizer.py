@@ -700,6 +700,24 @@ class AwsNormalizer:
                 )
                 if region
             ],
+            # The two halves of "somebody is told when this happens", kept
+            # whole rather than reduced to a set of names. The rule has to walk
+            # filter -> metric -> alarm -> action, and every hop of that chain
+            # is a field on one of these rows.
+            "log_metric_filters": [
+                {"region": region, **row}
+                for region, row in regional_items(
+                    data, AwsEvidence.LOG_METRIC_FILTERS
+                )
+                if region
+            ],
+            "cloudwatch_alarms": [
+                {"region": region, **row}
+                for region, row in regional_items(
+                    data, AwsEvidence.CLOUDWATCH_ALARMS
+                )
+                if region
+            ],
             "network_acls": [
                 {"region": region, **acl}
                 for region, acl in regional_items(data, AwsEvidence.NETWORK_ACLS)

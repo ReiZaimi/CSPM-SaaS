@@ -39,9 +39,11 @@ from app.rules.aws.logging.trails import (
     AwsConfigRecorderRule,
     AwsEbsDefaultEncryptionRule,
     AwsFlowLogRule,
+    AwsRootUsageMonitoringRule,
     AwsTrailBucketLoggingRule,
     AwsTrailEncryptionRule,
     AwsTrailValidationRule,
+    AwsUnauthorizedApiMonitoringRule,
 )
 from app.rules.aws.network.exposure import (
     AwsDefaultSecurityGroupRule,
@@ -1013,3 +1015,179 @@ def test_not_knowing_the_regions_never_passes_a_coverage_rule() -> None:
     produce."""
     for rule in (AwsGuardDutyRule(), AwsSecurityHubRule(), AwsAccessAnalyzerRule()):
         assert verdict(rule, context_from()) is RuleState.UNKNOWN, rule.rule_id
+
+
+# ------------------------------------------------------ somebody is told
+#
+# CIS section 4 asks a question no single setting answers: is anybody alerted
+# when this happens? The chain is trail -> CloudWatch log group -> metric filter
+# -> metric -> alarm -> action, and every hop can be missing on its own. The
+# tests below are one per hop, because a check that only looked for the filter
+# would pass the most common half-done case there is.
+
+GROUP = "/aws/cloudtrail/bk-trail"
+GROUP_ARN = f"arn:aws:logs:eu-west-1:1:log-group:{GROUP}:*"
+
+UNAUTHORIZED_PATTERN = (
+    '{ ($.errorCode = "*UnauthorizedOperation") || ($.errorCode = "AccessDenied*") }'
+)
+ROOT_PATTERN = (
+    '{ $.userIdentity.type = "Root" && $.userIdentity.invokedBy NOT EXISTS '
+    '&& $.eventType != "AwsServiceEvent" }'
+)
+
+
+def monitoring(
+    *,
+    log_group: str | None = GROUP_ARN,
+    pattern: str | None = UNAUTHORIZED_PATTERN,
+    alarm: bool = True,
+    alarm_actions: bool = True,
+    metric: str = "UnauthorizedAPICalls",
+    alarm_region: str = "eu-west-1",
+) -> dict[str, Any]:
+    """One account's monitoring chain, with any hop removable."""
+    trail: dict[str, Any] = {
+        "Name": "bk-trail",
+        "TrailARN": "arn:aws:cloudtrail:eu-west-1:1:trail/bk-trail",
+        "IsMultiRegionTrail": True,
+        "S3BucketName": "audit-logs",
+        "LogFileValidationEnabled": True,
+    }
+    if log_group:
+        trail["CloudWatchLogsLogGroupArn"] = log_group
+
+    filters = (
+        [
+            {
+                "filterName": "f1",
+                "logGroupName": GROUP,
+                "filterPattern": pattern,
+                "metricTransformations": [
+                    {"metricName": metric, "metricNamespace": "CISBenchmark"}
+                ],
+            }
+        ]
+        if pattern
+        else []
+    )
+    alarms = (
+        [
+            {
+                "AlarmName": "a1",
+                "MetricName": metric,
+                "Namespace": "CISBenchmark",
+                "AlarmActions": (
+                    ["arn:aws:sns:eu-west-1:1:alerts"] if alarm_actions else []
+                ),
+            }
+        ]
+        if alarm
+        else []
+    )
+    return {
+        "enabled_regions": ["eu-west-1"],
+        "cloudtrail_trails": [{"region": "eu-west-1", "items": [trail]}],
+        "log_metric_filters": [{"region": "eu-west-1", "items": filters}],
+        "cloudwatch_alarms": [{"region": alarm_region, "items": alarms}],
+    }
+
+
+def test_a_complete_chain_passes() -> None:
+    context = context_from(**monitoring())
+    assert verdict(AwsUnauthorizedApiMonitoringRule(), context) is RuleState.PASS
+
+
+def test_a_trail_that_never_reaches_cloudwatch_cannot_be_alarmed_on() -> None:
+    """The first hop, and the one most likely to be missing: a trail delivering
+    only to S3 has no log group, so no metric filter can exist for it."""
+    context = context_from(**monitoring(log_group=None))
+    result = AwsUnauthorizedApiMonitoringRule().evaluate(None, context)
+
+    assert result.state is RuleState.FAIL
+    assert "CloudWatch log group" in result.message
+
+
+def test_a_filter_that_does_not_name_the_event_is_not_this_filter() -> None:
+    context = context_from(
+        **monitoring(pattern='{ $.eventName = "ConsoleLogin" }')
+    )
+    assert verdict(AwsUnauthorizedApiMonitoringRule(), context) is RuleState.FAIL
+
+
+def test_a_filter_with_no_alarm_on_its_metric_tells_nobody() -> None:
+    """The most common half-done state. A check looking only for the filter
+    would pass an account where the metric is published and watched by
+    nothing."""
+    context = context_from(**monitoring(alarm=False))
+    result = AwsUnauthorizedApiMonitoringRule().evaluate(None, context)
+
+    assert result.state is RuleState.FAIL
+    assert "no alarm" in result.message
+
+
+def test_an_alarm_with_no_action_changes_a_colour_and_nothing_else() -> None:
+    context = context_from(**monitoring(alarm_actions=False))
+    result = AwsUnauthorizedApiMonitoringRule().evaluate(None, context)
+
+    assert result.state is RuleState.FAIL
+    assert "notifies nobody" in result.message
+
+
+def test_an_alarm_in_another_region_never_meets_the_metric() -> None:
+    """An alarm can only watch a metric in its own region. A filter in eu-west-1
+    and an alarm in us-east-1 are two things that never meet, and reading them
+    as a pair would report a chain that does not exist."""
+    context = context_from(**monitoring(alarm_region="us-east-1"))
+    assert verdict(AwsUnauthorizedApiMonitoringRule(), context) is RuleState.FAIL
+
+
+def test_a_filter_on_a_different_log_group_is_not_on_the_trail() -> None:
+    payload = monitoring()
+    payload["log_metric_filters"][0]["items"][0]["logGroupName"] = "/aws/lambda/other"
+    assert (
+        verdict(AwsUnauthorizedApiMonitoringRule(), context_from(**payload))
+        is RuleState.FAIL
+    )
+
+
+def test_the_root_rule_wants_its_own_fields() -> None:
+    """The two rules walk the same chain and are not the same check. A pattern
+    matching refused calls says nothing about root."""
+    unauthorized_only = monitoring()
+    assert (
+        verdict(AwsRootUsageMonitoringRule(), context_from(**unauthorized_only))
+        is RuleState.FAIL
+    )
+
+    root = monitoring(pattern=ROOT_PATTERN, metric="RootAccountUsage")
+    assert verdict(AwsRootUsageMonitoringRule(), context_from(**root)) is RuleState.PASS
+
+
+def test_the_matched_pattern_is_shown_rather_than_trusted() -> None:
+    """CloudGuard does not evaluate CloudWatch's filter-pattern language.
+
+    The check is that the required fields are named, which is necessary and not
+    sufficient — so the finding carries the pattern it matched, and a reader can
+    judge it rather than take this rule's word for it.
+    """
+    context = context_from(**monitoring(alarm=False))
+    result = AwsUnauthorizedApiMonitoringRule().evaluate(None, context)
+
+    assert result.evidence["matching_filter_patterns"] == [UNAUTHORIZED_PATTERN]
+    assert result.evidence["trail_log_groups"] == [GROUP]
+
+
+def test_no_trail_is_the_coverage_rule_s_finding_not_these_two() -> None:
+    """Raising all three would charge the security score three times for one
+    problem written three ways."""
+    context = context_from(enabled_regions=["eu-west-1"], cloudtrail_trails=[])
+    for rule in (AwsUnauthorizedApiMonitoringRule(), AwsRootUsageMonitoringRule()):
+        assert verdict(rule, context) is RuleState.NOT_APPLICABLE, rule.rule_id
+
+
+def test_a_failed_filter_listing_degrades_rather_than_passes() -> None:
+    context = context_from(
+        gaps={"log_metric_filters": "AccessDenied"}, **monitoring()
+    )
+    assert verdict(AwsUnauthorizedApiMonitoringRule(), context) is RuleState.UNKNOWN

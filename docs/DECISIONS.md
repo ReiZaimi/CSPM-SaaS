@@ -3787,6 +3787,85 @@ error into per-key gaps. Getting that second one wrong would show a degraded
 banner over rules that passed regardless — the contradiction the coverage ledger
 exists to prevent.
 
+## 80. CIS section 4, and the chain a setting cannot express
+
+4.1 and 4.3 were left uncovered in §77 with a stated reason: they need a
+collection the connector did not have, *and* a match against CIS's exact filter
+patterns, and a check that got the pattern slightly wrong would report a control
+satisfied that is not. Both halves are now addressed, and the second one is
+addressed by not pretending.
+
+### The question is a chain, not a setting
+
+"Is anybody told when this happens" has six hops:
+
+```
+trail → CloudWatch log group → metric filter → metric → alarm → alarm action
+```
+
+Every one of them can be missing on its own, and a missing hop anywhere means
+nobody is told. This is why the check is worth writing carefully rather than at
+all: **the most common state is half-done** — the filter exists, the metric is
+published, and no alarm was ever created on it. A rule that looked only for the
+filter would pass exactly that account, which is worse than not having the rule,
+because it would be a confident wrong answer about whether anyone is watching.
+
+So `MonitoringCheck` carries *where* the chain stops rather than a boolean.
+"No filter" and "a filter with no alarm" are the same verdict and different
+afternoons, and the message says which.
+
+Two hops needed care beyond existence. An **alarm with no action** changes a
+colour on a dashboard nobody is looking at, so it is counted as silent rather
+than as an alarm. And an alarm can only watch a metric in its **own region**, so
+the metric key includes the region — a filter in eu-west-1 and an alarm in
+us-east-1 are two things that never meet, and pairing them would report a chain
+that does not exist.
+
+### The pattern match is necessary and not sufficient, and says so
+
+CIS specifies exact filter patterns. Requiring the literal string would fail
+every team that wrote an equivalent one; evaluating CloudWatch's filter-pattern
+language properly means implementing somebody else's expression grammar, and
+implementing it *nearly* right is worse than not implementing it — a pattern that
+parses differently to how AWS parses it produces a confident wrong answer, which
+is the failure this codebase refuses everywhere.
+
+So the test is that the pattern names every ingredient the event is about:
+`$.errorCode` plus both refusal codes for 4.1, `$.userIdentity.type` plus `Root`
+for 4.3. Each ingredient is a set of alternatives, which is what lets
+`AccessDenied` and `AccessDenied*` both count without accepting a pattern
+mentioning neither.
+
+**And the matched pattern goes into the finding's evidence, verbatim.** That is
+the part that makes the compromise honest rather than merely convenient: a
+reader is shown what was matched and can judge it, instead of being asked to
+trust this rule's opinion of a language it does not parse. The `notes` on the
+remediation declaration say the same thing to the customer.
+
+### Two rules rather than one
+
+They walk the same chain and are not the same check: a pattern matching refused
+API calls says nothing about root usage. `_MonitoredEventRule` holds the walk;
+each rule declares its ingredients and its sentence.
+
+Both return NOT_APPLICABLE when the account has no trail at all. That is
+AWS-LOG-001's finding, and raising all three would charge the security score
+three times for one problem written three ways — the same reasoning AWS-LOG-002
+already followed.
+
+### Where this leaves the benchmark
+
+**30 of 31 CIS AWS controls covered.** The one remaining is 1.17, "a support role
+exists to manage incidents with AWS Support", which is organizational and carries
+`technically_assessable=False` — a fact about the control, not a backlog item.
+
+The policy goes to **v3** for `logs:DescribeMetricFilters` and
+`cloudwatch:DescribeAlarms`. Both are very likely already inside `SecurityAudit`,
+which carries `logs:Describe*` and `cloudwatch:Describe*`; they are granted
+anyway, in the direction `rbac.py` already prefers — a redundant read action
+costs a redeploy prompt, and a missing one costs two checks whose cause is one
+denied call several minutes into a scan.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

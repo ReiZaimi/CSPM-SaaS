@@ -717,7 +717,9 @@
             "IsMultiRegionTrail": true,
             "S3BucketName": "bk-audit-logs",
             "LogFileValidationEnabled": true,
-            "KmsKeyId": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa"
+            "KmsKeyId": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa",
+            "CloudWatchLogsLogGroupArn": "arn:aws:logs:eu-west-1:111122223333:log-group:/aws/cloudtrail/bk-trail:*",
+            "CloudWatchLogsRoleArn": "arn:aws:iam::111122223333:role/CloudTrail_CloudWatchLogs"
           }
         ]
       },
@@ -730,7 +732,9 @@
             "IsMultiRegionTrail": true,
             "S3BucketName": "bk-audit-logs",
             "LogFileValidationEnabled": true,
-            "KmsKeyId": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa"
+            "KmsKeyId": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa",
+            "CloudWatchLogsLogGroupArn": "arn:aws:logs:eu-west-1:111122223333:log-group:/aws/cloudtrail/bk-trail:*",
+            "CloudWatchLogsRoleArn": "arn:aws:iam::111122223333:role/CloudTrail_CloudWatchLogs"
           }
         ]
       }
@@ -821,6 +825,52 @@
             "type": "ACCOUNT"
           }
         ]
+      }
+    ],
+    "log_metric_filters": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "filterName": "UnauthorizedAPICalls",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.errorCode = \"*UnauthorizedOperation\") || ($.errorCode = \"AccessDenied*\") }",
+            "metricTransformations": [
+              {
+                "metricName": "UnauthorizedAPICalls",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
+      }
+    ],
+    "cloudwatch_alarms": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "AlarmName": "UnauthorizedAPICalls",
+            "MetricName": "UnauthorizedAPICalls",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
       }
     ]
   }

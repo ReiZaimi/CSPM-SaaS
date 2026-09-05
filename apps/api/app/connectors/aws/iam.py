@@ -40,7 +40,7 @@ from typing import Any
 from app.connectors.evidence import EvidenceCategory
 
 # Bump when the action set changes.
-POLICY_VERSION = "v2"
+POLICY_VERSION = "v3"
 
 STACK_NAME = "CloudGuardSecurityScanner"
 ROLE_NAME = "CloudGuardScannerRole"
@@ -118,6 +118,19 @@ INLINE_READ_ACTIONS: tuple[str, ...] = (
     "access-analyzer:ListAnalyzers",
     "securityhub:DescribeHub",
     "config:DescribeConfigurationRecorderStatus",
+    # --- v3 -------------------------------------------------------------
+    # Whether anybody is *told* when something happens. A metric filter turns
+    # matching CloudTrail lines into a CloudWatch metric and an alarm turns
+    # that metric into a notification; CIS asks for both, and neither is
+    # visible from the trail itself.
+    #
+    # Both are very likely already granted by SecurityAudit, which carries
+    # ``logs:Describe*`` and ``cloudwatch:Describe*``. Granted anyway, in the
+    # direction this file already prefers: a redundant read action costs a
+    # redeploy prompt, and a missing one costs two checks whose cause is one
+    # denied call several minutes into a scan. UNVERIFIED.
+    "logs:DescribeMetricFilters",
+    "cloudwatch:DescribeAlarms",
 )
 
 # Which action each client call needs. The link between the code and the policy,
@@ -172,6 +185,8 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     "config:describe_configuration_recorder_status": (
         "config:DescribeConfigurationRecorderStatus",
     ),
+    "logs:describe_metric_filters": ("logs:DescribeMetricFilters",),
+    "cloudwatch:describe_alarms": ("cloudwatch:DescribeAlarms",),
 }
 
 # Actions the managed policies supply, listed so the two-way test can tell
@@ -222,8 +237,24 @@ V1_ACTIONS: tuple[str, ...] = (
     "guardduty:GetDetector",
 )
 
+V2_ACTIONS: tuple[str, ...] = (
+    *V1_ACTIONS,
+    "iam:GetPolicyVersion",
+    "iam:ListInstanceProfiles",
+    "iam:ListServerCertificates",
+    "s3:GetBucketPolicy",
+    "s3:GetBucketLogging",
+    "kms:GetKeyRotationStatus",
+    "ec2:DescribeFlowLogs",
+    "ec2:DescribeNetworkAcls",
+    "access-analyzer:ListAnalyzers",
+    "securityhub:DescribeHub",
+    "config:DescribeConfigurationRecorderStatus",
+)
+
 POLICY_HISTORY: dict[str, tuple[str, ...]] = {
     "v1": V1_ACTIONS,
+    "v2": V2_ACTIONS,
     POLICY_VERSION: INLINE_READ_ACTIONS,
 }
 
