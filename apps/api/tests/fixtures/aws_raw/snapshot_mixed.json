@@ -1,0 +1,827 @@
+{
+  "provider": "aws",
+  "tenant_id": "o-bk4demo9x",
+  "subscription_id": "111122223333",
+  "scope": "account",
+  "collected_at": "2026-09-05T09:00:00+00:00",
+  "version": "1.0",
+  "errors": {},
+  "gaps": {},
+  "coverage": {},
+  "data": {
+    "enabled_regions": [
+      "eu-west-1",
+      "us-east-1"
+    ],
+    "organization_accounts": [
+      {
+        "Id": "111122223333",
+        "Name": "Production",
+        "Status": "ACTIVE"
+      },
+      {
+        "Id": "444455556666",
+        "Name": "Sandbox",
+        "Status": "ACTIVE"
+      }
+    ],
+    "iam_users": [
+      {
+        "UserName": "ana.krasniqi",
+        "Arn": "arn:aws:iam::111122223333:user/ana.krasniqi"
+      },
+      {
+        "UserName": "ci-deploy",
+        "Arn": "arn:aws:iam::111122223333:user/ci-deploy"
+      },
+      {
+        "UserName": "besart.hoxha",
+        "Arn": "arn:aws:iam::111122223333:user/besart.hoxha"
+      }
+    ],
+    "iam_credential_report": [
+      {
+        "user": "ana.krasniqi",
+        "arn": "arn:aws:iam::111122223333:user/ana.krasniqi",
+        "password_enabled": "true",
+        "mfa_active": "false",
+        "access_key_1_active": "false"
+      },
+      {
+        "user": "ci-deploy",
+        "arn": "arn:aws:iam::111122223333:user/ci-deploy",
+        "password_enabled": "false",
+        "mfa_active": "false",
+        "access_key_1_active": "true",
+        "access_key_1_last_used_date": "2025-09-14T02:11:00+00:00",
+        "access_key_1_last_rotated": "2024-03-02T09:40:00+00:00"
+      },
+      {
+        "user": "besart.hoxha",
+        "arn": "arn:aws:iam::111122223333:user/besart.hoxha",
+        "password_enabled": "true",
+        "mfa_active": "true",
+        "access_key_1_active": "false"
+      }
+    ],
+    "account_summary": [
+      {
+        "AccountAccessKeysPresent": 0,
+        "AccountMFAEnabled": 1
+      }
+    ],
+    "account_password_policy": [
+      {
+        "MinimumPasswordLength": 16,
+        "RequireSymbols": true,
+        "RequireNumbers": true
+      }
+    ],
+    "iam_roles": [
+      {
+        "RoleName": "app-server",
+        "Arn": "arn:aws:iam::111122223333:role/app-server"
+      },
+      {
+        "RoleName": "CloudGuardScannerRole",
+        "Arn": "arn:aws:iam::111122223333:role/CloudGuardScannerRole"
+      }
+    ],
+    "iam_instance_profiles": [
+      {
+        "Arn": "arn:aws:iam::111122223333:instance-profile/app-server",
+        "InstanceProfileName": "app-server",
+        "Roles": [
+          {
+            "Arn": "arn:aws:iam::111122223333:role/app-server"
+          }
+        ]
+      }
+    ],
+    "iam_policies": [
+      {
+        "PolicyName": "legacy-admin",
+        "Arn": "arn:aws:iam::111122223333:policy/legacy-admin",
+        "DefaultVersionId": "v3",
+        "AttachmentCount": 1
+      },
+      {
+        "PolicyName": "reports-read",
+        "Arn": "arn:aws:iam::111122223333:policy/reports-read",
+        "DefaultVersionId": "v1",
+        "AttachmentCount": 4
+      }
+    ],
+    "iam_policy_documents": [
+      {
+        "Arn": "arn:aws:iam::111122223333:policy/legacy-admin",
+        "PolicyName": "legacy-admin",
+        "VersionId": "v3",
+        "AttachmentCount": 1,
+        "Document": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      },
+      {
+        "Arn": "arn:aws:iam::111122223333:policy/reports-read",
+        "PolicyName": "reports-read",
+        "VersionId": "v1",
+        "AttachmentCount": 4,
+        "Document": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject",
+                "s3:ListBucket"
+              ],
+              "Resource": [
+                "arn:aws:s3:::bk-reports",
+                "arn:aws:s3:::bk-reports/*"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "iam_server_certificates": [],
+    "s3_buckets": [
+      {
+        "Name": "bk-customer-statements",
+        "Region": "eu-west-1"
+      },
+      {
+        "Name": "bk-reports",
+        "Region": "eu-west-1"
+      },
+      {
+        "Name": "bk-audit-logs",
+        "Region": "eu-west-1"
+      }
+    ],
+    "s3_public_access_block": [
+      {
+        "Bucket": "bk-customer-statements",
+        "Region": "eu-west-1",
+        "Configuration": null
+      },
+      {
+        "Bucket": "bk-reports",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": true,
+            "IgnorePublicAcls": true,
+            "BlockPublicPolicy": true,
+            "RestrictPublicBuckets": true
+          }
+        }
+      },
+      {
+        "Bucket": "bk-audit-logs",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": true,
+            "IgnorePublicAcls": true,
+            "BlockPublicPolicy": true,
+            "RestrictPublicBuckets": true
+          }
+        }
+      }
+    ],
+    "s3_bucket_policy_status": [
+      {
+        "Bucket": "bk-customer-statements",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "PolicyStatus": {
+            "IsPublic": true
+          }
+        }
+      },
+      {
+        "Bucket": "bk-reports",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "PolicyStatus": {
+            "IsPublic": false
+          }
+        }
+      },
+      {
+        "Bucket": "bk-audit-logs",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "PolicyStatus": {
+            "IsPublic": false
+          }
+        }
+      }
+    ],
+    "s3_bucket_policy": [
+      {
+        "Bucket": "bk-customer-statements",
+        "Region": "eu-west-1",
+        "Document": null
+      },
+      {
+        "Bucket": "bk-reports",
+        "Region": "eu-west-1",
+        "Document": {
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": "arn:aws:s3:::bk-reports/*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "Bucket": "bk-audit-logs",
+        "Region": "eu-west-1",
+        "Document": {
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": "arn:aws:s3:::bk-audit-logs/*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "s3_encryption": [
+      {
+        "Bucket": "bk-customer-statements",
+        "Region": "eu-west-1",
+        "Configuration": null
+      },
+      {
+        "Bucket": "bk-reports",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "ServerSideEncryptionConfiguration": {
+            "Rules": [
+              {
+                "ApplyServerSideEncryptionByDefault": {
+                  "SSEAlgorithm": "AES256"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "Bucket": "bk-audit-logs",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "ServerSideEncryptionConfiguration": {
+            "Rules": [
+              {
+                "ApplyServerSideEncryptionByDefault": {
+                  "SSEAlgorithm": "aws:kms"
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "s3_bucket_logging": [
+      {
+        "Bucket": "bk-customer-statements",
+        "Region": "eu-west-1",
+        "Configuration": {}
+      },
+      {
+        "Bucket": "bk-reports",
+        "Region": "eu-west-1",
+        "Configuration": {}
+      },
+      {
+        "Bucket": "bk-audit-logs",
+        "Region": "eu-west-1",
+        "Configuration": {
+          "LoggingEnabled": {
+            "TargetBucket": "bk-access-logs",
+            "TargetPrefix": "trail/"
+          }
+        }
+      }
+    ],
+    "vpcs": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "VpcId": "vpc-0a1b2c3d",
+            "CidrBlock": "10.0.0.0/16",
+            "IsDefault": false
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "VpcId": "vpc-0f9e8d7c",
+            "CidrBlock": "172.31.0.0/16",
+            "IsDefault": true
+          }
+        ]
+      }
+    ],
+    "subnets": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "SubnetId": "subnet-0aa1",
+            "VpcId": "vpc-0a1b2c3d",
+            "AvailabilityZone": "eu-west-1a"
+          },
+          {
+            "SubnetId": "subnet-0aa2",
+            "VpcId": "vpc-0a1b2c3d",
+            "AvailabilityZone": "eu-west-1b"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "SubnetId": "subnet-0bb1",
+            "VpcId": "vpc-0f9e8d7c"
+          }
+        ]
+      }
+    ],
+    "security_groups": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "GroupId": "sg-0web",
+            "GroupName": "web-tier",
+            "VpcId": "vpc-0a1b2c3d",
+            "IpPermissions": [
+              {
+                "IpProtocol": "tcp",
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpRanges": [
+                  {
+                    "CidrIp": "0.0.0.0/0"
+                  }
+                ]
+              },
+              {
+                "IpProtocol": "tcp",
+                "FromPort": 443,
+                "ToPort": 443,
+                "IpRanges": [
+                  {
+                    "CidrIp": "0.0.0.0/0"
+                  }
+                ]
+              }
+            ],
+            "IpPermissionsEgress": [
+              {
+                "IpProtocol": "-1",
+                "IpRanges": [
+                  {
+                    "CidrIp": "0.0.0.0/0"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "GroupId": "sg-0db",
+            "GroupName": "database",
+            "VpcId": "vpc-0a1b2c3d",
+            "IpPermissions": [
+              {
+                "IpProtocol": "tcp",
+                "FromPort": 5432,
+                "ToPort": 5432,
+                "UserIdGroupPairs": [
+                  {
+                    "GroupId": "sg-0web"
+                  }
+                ]
+              }
+            ],
+            "IpPermissionsEgress": []
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "GroupId": "sg-0default",
+            "GroupName": "default",
+            "VpcId": "vpc-0f9e8d7c",
+            "IpPermissions": [
+              {
+                "IpProtocol": "-1",
+                "UserIdGroupPairs": [
+                  {
+                    "GroupId": "sg-0default"
+                  }
+                ]
+              }
+            ],
+            "IpPermissionsEgress": [
+              {
+                "IpProtocol": "-1",
+                "IpRanges": [
+                  {
+                    "CidrIp": "0.0.0.0/0"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "network_acls": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "NetworkAclId": "acl-0aa",
+            "VpcId": "vpc-0a1b2c3d",
+            "Entries": [
+              {
+                "RuleNumber": 100,
+                "Egress": false,
+                "RuleAction": "allow",
+                "CidrBlock": "0.0.0.0/0",
+                "Protocol": "-1"
+              },
+              {
+                "RuleNumber": 32767,
+                "Egress": false,
+                "RuleAction": "deny",
+                "CidrBlock": "0.0.0.0/0",
+                "Protocol": "-1"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "NetworkAclId": "acl-0bb",
+            "VpcId": "vpc-0f9e8d7c",
+            "Entries": [
+              {
+                "RuleNumber": 32767,
+                "Egress": false,
+                "RuleAction": "deny",
+                "CidrBlock": "0.0.0.0/0",
+                "Protocol": "-1"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "network_interfaces": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "NetworkInterfaceId": "eni-0aa",
+            "Attachment": {
+              "InstanceId": "i-0abc123"
+            },
+            "PrivateIpAddress": "10.0.1.20"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
+      }
+    ],
+    "elastic_ips": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "AllocationId": "eipalloc-0aa",
+            "PublicIp": "52.31.44.7",
+            "InstanceId": "i-0abc123"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
+      }
+    ],
+    "vpc_flow_logs": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "FlowLogId": "fl-0aa",
+            "ResourceId": "vpc-0a1b2c3d",
+            "FlowLogStatus": "ACTIVE",
+            "TrafficType": "ALL"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "FlowLogId": "fl-0bb",
+            "ResourceId": "vpc-0f9e8d7c",
+            "FlowLogStatus": "ACTIVE",
+            "TrafficType": "ALL"
+          }
+        ]
+      }
+    ],
+    "ec2_instances": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "InstanceId": "i-0abc123",
+            "InstanceType": "t3.medium",
+            "PublicIpAddress": "52.31.44.7",
+            "State": {
+              "Name": "running"
+            },
+            "MetadataOptions": {
+              "HttpTokens": "optional",
+              "HttpEndpoint": "enabled"
+            },
+            "SecurityGroups": [
+              {
+                "GroupId": "sg-0web",
+                "GroupName": "web-tier"
+              }
+            ],
+            "IamInstanceProfile": {
+              "Arn": "arn:aws:iam::111122223333:instance-profile/app-server"
+            },
+            "Tags": [
+              {
+                "Key": "Name",
+                "Value": "web-01"
+              },
+              {
+                "Key": "environment",
+                "Value": "production"
+              }
+            ]
+          },
+          {
+            "InstanceId": "i-0def456",
+            "InstanceType": "t3.small",
+            "State": {
+              "Name": "running"
+            },
+            "MetadataOptions": {
+              "HttpTokens": "required",
+              "HttpEndpoint": "enabled"
+            },
+            "SecurityGroups": [
+              {
+                "GroupId": "sg-0db",
+                "GroupName": "database"
+              }
+            ],
+            "Tags": [
+              {
+                "Key": "Name",
+                "Value": "worker-01"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
+      }
+    ],
+    "ebs_encryption_default": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "EbsEncryptionByDefault": true
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "EbsEncryptionByDefault": true
+          }
+        ]
+      }
+    ],
+    "rds_instances": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "DBInstanceIdentifier": "bk-core-postgres",
+            "DBInstanceArn": "arn:aws:rds:eu-west-1:111122223333:db:bk-core-postgres",
+            "Engine": "postgres",
+            "EngineVersion": "15.4",
+            "PubliclyAccessible": true,
+            "StorageEncrypted": false,
+            "AutoMinorVersionUpgrade": false,
+            "Endpoint": {
+              "Address": "bk-core-postgres.abc.eu-west-1.rds.amazonaws.com",
+              "Port": 5432
+            }
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
+      }
+    ],
+    "kms_keys": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "Arn": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa",
+            "KeyId": "1111-aaaa",
+            "Description": "audit log key",
+            "KeyManager": "CUSTOMER",
+            "KeyState": "Enabled",
+            "KeyRotationEnabled": false
+          },
+          {
+            "Arn": "arn:aws:kms:eu-west-1:111122223333:key/2222-bbbb",
+            "KeyId": "2222-bbbb",
+            "Description": "aws/s3",
+            "KeyManager": "AWS",
+            "KeyState": "Enabled"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": []
+      }
+    ],
+    "cloudtrail_trails": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "Name": "bk-trail",
+            "TrailARN": "arn:aws:cloudtrail:eu-west-1:111122223333:trail/bk-trail",
+            "IsMultiRegionTrail": true,
+            "S3BucketName": "bk-audit-logs",
+            "LogFileValidationEnabled": true,
+            "KmsKeyId": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "Name": "bk-trail",
+            "TrailARN": "arn:aws:cloudtrail:eu-west-1:111122223333:trail/bk-trail",
+            "IsMultiRegionTrail": true,
+            "S3BucketName": "bk-audit-logs",
+            "LogFileValidationEnabled": true,
+            "KmsKeyId": "arn:aws:kms:eu-west-1:111122223333:key/1111-aaaa"
+          }
+        ]
+      }
+    ],
+    "config_recorders": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "name": "default",
+            "roleARN": "arn:aws:iam::111122223333:role/config",
+            "Status": {
+              "name": "default",
+              "recording": true
+            }
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "name": "default",
+            "roleARN": "arn:aws:iam::111122223333:role/config",
+            "Status": {
+              "name": "default",
+              "recording": true
+            }
+          }
+        ]
+      }
+    ],
+    "guardduty_detectors": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "DetectorId": "det-aa",
+            "Status": "ENABLED"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "DetectorId": "det-bb",
+            "Status": "ENABLED"
+          }
+        ]
+      }
+    ],
+    "securityhub_status": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "HubArn": "arn:aws:securityhub:eu-west-1:111122223333:hub/default"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "HubArn": "arn:aws:securityhub:us-east-1:111122223333:hub/default"
+          }
+        ]
+      }
+    ],
+    "access_analyzers": [
+      {
+        "region": "eu-west-1",
+        "items": [
+          {
+            "name": "account",
+            "status": "ACTIVE",
+            "type": "ACCOUNT"
+          }
+        ]
+      },
+      {
+        "region": "us-east-1",
+        "items": [
+          {
+            "name": "account",
+            "status": "ACTIVE",
+            "type": "ACCOUNT"
+          }
+        ]
+      }
+    ]
+  }
+}

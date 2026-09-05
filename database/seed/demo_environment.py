@@ -1,23 +1,31 @@
 """Seed a demo organization with a scanned environment.
 
-Why this exists: the product loop cannot be demonstrated without a real Azure
-tenant, and setting one up is a prerequisite for Phase 2 that may not be done
-yet. This script runs the **real** pipeline -- real normalizer, real rules, real
-risk engine -- against a recorded Azure snapshot, so what you see in the UI is
-genuinely what CloudGuard computes, not fabricated rows.
+Why this exists: the product loop cannot be demonstrated without a real cloud
+account, and setting one up may not be done yet. This script runs the **real**
+pipeline -- real normalizer, real rules, real risk engine -- against a recorded
+snapshot, so what you see in the UI is genuinely what CloudGuard computes, not
+fabricated rows.
+
+It does more than that for AWS. Nothing in ``app/connectors/aws/`` has ever been
+run against a live account (``docs/AWS_INTEGRATION.md`` §1), so this is the only
+way to watch that half of the product work end to end: the recording exercises
+the normalizer, thirty rules, the risk engine and the findings lifecycle without
+touching AWS. What it cannot prove is the part the checklist covers -- whether
+the payloads it replays are the payloads AWS actually sends.
 
 It is a development tool, not part of the application. Nothing imports it, and
 it refuses to run against a production environment.
 
     python /srv/database/seed/demo_environment.py --email you@example.com
+    python /srv/database/seed/demo_environment.py --email you@example.com --provider aws
     python /srv/database/seed/demo_environment.py --email you@example.com --fix
 
 Run it from the API service's shell on Railway. The email must belong to
 someone who has already signed in at least once, so that Supabase has created
 their user record -- the demo organization is attached to that real account.
 
-``--fix`` replays the scan with the RDP exposure and the open SQL firewall
-repaired, which is how you watch a finding auto-resolve and the score move.
+``--fix`` replays the scan with two headline problems repaired, which is how you
+watch a finding auto-resolve and the score move.
 """
 
 import argparse
@@ -33,6 +41,7 @@ sys.path.insert(0, "/srv/apps/api")
 
 from sqlalchemy import text
 
+from app.connectors.aws.normalizer import AwsNormalizer
 from app.connectors.azure.evidence import keys_in
 from app.connectors.azure.normalizer import AzureNormalizer
 from app.connectors.base import CloudConnector, NormalizedState, RawSnapshot
@@ -55,23 +64,44 @@ from app.services import scanner as scanner_module
 from app.services.rule_sync import sync_rules_to_database
 from app.services.scanner import ScanPipeline
 
-SNAPSHOT = Path("/srv/apps/api/tests/fixtures/azure_raw/snapshot_mixed.json")
+SNAPSHOTS = {
+    Provider.AZURE: Path("/srv/apps/api/tests/fixtures/azure_raw/snapshot_mixed.json"),
+    Provider.AWS: Path("/srv/apps/api/tests/fixtures/aws_raw/snapshot_mixed.json"),
+}
 DEMO_ORG = "Banka Kombetare (demo)"
 
+NORMALIZERS = {Provider.AZURE: AzureNormalizer, Provider.AWS: AwsNormalizer}
 
-# The recording is one file, but a scan reads two scopes: the subscription and
-# the tenant directory above it. These keys belong to the second.
-DIRECTORY_KEYS = frozenset(
-    {"users", "directory_roles", "user_role_map", "authentication_methods"}
-)
+
+# The recording is one file, but a scan reads two scopes: the account and the
+# trust boundary above it. These keys belong to the second.
+#
+# Azure's directory is where its users live, so the split matters: served to
+# both scopes, one administrator without MFA becomes one finding per
+# subscription. AWS keeps identity *in* each account, so its boundary reading is
+# the account list and nothing else -- which is why its set is one key.
+DIRECTORY_KEYS = {
+    Provider.AZURE: frozenset(
+        {"users", "directory_roles", "user_role_map", "authentication_methods"}
+    ),
+    Provider.AWS: frozenset({"organization_accounts"}),
+}
 
 
 class ReplayConnector(CloudConnector):
-    provider = Provider.AZURE
+    """Serves a recording where a real connector would call a cloud.
+
+    The provider comes from the recording rather than from the class, so the
+    same replay drives either pipeline -- and the normalizer is the real one for
+    that cloud, which is the whole point: a demo assembled from fabricated
+    findings would prove nothing about the code that produces them.
+    """
 
     def __init__(self, payload: dict, **_: object) -> None:
         self.payload = payload
-        self._normalizer = AzureNormalizer()
+        self.provider = Provider(payload["provider"])
+        self._normalizer = NORMALIZERS[self.provider]()
+        self._directory_keys = DIRECTORY_KEYS[self.provider]
 
     async def validate_connection(self):
         raise NotImplementedError
@@ -90,7 +120,7 @@ class ReplayConnector(CloudConnector):
         subscription for every user in the tenant.
         """
         return RawSnapshot(
-            provider=Provider.AZURE,
+            provider=self.provider,
             tenant_id=self.payload["tenant_id"],
             subscription_id=(
                 None if directory else self.payload["subscription_id"]
@@ -102,7 +132,7 @@ class ReplayConnector(CloudConnector):
             data={
                 key: copy.deepcopy(value)
                 for key, value in self.payload["data"].items()
-                if (key in DIRECTORY_KEYS) is directory
+                if (key in self._directory_keys) is directory
             },
             errors={
                 category: reason
@@ -117,9 +147,23 @@ class ReplayConnector(CloudConnector):
                 key.value: reason
                 for category, reason in self.payload["errors"].items()
                 if (category == "identity") is directory
-                for key in keys_in(EvidenceCategory(category))
+                for key in self._keys_in(EvidenceCategory(category))
             },
         )
+
+    def _keys_in(self, category: EvidenceCategory):
+        """Which evidence keys a recorded category error should degrade.
+
+        Asked of the provider rather than of Azure's enum. A recorded error is
+        stored per category and the rules degrade per key, so getting this wrong
+        would show a degraded banner over rules that passed regardless -- the
+        contradiction the coverage ledger exists to prevent.
+        """
+        if self.provider is Provider.AZURE:
+            return keys_in(category)
+        from app.connectors.aws.evidence import keys_in as aws_keys_in
+
+        return aws_keys_in(category)
 
     def normalize(self, snapshot: RawSnapshot) -> NormalizedState:
         return self._normalizer.normalize(snapshot)
@@ -157,8 +201,16 @@ async def drive_scan(scan_id) -> None:
 
 
 def apply_fixes(payload: dict) -> dict:
-    """Repair the two headline problems, as a customer would have."""
+    """Repair the headline problems, as a customer would have.
+
+    Two per cloud, chosen so the replay demonstrates the thing the product is
+    actually for: nobody clicks "resolved". The next scan reads the repaired
+    state, the rules pass, and the findings close themselves.
+    """
     fixed = copy.deepcopy(payload)
+    if Provider(fixed["provider"]) is Provider.AWS:
+        return _apply_aws_fixes(fixed)
+
     for nsg in fixed["data"]["network_security_groups"]:
         for rule in nsg["properties"]["securityRules"]:
             if rule["name"] == "AllowRDP":
@@ -167,6 +219,54 @@ def apply_fixes(payload: dict) -> dict:
         server["properties"]["publicNetworkAccess"] = "Disabled"
         server["_firewall_rules"] = []
     return fixed
+
+
+def _apply_aws_fixes(fixed: dict) -> dict:
+    """Close the public bucket and the open SSH rule.
+
+    The bucket needs both halves -- the access block *and* the policy -- because
+    they are two independent ways in and blocking one leaves the other open.
+    That is the rule's own position, and a fix that satisfied only half of it
+    would leave the finding open and make the demo look broken when it is
+    working correctly.
+    """
+    data = fixed["data"]
+    for row in data["s3_public_access_block"]:
+        if row["Bucket"] == "bk-customer-statements":
+            row["Configuration"] = {
+                "PublicAccessBlockConfiguration": {
+                    "BlockPublicAcls": True,
+                    "IgnorePublicAcls": True,
+                    "BlockPublicPolicy": True,
+                    "RestrictPublicBuckets": True,
+                }
+            }
+    for row in data["s3_bucket_policy_status"]:
+        if row["Bucket"] == "bk-customer-statements":
+            row["Configuration"] = {"PolicyStatus": {"IsPublic": False}}
+
+    for block in data["security_groups"]:
+        for group in block["items"]:
+            if group["GroupId"] != "sg-0web":
+                continue
+            group["IpPermissions"] = [
+                rule
+                for rule in group["IpPermissions"]
+                if not (rule.get("FromPort") == 22 and rule.get("ToPort") == 22)
+            ]
+    return fixed
+
+
+def grant_version(provider: Provider) -> str:
+    """What a connection deployed today would be stamped with.
+
+    Hard-coding one would leave the demo reporting "redeploy the role" against
+    a version that only exists in a recording -- a prompt with nothing behind
+    it, on the screen whose job is to say whether access is current.
+    """
+    from app.connectors.registry import get_onboarding
+
+    return get_onboarding(provider).grant_version()
 
 
 async def resolve_user(email: str) -> uuid.UUID:
@@ -194,18 +294,18 @@ async def resolve_user(email: str) -> uuid.UUID:
     return user_id
 
 
-async def seed(email: str, fix: bool) -> None:
+async def seed(email: str, fix: bool, provider: Provider) -> None:
     if settings.is_production:
         raise SystemExit(
             "Refusing to seed demo data into a production environment.\n"
             "Set APP_ENV=staging on this service while demoing, or connect a "
-            "real Azure tenant instead."
+            "real cloud account instead."
         )
 
     await sync_rules_to_database()
 
     user_id = await resolve_user(email)
-    payload = json.loads(SNAPSHOT.read_text())
+    payload = json.loads(SNAPSHOTS[provider].read_text())
     if fix:
         payload = apply_fixes(payload)
 
@@ -244,15 +344,35 @@ async def seed(email: str, fix: bool) -> None:
         ).scalar_one_or_none()
 
         if account_id is None:
-            # The connection is what the tenant directory is read through, so a
+            # The connection is what the trust boundary is read through, so a
             # demo account without one would show every identity check as
             # UNKNOWN -- and the MFA finding is half of what the demo is for.
+            #
+            # Both grants are stamped as proven. That is honest for a replay:
+            # nothing is being called, and leaving them unset would park the
+            # connection in a setup step the demo is not about.
+            aws = provider is Provider.AWS
             connection = CloudConnection(
                 organization_id=org_id,
-                provider=Provider.AZURE,
-                name="Demo tenant",
-                scope_type=ConnectionScope.TENANT_ROOT,
+                provider=provider,
+                name="Demo organization" if aws else "Demo tenant",
+                scope_type=(
+                    ConnectionScope.ORGANIZATION if aws else ConnectionScope.TENANT_ROOT
+                ),
+                scope_id=payload["subscription_id"] if aws else None,
                 tenant_id=payload["tenant_id"],
+                role_version=grant_version(provider),
+                provider_ref=(
+                    {
+                        "role_arn": (
+                            f"arn:aws:iam::{payload['subscription_id']}"
+                            ":role/CloudGuardScannerRole"
+                        ),
+                        "external_id": "cg-demo-recording-not-a-credential",
+                    }
+                    if aws
+                    else {}
+                ),
                 consent_status=ConsentStatus.GRANTED,
                 consented_at=datetime.now(UTC),
                 rbac_verified_at=datetime.now(UTC),
@@ -264,8 +384,10 @@ async def seed(email: str, fix: bool) -> None:
             account = CloudAccount(
                 organization_id=org_id,
                 connection_id=connection.id,
-                provider=Provider.AZURE,
-                account_name="Production Subscription (demo)",
+                provider=provider,
+                account_name=(
+                    "Production Account (demo)" if aws else "Production Subscription (demo)"
+                ),
                 tenant_id=payload["tenant_id"],
                 subscription_id=payload["subscription_id"],
                 consent_status=ConsentStatus.GRANTED,
@@ -331,9 +453,15 @@ if __name__ == "__main__":
         help="email of an existing Supabase user to attach the demo organization to",
     )
     parser.add_argument(
+        "--provider",
+        default=Provider.AZURE.value,
+        choices=[Provider.AZURE.value, Provider.AWS.value],
+        help="which recorded environment to seed",
+    )
+    parser.add_argument(
         "--fix",
         action="store_true",
-        help="replay with the RDP and SQL exposures repaired, to watch findings auto-resolve",
+        help="replay with two headline exposures repaired, to watch findings auto-resolve",
     )
     args = parser.parse_args()
-    asyncio.run(seed(args.email, args.fix))
+    asyncio.run(seed(args.email, args.fix, Provider(args.provider)))

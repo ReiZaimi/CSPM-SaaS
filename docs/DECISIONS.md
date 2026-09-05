@@ -3724,6 +3724,69 @@ migration of stored captures plus a breaking change to the frontend, buys no
 customer anything, and is the work §70 already argued should happen on its own
 rather than inside the change that adds a second provider.
 
+## 79. A recorded AWS estate, because there is no other way to watch it work
+
+The demo seed replayed a recorded Azure snapshot through the real pipeline so
+the product loop could be shown before anyone had a tenant. AWS needs that more,
+not less: nothing in `app/connectors/aws/` has been run against a live account,
+so a recording is the **only** way to see the second half of the product work end
+to end.
+
+`--provider aws` seeds an organization from
+`tests/fixtures/aws_raw/snapshot_mixed.json`. The recording is in the shape the
+collector produces — regional blocks, per-bucket readings keyed by name, the
+credential report as parsed rows — and everything after it is real: the real
+normalizer, thirty real rules, the real risk engine, the real findings
+lifecycle.
+
+**What it proves and what it does not** is worth being exact about. It proves
+the regional blocks unwrap, the per-bucket readings join, the graph resolves its
+capability hop through the instance profile, thirty rules reach a verdict, and
+none of them reports UNKNOWN over evidence that arrived. It proves nothing about
+whether the payloads it replays are the payloads AWS actually sends — which is
+exactly what `AWS_INTEGRATION.md` §1 covers, and why the checklist still gates
+the UI.
+
+### The fixture is a test before it is a demo
+
+`test_aws_demo_environment.py` pins the verdicts as a **set**, not a count: a
+count tells you something changed, the set tells you what. It also asserts no
+Azure rule touches the recording, and that the capture round-trips through
+`to_json`/`from_json` to the same conclusions — if those disagreed about the
+regional block shape, every replayed AWS scan would quietly reach different
+verdicts from the scan that took the reading.
+
+Sharing the fixture between the demo and the tests is deliberate in both
+directions. A demo assembled from fabricated findings would prove nothing about
+the code that produces them, and a fixture nobody looks at drifts from the
+product it is supposed to describe.
+
+### The estate is deliberately not catastrophic
+
+The first draft failed 28 of 30 rules. That is a worse demonstration, not a
+better one: the security score floors at zero (`RISK_ENGINE.md` §3, and the open
+item already recorded), and a screen with no green on it says nothing about a
+product whose whole point is telling the two apart.
+
+Tuned to 14 failures against 21 passes, and the split is the realistic one — the
+account-wide controls are in place, and what is wrong is wrong about particular
+resources. That is what a competent team's estate looks like.
+
+### `--fix` closes two, and the bucket needed both halves
+
+The repaired replay closes the public bucket and the open SSH rule. The bucket
+fix sets **both** the access block and the policy status, because the rule
+refuses a bucket that blocks public ACLs and still carries a policy granting
+`*` — two independent ways in. A fix satisfying half of it would leave the
+finding open and make the demo look broken while the product was working
+correctly, which is the kind of thing that gets a correct check deleted.
+
+`ReplayConnector` takes its provider from the recording rather than from the
+class, and asks the right connector's `keys_in` when turning a recorded category
+error into per-key gaps. Getting that second one wrong would show a degraded
+banner over rules that passed regardless — the contradiction the coverage ledger
+exists to prevent.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

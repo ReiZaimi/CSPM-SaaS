@@ -41,17 +41,26 @@ Full walkthrough: **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)**. Both Railway
 and Vercel build directly from this repository and redeploy on every push to
 `main`.
 
-### Seeing the product loop before Azure is registered
+### Seeing the product loop before a cloud is registered
 
 Scanning a real environment needs an Entra app registration
-([`docs/AZURE_INTEGRATION.md`](docs/AZURE_INTEGRATION.md) §2). Until then, the
-demo seed runs the **real** pipeline — real normalizer, real rules, real risk
-engine — against a recorded Azure snapshot. From the API service's shell on
+([`docs/AZURE_INTEGRATION.md`](docs/AZURE_INTEGRATION.md) §2), or an AWS
+principal ([`docs/AWS_INTEGRATION.md`](docs/AWS_INTEGRATION.md) §2). Until then,
+the demo seed runs the **real** pipeline — real normalizer, real rules, real
+risk engine — against a recorded snapshot. From the API service's shell on
 Railway, with `APP_ENV=staging`:
 
 ```bash
 python /srv/database/seed/demo_environment.py --email you@example.com
+python /srv/database/seed/demo_environment.py --email you@example.com --provider aws
 ```
+
+The AWS recording matters more than a demo usually would: it is the only way to
+watch that half of the product work end to end, because none of it has been run
+against a live account. It exercises the normalizer, thirty rules, the risk
+engine and the findings lifecycle. What it cannot prove is whether the payloads
+it replays are the payloads AWS actually sends — that is what §1's checklist is
+for.
 
 Sign in first so Supabase has created your account; the demo organization
 attaches to it. Then run it again with `--fix` to watch three findings
@@ -67,7 +76,7 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    1742 tests   pytest, ruff, mypy
+backend    1751 tests   pytest, ruff, mypy
 frontend    354 tests   vitest, tsc
 ```
 
