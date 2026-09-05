@@ -3357,6 +3357,100 @@ run against a live account. Shipping the picker first would be the failure
 `MULTI_CLOUD.md` §8 named: a large body of code claiming to scan a cloud nobody
 had scanned, with the seam looking finished.
 
+## 74. Thirteen AWS rules, and the two things they made the normalizer do
+
+`MULTI_CLOUD.md` §6 said rules stay provider-specific over neutral resource
+types, and the reason was never aesthetic: `remediation` is snapshot-copied onto
+every finding, and `aws s3api put-public-access-block` is not a variant of
+`az storage account update`. A shared rule would have to branch on provider to
+produce the fix, which is the same mistake as branching on framework name.
+
+Thirteen rules under `app/rules/aws/` — public bucket, bucket without default
+encryption, SSH / RDP / database ports open to the world, RDS publicly
+accessible, RDS unencrypted, IAM user without MFA, root access key, stale access
+key, weak password policy, a region with no CloudTrail, EBS default encryption
+off. Every one declares `provider = Provider.AWS`, so `matches` keeps it away
+from an Azure storage account, and the engine narrows the context per provider
+so the aggregate rules — which never call `matches` — cannot reach one either.
+
+### The normalizer grew a rule-facing surface
+
+The first draft had rules reading AWS's own payload keys —
+`resource.get("PublicAccessBlock.PublicAccessBlockConfiguration")`. That worked
+and was wrong in two ways at once. It is not what the Azure normalizer does
+(rules there read `allow_blob_public_access`, not an ARM sub-document), and it
+made `RemediationSpec` undeclarable: an expected state names *the field the rule
+reads*, and a nested path is not a field a test can set.
+
+So the normalizer emits flat fields beside the verbatim payload:
+`public_access_blocked`, `policy_is_public`, `default_encryption_enabled`,
+`open_ingress`, `publicly_accessible`, `storage_encrypted`, `mfa_active`,
+`password_enabled`, `key_idle_days`. The raw shape stays for whoever reads the
+capture back.
+
+`open_ingress` earns its place three times over: five rules ask the same
+question of the same nested structure, and a fifth copy of that parser is a
+fifth chance to read `-1` as "no ports" rather than "all ports".
+
+**`None` is load-bearing in every one of them.** It means the setting was not in
+this capture, which is not "off" — and the rules turn it into UNKNOWN rather
+than a PASS nobody earned.
+
+### Ages come from the capture, never the clock
+
+`key_idle_days` is computed by the normalizer against `snapshot.collected_at`,
+the way Azure computes `days_since_sign_in`. A rule that read `now()` would
+answer differently on replay, which would quietly make "verified fixed" a
+statement about when somebody asked rather than about the environment.
+
+IAM writes `N/A` for a key nobody has ever used. That falls back to the creation
+date rather than being dropped: a key nobody has ever used is the strongest case
+for removing it, not a missing value.
+
+### Four rules declare no expected state, and say why
+
+`RemediationSpec` on AWS carries `expected` and `cli` and no `arm_alias`, so
+`enforceable` correctly answers False — Azure Policy cannot enforce an S3
+setting. The AWS equivalents are an AWS Config rule or an SCP, and neither is
+generated, because an unverified one would deploy and check nothing.
+
+Four rules declare `expected=()` outright: the root access key, the password
+policy, CloudTrail coverage and EBS defaults. Each is a statement about the
+*account* or about a set of regions rather than about an asset, so there is no
+resource an expected state could be checked against. That is the existing escape
+hatch and it comes with the existing price — an empty declaration owes a reason
+and something a customer can still run, and a test enforces both.
+
+The stale-key rule joins them for a different reason worth keeping distinct: its
+expectation is a *threshold over a collection* ("no active key unused for ninety
+days"), which the three comparisons cannot express. Half-declaring it would let
+a customer satisfy what they were shown and still have the finding open.
+
+### Compliance is scoped by the clouds in use
+
+CIS AWS Foundations 3.0 joins the catalogue as data, and `Framework` gains a
+`provider`. An AWS-only tenant measured against CIS Azure would report near-zero
+coverage for reasons that have nothing to do with its security posture — the
+same class of misleading number the coverage ledger exists to prevent, pointed
+the other way (`MULTI_CLOUD.md` §7).
+
+Frameworks written about *organizations* — ISO, GDPR, NIST, SOC 2, PCI — carry
+no provider and are always shown. An organization with no connections yet sees
+everything: there is nothing to scope by, and answering "what does this product
+check?" with silence would be worse than showing a benchmark they may not need.
+
+Scoped on *any* connection rather than a verified one, so the AWS benchmark
+appears while a customer is still setting AWS up. A framework at 0% because
+nothing has been scanned yet is an honest zero.
+
+### The guards that had to become provider-aware
+
+Two existing tests were checking every rule against Azure's answer.
+`test_every_rule_depends_on_evidence_something_collects` now looks up the
+producing plan per provider, and a new sibling asserts a rule declares its *own*
+provider's evidence — a key from the wrong cloud degrades on something that
+never runs, and would never appear in that scan's gaps either.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

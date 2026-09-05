@@ -243,5 +243,22 @@ RULE_REGISTRY = [
     AzurePublicDatabaseRule(),
     AzureLoggingRule(),
     AzureExposedComputeRule(),
+    # ... and thirteen AWS rules, which are separate classes rather than the
+    # same ones taught a second cloud.
+    AwsPublicBucketRule(),
+    AwsPublicSshRule(),
+    AwsUserWithoutMfaRule(),
 ]
 ```
+
+**Rules are per provider; resource types are not.** An S3 bucket and an Azure
+storage account both normalize to `STORAGE_ACCOUNT`, so `matches()` compares the
+provider as well as the type, and the engine narrows the context per provider for
+the aggregate rules that never call `matches()` at all. Without both, an Azure
+rule would judge a bucket and the finding would carry `az storage account update`
+as the fix for something in AWS.
+
+The reason rules are not shared is `remediation`. It is snapshot-copied onto
+every finding, so a shared rule would have to branch on provider to produce the
+fix — the same mistake as branching on framework name, which requirement 15
+already forbids (`MULTI_CLOUD.md` §6, `DECISIONS.md` §74).

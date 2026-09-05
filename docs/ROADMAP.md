@@ -6,8 +6,11 @@ Architecturally anticipated, **not implemented in the MVP** — extension points
 
 ## Compliance — **partly built**
 
-The chain below is implemented for CIS Azure 2.0, ISO 27001, GDPR, NIST CSF,
-NIST SP 800-53 Rev. 5, the SOC 2 Trust Services Criteria and PCI DSS v4.0.1:
+The chain below is implemented for CIS Azure 2.0, CIS AWS 3.0, ISO 27001, GDPR,
+NIST CSF, NIST SP 800-53 Rev. 5, the SOC 2 Trust Services Criteria and PCI DSS
+v4.0.1. A cloud benchmark is shown only to organizations that connect that cloud
+(`DECISIONS.md` §74); the rest are about organizations rather than providers and
+always apply:
 `app/compliance/catalog.py` (frameworks and controls, as data),
 `app/services/compliance.py` (coverage against the latest scan), and the
 `/compliance` screens. See `DECISIONS.md` §"Compliance mappings drive a coverage

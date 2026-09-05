@@ -329,3 +329,45 @@ class TestReadingsBehindAControl:
         )
 
         assert readings[0].retained is False
+
+
+# --------------------------------------------------- scoped to the clouds in use
+def test_a_cloud_benchmark_is_only_shown_to_the_clouds_that_use_it() -> None:
+    """An AWS-only tenant measured against CIS Azure reports near-zero coverage
+    for reasons that have nothing to do with its security posture.
+
+    That is the same class of misleading number the coverage ledger exists to
+    prevent, pointed the other way (MULTI_CLOUD.md section 7).
+    """
+    from app.core.enums import Provider
+    from app.services.compliance import frameworks_for
+
+    aws_only = {f.id for f in frameworks_for({Provider.AWS})}
+    assert "CIS_AWS_3.0" in aws_only
+    assert "CIS_AZURE_2.0" not in aws_only
+
+    azure_only = {f.id for f in frameworks_for({Provider.AZURE})}
+    assert "CIS_AZURE_2.0" in azure_only
+    assert "CIS_AWS_3.0" not in azure_only
+
+
+def test_a_framework_about_an_organization_applies_to_every_cloud() -> None:
+    """ISO, GDPR, NIST, SOC 2 and PCI are written about organizations rather
+    than providers, so scoping them by cloud would hide the ones that always
+    apply."""
+    from app.core.enums import Provider
+    from app.services.compliance import frameworks_for
+
+    shown = {f.id for f in frameworks_for({Provider.AWS})}
+    for framework_id in ("ISO_27001", "GDPR", "NIST_CSF", "SOC2", "PCI_DSS_4"):
+        assert framework_id in shown
+
+
+def test_an_organization_with_no_connections_sees_everything() -> None:
+    """There is nothing to scope by, and answering "what does this product
+    check?" with silence would be worse than showing a benchmark they may not
+    end up needing."""
+    from app.compliance.catalog import FRAMEWORKS
+    from app.services.compliance import frameworks_for
+
+    assert len(frameworks_for(set())) == len(FRAMEWORKS)

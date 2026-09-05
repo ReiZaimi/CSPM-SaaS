@@ -32,6 +32,8 @@ requirement, attributed to a framework -- the chain in ROADMAP.md, no further.
 
 from dataclasses import dataclass
 
+from app.core.enums import Provider
+
 
 @dataclass(frozen=True)
 class Control:
@@ -61,12 +63,23 @@ class Framework:
     # denominator is a number that misleads.
     scope_note: str
     controls: tuple[Control, ...]
+    # Which cloud this framework is about, where it is about one. ``None`` for
+    # ISO, GDPR, NIST, SOC 2 and PCI, which are written about organizations
+    # rather than about providers and apply whatever a customer runs.
+    #
+    # It exists to stop a misleading number. An AWS-only tenant measured against
+    # CIS Azure would report near-zero coverage for reasons that have nothing to
+    # do with its security posture, which is the same class of overclaim the
+    # coverage ledger was built to prevent -- pointed the other way
+    # (MULTI_CLOUD.md section 7).
+    provider: Provider | None = None
 
     def control(self, control_id: str) -> Control | None:
         return next((c for c in self.controls if c.id == control_id), None)
 
 
 CIS_AZURE = Framework(
+    provider=Provider.AZURE,
     id="CIS_AZURE_2.0",
     name="CIS Microsoft Azure Foundations Benchmark",
     short_name="CIS Azure",
@@ -731,8 +744,139 @@ PCI_DSS = Framework(
     ),
 )
 
+CIS_AWS = Framework(
+    provider=Provider.AWS,
+    id="CIS_AWS_3.0",
+    name="CIS Amazon Web Services Foundations Benchmark",
+    short_name="CIS AWS",
+    version="3.0.0",
+    authority="Center for Internet Security",
+    url="https://www.cisecurity.org/benchmark/amazon_web_services",
+    summary=(
+        "The AWS sibling of the Azure benchmark, and the same kind of document: "
+        "prescriptive, technical, and checkable without interviewing anybody."
+    ),
+    scope_note=(
+        "Covers the benchmark sections a posture scanner can reach. Controls "
+        "listed without a CloudGuard check behind them are shown so the gap is "
+        "visible rather than absent -- a catalogue of only what this product "
+        "checks would report full coverage for ever."
+    ),
+    controls=(
+        # 1 -- Identity and Access Management
+        Control("1.4", "No root user access key exists", "Identity and Access Management"),
+        Control(
+            "1.5",
+            "MFA is enabled for the root user",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.8",
+            "IAM password policy requires a minimum length of 14",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.10",
+            "MFA is enabled for all IAM users with a console password",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.12",
+            "Credentials unused for 45 days or more are disabled",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.14",
+            "Access keys are rotated every 90 days or less",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.16",
+            "IAM policies that allow full administrative privileges are not attached",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.17",
+            "A support role exists to manage incidents with AWS Support",
+            "Identity and Access Management",
+            technically_assessable=False,
+        ),
+        Control(
+            "1.19",
+            "Expired TLS certificates are removed from IAM",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.20",
+            "IAM Access Analyzer is enabled in every region",
+            "Identity and Access Management",
+        ),
+        # 2 -- Storage
+        Control("2.1.1", "S3 buckets apply encryption by default", "Storage"),
+        Control(
+            "2.1.2",
+            "S3 bucket policies deny requests that are not over HTTPS",
+            "Storage",
+        ),
+        Control("2.1.4", "S3 buckets block public access", "Storage"),
+        Control("2.2.1", "EBS volumes are encrypted by default", "Storage"),
+        Control("2.3.1", "RDS instances encrypt their storage at rest", "Storage"),
+        Control("2.3.2", "RDS instances have auto minor version upgrade on", "Storage"),
+        Control("2.3.3", "RDS instances are not publicly accessible", "Storage"),
+        # 3 -- Logging
+        Control("3.1", "CloudTrail is enabled in all regions", "Logging"),
+        Control("3.2", "CloudTrail log file validation is enabled", "Logging"),
+        Control("3.3", "AWS Config is enabled in all regions", "Logging"),
+        Control("3.4", "S3 bucket access logging is enabled on the CloudTrail bucket", "Logging"),
+        Control("3.5", "CloudTrail logs are encrypted at rest with a KMS key", "Logging"),
+        Control("3.6", "KMS key rotation is enabled", "Logging"),
+        Control("3.7", "VPC flow logging is enabled in all VPCs", "Logging"),
+        # 4 -- Monitoring. Every control in this section is a metric filter and
+        # alarm over CloudTrail, which CloudGuard does not read: the group is
+        # listed whole so the gap is visible rather than absent.
+        Control(
+            "4.1",
+            "A log metric filter and alarm exist for unauthorized API calls",
+            "Monitoring",
+        ),
+        Control(
+            "4.3",
+            "A log metric filter and alarm exist for root account usage",
+            "Monitoring",
+        ),
+        Control(
+            "4.16",
+            "AWS Security Hub is enabled",
+            "Monitoring",
+        ),
+        # 5 -- Networking
+        Control(
+            "5.1",
+            "Network ACLs do not allow ingress from 0.0.0.0/0 to admin ports",
+            "Networking",
+        ),
+        Control(
+            "5.2",
+            "Security groups do not allow ingress from 0.0.0.0/0 to admin ports",
+            "Networking",
+        ),
+        Control(
+            "5.4",
+            "The default security group of every VPC restricts all traffic",
+            "Networking",
+        ),
+        Control(
+            "5.6",
+            "EC2 instances require IMDSv2",
+            "Networking",
+        ),
+    ),
+)
+
+
 FRAMEWORKS: tuple[Framework, ...] = (
     CIS_AZURE,
+    CIS_AWS,
     ISO_27001,
     GDPR,
     NIST_CSF,

@@ -13,10 +13,12 @@ has a category, and that the plan and the enum agree in both directions.
 
 import httpx
 
+from app.connectors.aws.evidence import AwsEvidence
+from app.connectors.aws.plan import ACTION_KEYS
 from app.connectors.azure.evidence import AzureEvidence, keys_in
 from app.connectors.azure.plan import AzurePlanBuilder
-from app.connectors.evidence import EvidenceCategory
-from app.core.enums import ResourceType
+from app.connectors.evidence import EvidenceCategory, EvidenceKey
+from app.core.enums import Provider, ResourceType
 from app.rules.registry import RULE_REGISTRY
 
 
@@ -46,14 +48,49 @@ def planned_keys() -> set[AzureEvidence]:
     }
 
 
+def collected_keys(provider: Provider) -> set[EvidenceKey]:
+    """Every key that provider's plans produce.
+
+    Azure's is read off the plans directly, which touches no network because
+    ``build_*`` only assembles closures. AWS's plan is async and its *shape*
+    depends on a live region listing, so it is read off ``ACTION_KEYS`` instead
+    -- which ``test_aws_evidence`` pins against the enum, and ``test_aws_plan``
+    pins against the tasks. Two hops rather than one, each of them checked.
+    """
+    if provider is Provider.AZURE:
+        return set(planned_keys())
+    return {key for keys in ACTION_KEYS.values() for key in keys}
+
+
 def test_every_rule_depends_on_evidence_something_collects() -> None:
-    """The check that could not exist while both sides were strings."""
-    produced = planned_keys()
+    """The check that could not exist while both sides were strings.
+
+    Per provider, because the keys are. An AWS rule declaring an Azure key would
+    be checked against Azure's plan and pass, which is exactly the drift a
+    second provider makes possible.
+    """
     for rule in RULE_REGISTRY:
+        produced = collected_keys(rule.provider)
         for key in rule.requires_evidence:
             assert key in produced, (
-                f"{rule.rule_id} declares {key.value}, which no collection task "
-                "produces -- so it would never degrade if that evidence were missing"
+                f"{rule.rule_id} declares {key.value}, which no "
+                f"{rule.provider.value} collection task produces -- so it would "
+                "never degrade if that evidence were missing"
+            )
+
+
+def test_a_rule_declares_its_own_provider_evidence() -> None:
+    """A key from the wrong cloud degrades on something that never runs.
+
+    It would also never appear in that scan's gaps, so the rule would evaluate
+    against whatever the other provider's capture happened to hold.
+    """
+    expected = {Provider.AZURE: AzureEvidence, Provider.AWS: AwsEvidence}
+    for rule in RULE_REGISTRY:
+        for key in rule.requires_evidence:
+            assert isinstance(key, expected[rule.provider]), (
+                f"{rule.rule_id} is a {rule.provider.value} rule declaring "
+                f"{type(key).__name__}"
             )
 
 
@@ -74,6 +111,8 @@ def test_every_collected_key_is_a_declared_member() -> None:
     invisible to every rule that might have wanted it."""
     for key in planned_keys():
         assert isinstance(key, AzureEvidence)
+    for key in collected_keys(Provider.AWS):
+        assert isinstance(key, AwsEvidence)
 
 
 def test_every_key_maps_to_a_category() -> None:

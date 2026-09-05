@@ -5,6 +5,29 @@ Adding a rule means adding it here and writing its tests; it never means
 inserting a database row (RULE_ENGINE.md section 4).
 """
 
+from app.rules.aws.database.exposure import (
+    AwsDatabaseEncryptionRule,
+    AwsPublicDatabaseRule,
+)
+from app.rules.aws.identity.credentials import (
+    AwsPasswordPolicyRule,
+    AwsRootAccessKeyRule,
+    AwsStaleAccessKeyRule,
+    AwsUserWithoutMfaRule,
+)
+from app.rules.aws.logging.trails import (
+    AwsCloudTrailCoverageRule,
+    AwsEbsDefaultEncryptionRule,
+)
+from app.rules.aws.network.exposure import (
+    AwsPublicDatabasePortRule,
+    AwsPublicRdpRule,
+    AwsPublicSshRule,
+)
+from app.rules.aws.storage.public_access import (
+    AwsBucketEncryptionRule,
+    AwsPublicBucketRule,
+)
 from app.rules.azure.compute.exposure import (
     AzureExposedComputeRule,
     AzureUnguardedVmRule,
@@ -106,6 +129,23 @@ RULE_REGISTRY: list[SecurityRule] = [
     AzureKeyVaultNetworkRule(),
     AzureExposedVulnerableMachineRule(),
     AzureMissingEndpointProtectionRule(),
+    # AWS. Separate rules over the same neutral resource types, never one rule
+    # branching on provider: ``remediation`` is snapshot-copied onto every
+    # finding, and ``aws s3api put-public-access-block`` is not a variant of
+    # ``az storage account update`` (MULTI_CLOUD.md section 6).
+    AwsPublicBucketRule(),
+    AwsBucketEncryptionRule(),
+    AwsPublicSshRule(),
+    AwsPublicRdpRule(),
+    AwsPublicDatabasePortRule(),
+    AwsPublicDatabaseRule(),
+    AwsDatabaseEncryptionRule(),
+    AwsUserWithoutMfaRule(),
+    AwsRootAccessKeyRule(),
+    AwsStaleAccessKeyRule(),
+    AwsPasswordPolicyRule(),
+    AwsCloudTrailCoverageRule(),
+    AwsEbsDefaultEncryptionRule(),
 ]
 
 

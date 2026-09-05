@@ -41,7 +41,8 @@ from app.compliance.coverage import (
     status_counts,
     summarize_readings,
 )
-from app.core.enums import FindingStatus, ScanStatus, TaskOutcome
+from app.core.enums import FindingStatus, Provider, ScanStatus, TaskOutcome
+from app.models.cloud_connection import CloudConnection
 from app.models.finding import Finding
 from app.models.rule import Rule
 from app.models.scan import Evidence, EvidenceBlob, Scan, ScanEvaluationGap, ScanRuleResult
@@ -368,12 +369,57 @@ def _resolve(framework: Framework, snapshot: _Snapshot) -> list[tuple[dict, Cont
     return resolved
 
 
+async def connected_providers(
+    session: AsyncSession, organization_id: UUID
+) -> set[Provider]:
+    """Which clouds this organization actually has a connection to.
+
+    Every connection, not only the verified ones. A customer part-way through
+    connecting AWS should see the AWS benchmark appear as they set it up rather
+    than after the first successful scan -- and a framework showing 0% because
+    nothing has been scanned yet is an honest zero, unlike one showing 0%
+    because the framework is about a cloud they do not use.
+    """
+    rows = (
+        await session.execute(
+            select(CloudConnection.provider).where(
+                CloudConnection.organization_id == organization_id
+            )
+        )
+    ).scalars()
+    return {Provider(value) for value in rows}
+
+
+def frameworks_for(providers: set[Provider]) -> list[Framework]:
+    """The frameworks worth measuring an organization against.
+
+    A framework about one cloud is shown only to organizations that use it.
+    An AWS-only tenant measured against CIS Azure would report near-zero
+    coverage for reasons that have nothing to do with its security posture,
+    which is the same class of misleading number the coverage ledger exists to
+    prevent (MULTI_CLOUD.md section 7).
+
+    An organization with no connections yet sees everything. There is nothing
+    to scope by, and hiding all the cloud benchmarks from somebody who has not
+    connected anything would answer "what does this product check?" with
+    silence.
+    """
+    if not providers:
+        return list(FRAMEWORKS)
+    return [
+        framework
+        for framework in FRAMEWORKS
+        if framework.provider is None or framework.provider in providers
+    ]
+
+
 async def list_frameworks(session: AsyncSession, organization_id: UUID) -> list[dict]:
-    """One summary card per framework."""
+    """One summary card per framework this organization's clouds are measured by."""
     snapshot = await _snapshot(session, organization_id)
+    providers = await connected_providers(session, organization_id)
 
     summaries = []
-    for framework in FRAMEWORKS:
+    for framework in frameworks_for(providers):
         resolved = _resolve(framework, snapshot)
         statuses = [status for _, status in resolved]
         summaries.append(

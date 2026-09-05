@@ -187,6 +187,14 @@ the concepts are neutral. Rename at the point a second provider maps onto them,
 not before — a rename with one caller is bookkeeping, a rename with two is a
 decision.
 
+**Built, and no rename yet** (`DECISIONS.md` §74). An S3 bucket normalizes to
+`STORAGE_ACCOUNT`, an RDS instance to `SQL_SERVER` or `POSTGRESQL_SERVER` by
+engine, an IAM role to `SERVICE_PRINCIPAL`. Reading those in AWS code is mildly
+odd and nothing more; renaming them now, inside the change that adds the second
+provider, would put a migration of stored resource rows in the way of shipping
+it. It is a decision with two callers now, which is when this section said to
+make it — worth doing, and worth doing on its own.
+
 ### The one defect to fix now — done
 
 `SecurityRule.provider` was declared and never read, so `matches()` compared
@@ -206,13 +214,20 @@ single-provider context returns itself unchanged, so today's scans pay nothing.
 
 ---
 
-## 7. Compliance
+## 7. Compliance — built
 
-`FRAMEWORKS` is a tuple and `catalog.py` is data, so CIS AWS and CIS GCP are
-additive. One thing does need changing: **coverage must be scoped by provider.**
-An AWS-only tenant measured against CIS Azure would report near-zero coverage
-for reasons that have nothing to do with its security posture, which is the same
-class of misleading number the coverage ledger exists to prevent.
+`FRAMEWORKS` is a tuple and `catalog.py` is data, so CIS AWS 3.0 was additive
+exactly as predicted. The one thing that needed changing did: **coverage is
+scoped by provider.** `Framework` carries one, and a cloud benchmark is shown
+only to organizations that connect that cloud — an AWS-only tenant measured
+against CIS Azure would report near-zero coverage for reasons that have nothing
+to do with its security posture.
+
+Two details the section did not anticipate. Frameworks written about
+*organizations* — ISO, GDPR, NIST, SOC 2, PCI — carry no provider and are always
+shown, because scoping them by cloud would hide the ones that always apply. And
+the scoping keys off *any* connection rather than a verified one, so the AWS
+benchmark appears while a customer is still setting AWS up.
 
 ---
 

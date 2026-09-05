@@ -25,6 +25,7 @@ inside the change that adds the second.
    been checked against a live account.
 """
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app.connectors.aws.evidence import AwsEvidence
@@ -89,7 +90,7 @@ class AwsNormalizer:
         state.resources.extend(self._elastic_ips(data))
         state.resources.extend(self._databases(data))
         state.resources.extend(self._keys(data))
-        state.resources.extend(self._users(data))
+        state.resources.extend(self._users(data, snapshot.collected_at))
         state.resources.extend(self._roles(data))
 
         state.relationships.extend(self._relationships(data, account_id))
@@ -141,6 +142,30 @@ class AwsNormalizer:
                 metadata["PolicyStatus"] = policy[name]
             if name in encryption:
                 metadata["Encryption"] = encryption[name]
+
+            # Flat, rule-facing fields beside the provider's own shape, the way
+            # the Azure normalizer produces ``allow_blob_public_access``. Rules
+            # read these; the raw payload stays for anyone reading the capture
+            # back. ``None`` is load-bearing in all three: it means the setting
+            # was never in this capture, which is not the same as "off".
+            metadata["public_access_blocked"] = _blocked(access.get(name)) if (
+                name in access
+            ) else None
+            metadata["policy_is_public"] = _policy_is_public(policy.get(name)) if (
+                name in policy
+            ) else None
+            algorithm = (
+                _encryption_algorithm(encryption.get(name))
+                if name in encryption
+                else None
+            )
+            metadata["default_encryption"] = algorithm
+            # The boolean beside the algorithm, because a rule asks "is there
+            # one" and a customer asks "which". Absent from the capture stays
+            # None in both, so a missing reading cannot read as "no encryption".
+            metadata["default_encryption_enabled"] = (
+                bool(algorithm) if name in encryption else None
+            )
 
             resources.append(
                 CloudResource(
@@ -237,6 +262,13 @@ class AwsNormalizer:
             group_id = str(group.get("GroupId") or "")
             if not group_id:
                 continue
+            metadata = dict(group)
+            # One entry per ingress rule that admits the whole internet, in the
+            # shape a rule asks about: a protocol and a port range. Derived here
+            # rather than in each rule, because five rules ask the same question
+            # of the same nested structure and a fifth copy of the parser is a
+            # fifth chance to read ``-1`` as "no ports" rather than "all".
+            metadata["open_ingress"] = _open_ingress(group)
             resources.append(
                 CloudResource(
                     provider_resource_id=group_id,
@@ -245,7 +277,7 @@ class AwsNormalizer:
                     provider=Provider.AWS,
                     region=region,
                     public_exposure=self._group_exposure(group),
-                    metadata=dict(group),
+                    metadata=metadata,
                 )
             )
         return resources
@@ -352,6 +384,9 @@ class AwsNormalizer:
             if not arn and not identifier:
                 continue
             engine = str(instance.get("Engine") or "").lower()
+            metadata = dict(instance)
+            metadata["publicly_accessible"] = instance.get("PubliclyAccessible")
+            metadata["storage_encrypted"] = instance.get("StorageEncrypted")
             resources.append(
                 CloudResource(
                     provider_resource_id=arn or identifier,
@@ -366,7 +401,7 @@ class AwsNormalizer:
                     public_exposure=(
                         Level.HIGH if instance.get("PubliclyAccessible") else Level.LOW
                     ),
-                    metadata=dict(instance),
+                    metadata=metadata,
                 )
             )
         return resources
@@ -399,7 +434,9 @@ class AwsNormalizer:
 
     # ------------------------------------------------------------- identity
 
-    def _users(self, data: dict[str, Any]) -> list[CloudResource]:
+    def _users(
+        self, data: dict[str, Any], collected_at: datetime
+    ) -> list[CloudResource]:
         """IAM users, with their credential-report row folded on.
 
         The report is where the facts a rule actually needs live -- MFA, key
@@ -419,7 +456,20 @@ class AwsNormalizer:
                 continue
             metadata = dict(user)
             if arn in report:
-                metadata["CredentialReport"] = report[arn]
+                row = report[arn]
+                metadata["CredentialReport"] = row
+                # Ages measured from the capture, never from the clock. "This
+                # key has not been used for 214 days" has to mean the same thing
+                # on replay as it did on the day of the scan -- a rule is a
+                # deterministic function of the capture, and an age computed
+                # from ``now()`` would quietly make it a function of when
+                # somebody asked.
+                metadata["key_idle_days"] = self._idle_days(row, collected_at)
+                # The report is a CSV, so every field arrives as a string.
+                # Coerced once here rather than in each rule, where three
+                # different spellings of "is this true" would appear.
+                metadata["password_enabled"] = _flag(row.get("password_enabled"))
+                metadata["mfa_active"] = _flag(row.get("mfa_active"))
             resources.append(
                 CloudResource(
                     provider_resource_id=arn,
@@ -430,6 +480,33 @@ class AwsNormalizer:
                 )
             )
         return resources
+
+    @staticmethod
+    def _idle_days(row: dict[str, Any], collected_at: datetime) -> int | None:
+        """How long the least recently used *active* key has sat unused.
+
+        ``None`` where the user holds no active key, which is not the same as
+        zero: a user with no keys has nothing stale, and a rule reading zero
+        would call that the freshest possible key.
+
+        IAM writes ``N/A`` for a key that has never been used, and ``no_information``
+        for one whose last use predates its own record-keeping. Both mean "not
+        since it was made", so both fall back to the creation date rather than
+        being dropped -- a key nobody has ever used is the strongest case for
+        removing it, not a missing value.
+        """
+        ages: list[int] = []
+        for index in (1, 2):
+            if str(row.get(f"access_key_{index}_active", "")).lower() != "true":
+                continue
+            stamp = str(row.get(f"access_key_{index}_last_used_date", ""))
+            if stamp.lower() in ("n/a", "no_information", ""):
+                stamp = str(row.get(f"access_key_{index}_last_rotated", ""))
+            moment = _parse(stamp)
+            if moment is None:
+                continue
+            ages.append(max(0, (collected_at - moment).days))
+        return max(ages) if ages else None
 
     def _roles(self, data: dict[str, Any]) -> list[CloudResource]:
         """IAM roles, as workload identities rather than people.
@@ -533,6 +610,11 @@ class AwsNormalizer:
                 }
             ),
             "cloudtrail_regions": sorted({region for region, _ in trails if region}),
+            # Which regions the account could be read in at all. Beside the
+            # regional controls rather than derived from them, because "no trail
+            # in eu-west-1" only means something against a list of the regions
+            # that exist for this customer.
+            "enabled_regions": list(data.get(AwsEvidence.ENABLED_REGIONS.value) or []),
             "ebs_encryption_by_default": {
                 region: bool(row.get("EbsEncryptionByDefault"))
                 for region, row in regional_items(
@@ -550,3 +632,94 @@ class AwsNormalizer:
             if str(tag.get("Key")) == key:
                 return str(tag.get("Value"))
         return None
+
+
+def _parse(stamp: str) -> datetime | None:
+    """An IAM timestamp, or None for the several ways it can be absent."""
+    if not stamp or stamp.lower() in ("n/a", "not_supported", "no_information"):
+        return None
+    try:
+        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _flag(value: Any) -> bool:
+    """IAM's credential report is a CSV; every field arrives as text."""
+    return str(value).strip().lower() == "true"
+
+
+def _blocked(configuration: Any) -> bool:
+    """Whether all four public-access flags are on.
+
+    All four, not any: each closes a different route in, and a bucket with three
+    of them is still reachable by the fourth.
+    """
+    settings = (configuration or {}).get("PublicAccessBlockConfiguration") or {}
+    return bool(settings) and all(
+        settings.get(flag)
+        for flag in (
+            "BlockPublicAcls",
+            "IgnorePublicAcls",
+            "BlockPublicPolicy",
+            "RestrictPublicBuckets",
+        )
+    )
+
+
+def _policy_is_public(configuration: Any) -> bool:
+    return bool(((configuration or {}).get("PolicyStatus") or {}).get("IsPublic"))
+
+
+def _encryption_algorithm(configuration: Any) -> str | None:
+    """The algorithm default encryption applies, or None where there is none.
+
+    A bucket with no configuration answers with an error code, which the
+    collector records as a null configuration -- so None here is the finding
+    rather than a missing reading.
+    """
+    rules = (
+        (configuration or {}).get("ServerSideEncryptionConfiguration") or {}
+    ).get("Rules") or []
+    for rule in rules:
+        algorithm = (rule.get("ApplyServerSideEncryptionByDefault") or {}).get(
+            "SSEAlgorithm"
+        )
+        if algorithm:
+            return str(algorithm)
+    return None
+
+
+def _open_ingress(group: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every ingress rule on this group that admits the whole internet.
+
+    Both address families, because a group open to every IPv6 host on earth is
+    open. A permission with no port range is not a narrower rule than one naming
+    22 -- the ``-1`` protocol means every port there is -- so it is recorded
+    with ``all_ports`` rather than with a range nobody can compare against.
+    """
+    found: list[dict[str, Any]] = []
+    for permission in group.get("IpPermissions") or []:
+        sources = [
+            str(entry.get("CidrIp"))
+            for entry in permission.get("IpRanges") or []
+            if str(entry.get("CidrIp")) == "0.0.0.0/0"
+        ] + [
+            str(entry.get("CidrIpv6"))
+            for entry in permission.get("Ipv6Ranges") or []
+            if str(entry.get("CidrIpv6")) == "::/0"
+        ]
+        if not sources:
+            continue
+        start, end = permission.get("FromPort"), permission.get("ToPort")
+        found.append(
+            {
+                "protocol": str(permission.get("IpProtocol") or ""),
+                "from_port": start,
+                "to_port": end,
+                "all_ports": start is None or end is None,
+                "sources": sources,
+            }
+        )
+    return found
