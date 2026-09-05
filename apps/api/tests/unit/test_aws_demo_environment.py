@@ -7,7 +7,7 @@ with the verdicts pinned.
 
 What it proves is that everything *after* the provider works — the regional
 blocks unwrap, the per-bucket readings join, the graph resolves its capability
-hop, thirty rules reach a verdict and none of them reaches UNKNOWN over evidence
+hop, every rule reaches a verdict and none of them reaches UNKNOWN over evidence
 that arrived. What it cannot prove is the half `docs/AWS_INTEGRATION.md` §1
 covers: whether the payloads it replays are the payloads AWS actually sends.
 
@@ -48,6 +48,8 @@ EXPECTED_FAILURES = {
     "AWS-IAM-006",  # a legacy policy grants *:*
     "AWS-IAM-009",  # nobody can open a support case without root
     "AWS-LOG-008",  # nobody is alerted when root is used
+    "AWS-LOG-013",  # nor when a customer key is scheduled for deletion
+    "AWS-LOG-021",  # nor when an account leaves the organization
     "AWS-NET-001",  # SSH is open to the internet
     "AWS-NET-004",  # a network ACL admits everything
     "AWS-NET-005",  # the default security group carries rules

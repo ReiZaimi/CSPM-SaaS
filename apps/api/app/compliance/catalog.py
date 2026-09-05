@@ -887,11 +887,12 @@ CIS_AWS = Framework(
         Control("3.7", "VPC flow logging is enabled in all VPCs", "Logging"),
         # 4 -- Monitoring. Every control here is the same shape: a metric filter
         # over the CloudTrail log group, a metric, and an alarm that notifies
-        # somebody. CloudGuard walks that chain for two of them (DECISIONS.md
-        # §80). The rest are listed whole, because a catalogue of only what this
-        # product checks would report full coverage for ever -- and because the
-        # two that are covered prove the other thirteen are reachable, which
-        # makes them a backlog item rather than a limitation.
+        # somebody. CloudGuard walks that chain for all sixteen (DECISIONS.md
+        # §82) -- the two of §80 and the thirteen that followed them, plus 4.16,
+        # which asks about Security Hub rather than a filter. The gaps in this
+        # framework are now in sections 1, 2 and 5, and they are still listed,
+        # because a catalogue of only what this product checks would report full
+        # coverage for ever.
         Control(
             "4.1",
             "A log metric filter and alarm exist for unauthorized API calls",

@@ -3921,6 +3921,94 @@ than a coverage bar at 100%.
 has an uncovered control looks like an odd thing to write until the day a
 catalogue quietly becomes a list of answers rather than a list of questions.
 
+## 82. The other thirteen of section 4, written as declarations
+
+§81 left thirteen CIS AWS controls uncovered and called them a backlog item
+rather than a limitation, on the grounds that the two covered ones prove the
+shape is reachable. This is that backlog item, closed. CIS AWS is now 44 of the
+56 catalogued controls, and every one of section 4 is walked.
+
+### Thirteen rules and no new evaluation
+
+The chain was already written: trail → CloudWatch log group → metric filter →
+metric → alarm → action, in `_MonitoredEventRule`. Each of the thirteen declares
+what CIS's own filter pattern for that control names — `$.eventName` and
+`StopLogging` for a trail being silenced, `kms.amazonaws.com` with both
+`DisableKey` and `ScheduleKeyDeletion` for a key being destroyed — and nothing
+else. No new collector, no new evidence key, no new walk.
+
+The check stays what §80 made it: a **necessary condition**. CloudGuard does not
+evaluate CloudWatch's filter-pattern language, because implementing somebody
+else's expression grammar *nearly* right produces a confident wrong answer. The
+pattern that matched travels in the finding, so a reader judges it rather than
+trusting this product's opinion of it.
+
+### The remediation is generated, and that is the point
+
+Thirteen copies of one paragraph drift. The day the alarm command gains an
+argument, twelve of them keep the old one and a customer follows whichever they
+were handed. So the prose and the `RemediationSpec` are both built from one
+filter-name-and-pattern pair per rule, by `_monitoring_remediation` and
+`_monitoring_spec` — the same reasoning as the IAM manifest being generated from
+the declared permission set rather than hand-maintained (§72).
+
+`test_the_filter_the_remediation_prints_satisfies_the_check` closes the loop:
+for every rule in this family, the pattern printed in the remediation satisfies
+that rule's own check. It is the discipline `test_remediation_spec.py` applies to
+rules that can state an expected value, applied to the ones that cannot — a
+customer who runs exactly what the finding told them to run passes.
+
+The second test is the one that earns its place over time.
+`test_no_rule_here_is_satisfied_by_another_one_s_filter` runs the full matrix:
+fifteen patterns against fifteen rules, and only the diagonal passes. Fifteen
+rules sharing one evaluation is a saving right up until two of them accept the
+same filter, at which point an account is told something is watched that nothing
+watches. Both tests read the family off `RULE_REGISTRY`, so a sixteenth rule is
+covered on the day it is added rather than the day somebody remembers.
+
+### Severities, and the one that is deliberately LOW
+
+Two are HIGH because they are the ones that hide or destroy: a trail being
+stopped (4.5) blinds every other alarm in the section, and a customer key being
+scheduled for deletion (4.7) is the destructive path that needs no data access at
+all. Organizations changes (4.15) are HIGH for a different reason — everything
+CloudGuard checks in a member account is checked on the assumption that the
+organization above it still constrains that account, and `LeaveOrganization`
+ends that assumption without changing anything inside the account.
+
+Console sign-in failures (4.6) are LOW, and stating why is more useful than the
+number: a password policy and enforced MFA are preventive, CloudGuard checks
+both separately, and this is only detective. It is still reported, because a
+spray that eventually succeeds produces a *successful* sign-in nothing else
+distinguishes from a Monday morning.
+
+All thirteen keep the family's exploitability of 1. None of them is exploitable;
+each weakens detection.
+
+### The recorded estate grew filters rather than findings
+
+The obvious way to land thirteen aggregate rules is to let the recorded estate
+(§79) fail all thirteen. That would have been dishonest twice over: an account
+that has written no metric filters at all is not the account this recording
+describes — it has a trail, a log group and a CIS filter already — and
+`test_most_of_the_estate_passes` exists precisely to stop the demo becoming a
+wall of red that shows none of the product's ability to tell good from bad.
+
+So the fixture gained eleven filters and their alarms, and deliberately not
+thirteen. It has no filter for a key being scheduled for deletion and none for
+Organizations, which is what a real account looks like after somebody worked
+through a benchmark and stopped at the services they use daily. Two new findings,
+eleven new passes.
+
+### What this does not change
+
+Nothing here has been near a live AWS account. These rules read
+`log_metric_filters` and `cloudwatch_alarms` as `normalizer.py` produces them,
+and whether those payloads are the payloads AWS actually sends is still
+`AWS_INTEGRATION.md` §1's question — checks 16 and 17 in particular, which are
+about exactly the ARN shape and the `metricTransformations` spelling this family
+joins on.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

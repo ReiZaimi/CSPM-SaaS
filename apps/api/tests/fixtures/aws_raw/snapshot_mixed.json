@@ -842,6 +842,138 @@
                 "metricValue": "1"
               }
             ]
+          },
+          {
+            "filterName": "ConsoleSignInWithoutMFA",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = \"ConsoleLogin\") && ($.additionalEventData.MFAUsed != \"Yes\") }",
+            "metricTransformations": [
+              {
+                "metricName": "ConsoleSignInWithoutMFA",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "IAMPolicyChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName=DeleteGroupPolicy)||($.eventName=DeleteRolePolicy)||($.eventName=DeleteUserPolicy)||($.eventName=PutGroupPolicy)||($.eventName=PutRolePolicy)||($.eventName=PutUserPolicy)||($.eventName=CreatePolicy)||($.eventName=DeletePolicy)||($.eventName=CreatePolicyVersion)||($.eventName=DeletePolicyVersion)||($.eventName=AttachRolePolicy)||($.eventName=DetachRolePolicy)||($.eventName=AttachUserPolicy)||($.eventName=DetachUserPolicy)||($.eventName=AttachGroupPolicy)||($.eventName=DetachGroupPolicy) }",
+            "metricTransformations": [
+              {
+                "metricName": "IAMPolicyChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "CloudTrailChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = CreateTrail) || ($.eventName = UpdateTrail) || ($.eventName = DeleteTrail) || ($.eventName = StartLogging) || ($.eventName = StopLogging) }",
+            "metricTransformations": [
+              {
+                "metricName": "CloudTrailChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "ConsoleSignInFailures",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = ConsoleLogin) && ($.errorMessage = \"Failed authentication\") }",
+            "metricTransformations": [
+              {
+                "metricName": "ConsoleSignInFailures",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "S3BucketPolicyChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventSource = s3.amazonaws.com) && (($.eventName = PutBucketAcl) || ($.eventName = PutBucketPolicy) || ($.eventName = PutBucketCors) || ($.eventName = PutBucketLifecycle) || ($.eventName = PutBucketReplication) || ($.eventName = DeleteBucketPolicy) || ($.eventName = DeleteBucketCors) || ($.eventName = DeleteBucketLifecycle) || ($.eventName = DeleteBucketReplication)) }",
+            "metricTransformations": [
+              {
+                "metricName": "S3BucketPolicyChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "AWSConfigChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventSource = config.amazonaws.com) && (($.eventName=StopConfigurationRecorder)||($.eventName=DeleteDeliveryChannel)||($.eventName=PutDeliveryChannel)||($.eventName=PutConfigurationRecorder)) }",
+            "metricTransformations": [
+              {
+                "metricName": "AWSConfigChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "SecurityGroupChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = AuthorizeSecurityGroupIngress) || ($.eventName = AuthorizeSecurityGroupEgress) || ($.eventName = RevokeSecurityGroupIngress) || ($.eventName = RevokeSecurityGroupEgress) || ($.eventName = CreateSecurityGroup) || ($.eventName = DeleteSecurityGroup) }",
+            "metricTransformations": [
+              {
+                "metricName": "SecurityGroupChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "NetworkAclChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = CreateNetworkAcl) || ($.eventName = CreateNetworkAclEntry) || ($.eventName = DeleteNetworkAcl) || ($.eventName = DeleteNetworkAclEntry) || ($.eventName = ReplaceNetworkAclEntry) || ($.eventName = ReplaceNetworkAclAssociation) }",
+            "metricTransformations": [
+              {
+                "metricName": "NetworkAclChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "NetworkGatewayChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = CreateCustomerGateway) || ($.eventName = DeleteCustomerGateway) || ($.eventName = AttachInternetGateway) || ($.eventName = CreateInternetGateway) || ($.eventName = DeleteInternetGateway) || ($.eventName = DetachInternetGateway) }",
+            "metricTransformations": [
+              {
+                "metricName": "NetworkGatewayChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "RouteTableChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = CreateRoute) || ($.eventName = CreateRouteTable) || ($.eventName = ReplaceRoute) || ($.eventName = ReplaceRouteTableAssociation) || ($.eventName = DeleteRoute) || ($.eventName = DeleteRouteTable) || ($.eventName = DisassociateRouteTable) }",
+            "metricTransformations": [
+              {
+                "metricName": "RouteTableChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
+          },
+          {
+            "filterName": "VPCChanges",
+            "logGroupName": "/aws/cloudtrail/bk-trail",
+            "filterPattern": "{ ($.eventName = CreateVpc) || ($.eventName = DeleteVpc) || ($.eventName = ModifyVpcAttribute) || ($.eventName = AcceptVpcPeeringConnection) || ($.eventName = CreateVpcPeeringConnection) || ($.eventName = DeleteVpcPeeringConnection) || ($.eventName = RejectVpcPeeringConnection) || ($.eventName = AttachClassicLinkVpc) || ($.eventName = DetachClassicLinkVpc) || ($.eventName = DisableVpcClassicLink) || ($.eventName = EnableVpcClassicLink) }",
+            "metricTransformations": [
+              {
+                "metricName": "VPCChanges",
+                "metricNamespace": "CISBenchmark",
+                "metricValue": "1"
+              }
+            ]
           }
         ]
       },
@@ -857,6 +989,138 @@
           {
             "AlarmName": "UnauthorizedAPICalls",
             "MetricName": "UnauthorizedAPICalls",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "ConsoleSignInWithoutMFA",
+            "MetricName": "ConsoleSignInWithoutMFA",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "IAMPolicyChanges",
+            "MetricName": "IAMPolicyChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "CloudTrailChanges",
+            "MetricName": "CloudTrailChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "ConsoleSignInFailures",
+            "MetricName": "ConsoleSignInFailures",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "S3BucketPolicyChanges",
+            "MetricName": "S3BucketPolicyChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "AWSConfigChanges",
+            "MetricName": "AWSConfigChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "SecurityGroupChanges",
+            "MetricName": "SecurityGroupChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "NetworkAclChanges",
+            "MetricName": "NetworkAclChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "NetworkGatewayChanges",
+            "MetricName": "NetworkGatewayChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "RouteTableChanges",
+            "MetricName": "RouteTableChanges",
+            "Namespace": "CISBenchmark",
+            "Statistic": "Sum",
+            "Period": 300,
+            "Threshold": 1.0,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "AlarmActions": [
+              "arn:aws:sns:eu-west-1:111122223333:security-alerts"
+            ]
+          },
+          {
+            "AlarmName": "VPCChanges",
+            "MetricName": "VPCChanges",
             "Namespace": "CISBenchmark",
             "Statistic": "Sum",
             "Period": 300,

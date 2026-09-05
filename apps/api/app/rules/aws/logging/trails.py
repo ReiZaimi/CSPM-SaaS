@@ -1008,3 +1008,694 @@ class AwsRootUsageMonitoringRule(_MonitoredEventRule):
         "SOC2": ["CC7.2"],
         "PCI_DSS_4": ["10.2.1"],
     }
+
+
+# --------------------------------------------- the rest of CIS AWS section 4
+#
+# Section 4 is fifteen controls of one shape: a metric filter over the trail's
+# log group, the metric it publishes, and an alarm that notifies somebody.
+# AWS-LOG-007 and AWS-LOG-008 walk that chain for two of them, and the thirteen
+# below are the rest. They are declarations rather than code, because the walk
+# is already written and a second copy of it would be a second thing to get
+# wrong.
+#
+# Each names the ingredients CIS's own filter pattern for that control carries.
+# The test stays a necessary condition (see ``_matches``): CloudGuard does not
+# evaluate CloudWatch's filter language, and the pattern that matched travels in
+# the finding so a reader can judge it rather than trust it.
+
+_PUT_FILTER = (
+    "aws logs put-metric-filter --log-group-name <group> "
+    "--filter-name {name} --filter-pattern '{pattern}' "
+    "--metric-transformations metricName={name},"
+    "metricNamespace=CISBenchmark,metricValue=1"
+)
+_PUT_ALARM = (
+    "aws cloudwatch put-metric-alarm --alarm-name {name} "
+    "--metric-name {name} --namespace CISBenchmark --statistic Sum "
+    "--period 300 --threshold 1 "
+    "--comparison-operator GreaterThanOrEqualToThreshold "
+    "--evaluation-periods 1 --alarm-actions <sns-topic-arn>"
+)
+_SPEC_NOTES = (
+    "CloudGuard checks that a filter on the trail's log group names the fields "
+    "this event is about, and that an alarm with an action watches the metric "
+    "that filter publishes. It does not evaluate CloudWatch's filter-pattern "
+    "language: the matched pattern is shown in the finding so it can be read "
+    "rather than trusted."
+)
+
+
+def _monitoring_commands(name: str, pattern: str) -> tuple[str, str]:
+    return (
+        _PUT_FILTER.format(name=name, pattern=pattern),
+        _PUT_ALARM.format(name=name),
+    )
+
+
+def _monitoring_remediation(name: str, pattern: str) -> str:
+    """The prose half, generated from the same two commands as the declaration.
+
+    Written once rather than thirteen times. Thirteen copies of one paragraph
+    drift: the day the alarm command gains an argument, twelve of them keep the
+    old one and a customer follows whichever they were handed.
+    """
+    put_filter, put_alarm = _monitoring_commands(name, pattern)
+    return (
+        "The trail has to reach CloudWatch Logs first — a trail delivering only "
+        "to S3 cannot be alarmed on:\n\n"
+        "  aws cloudtrail update-trail --name <trail> \\\n"
+        "    --cloud-watch-logs-log-group-arn <group-arn> \\\n"
+        "    --cloud-watch-logs-role-arn <role-arn>\n\n"
+        "Then the filter, and the alarm on the metric it publishes:\n\n"
+        f"  {put_filter}\n\n"
+        f"  {put_alarm}\n\n"
+        "The `--alarm-actions` is not optional. An alarm with no action changes "
+        "a colour on a dashboard nobody is looking at."
+    )
+
+
+def _monitoring_spec(name: str, pattern: str, note: str) -> RemediationSpec:
+    return RemediationSpec(
+        # Aggregate, and genuinely unstatable as a value: the expectation is a
+        # chain across three services, not a field on an asset.
+        expected=(),
+        cli=_monitoring_commands(name, pattern),
+        notes=f"{_SPEC_NOTES} {note}",
+    )
+
+
+_MONITORING_MAPPINGS: dict[str, list[str]] = {
+    "ISO_27001": ["A.8.16"],
+    "NIST_CSF": ["DE.CM-1", "DE.AE-3"],
+    "NIST_800_53": ["AU-6", "SI-4"],
+    "SOC2": ["CC7.2"],
+    "PCI_DSS_4": ["10.5.1"],
+}
+
+_CONSOLE_MFA_PATTERN = (
+    '{ ($.eventName = "ConsoleLogin") && '
+    '($.additionalEventData.MFAUsed != "Yes") }'
+)
+
+
+class AwsConsoleSignInWithoutMfaMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-009"
+    name = "Console sign-in without MFA raises no alarm"
+    description = (
+        "No CloudWatch alarm fires when somebody signs in to the console with a "
+        "password alone. AWS-IAM-001 reports the users who can do it; this "
+        "reports that nobody finds out when one of them does."
+    )
+    severity = Severity.MEDIUM
+    event = "somebody signs in to the console without MFA"
+    # ``$.eventName``, the sign-in event, and the field that says whether a
+    # second factor was used.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("ConsoleLogin",),
+        ("MFAUsed",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "A password-only sign-in is what a phished credential looks like from "
+        "the outside. Enforcing MFA is the fix and this is not it — it is the "
+        "answer to what happens between the credential being stolen and the "
+        "enforcement being finished."
+    )
+    remediation = _monitoring_remediation(
+        "ConsoleSignInWithoutMFA", _CONSOLE_MFA_PATTERN
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "ConsoleSignInWithoutMFA",
+        _CONSOLE_MFA_PATTERN,
+        "A sign-in through an assumed role carries no MFAUsed field of its own; "
+        "the factor was presented when the role was assumed.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.2"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_IAM_POLICY_PATTERN = (
+    "{ ($.eventName=DeleteGroupPolicy)||($.eventName=DeleteRolePolicy)||"
+    "($.eventName=DeleteUserPolicy)||($.eventName=PutGroupPolicy)||"
+    "($.eventName=PutRolePolicy)||($.eventName=PutUserPolicy)||"
+    "($.eventName=CreatePolicy)||($.eventName=DeletePolicy)||"
+    "($.eventName=CreatePolicyVersion)||($.eventName=DeletePolicyVersion)||"
+    "($.eventName=AttachRolePolicy)||($.eventName=DetachRolePolicy)||"
+    "($.eventName=AttachUserPolicy)||($.eventName=DetachUserPolicy)||"
+    "($.eventName=AttachGroupPolicy)||($.eventName=DetachGroupPolicy) }"
+)
+
+
+class AwsIamPolicyChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-010"
+    name = "IAM policy changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a policy is written, attached or "
+        "detached. Every escalation an attacker performs inside an account ends "
+        "in one of these calls, because permission is the thing being taken."
+    )
+    severity = Severity.MEDIUM
+    event = "an IAM policy is written, attached or detached"
+    # ``$.eventName`` and one call from each half of what CIS's pattern lists:
+    # a policy written inline, and a managed policy attached to a principal.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("PutRolePolicy", "PutUserPolicy", "PutGroupPolicy"),
+        ("AttachRolePolicy", "AttachUserPolicy", "AttachGroupPolicy"),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "A foothold is worth what its permissions are worth, so the first thing "
+        "an attacker does with one is widen them. These calls are also routine "
+        "administration, which is the point: an alarm here is read against a "
+        "change nobody planned, not against zero."
+    )
+    remediation = _monitoring_remediation("IAMPolicyChanges", _IAM_POLICY_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "IAMPolicyChanges",
+        _IAM_POLICY_PATTERN,
+        "This one fires on legitimate work too. Route it somewhere a change can "
+        "be matched against a ticket rather than to a pager.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.4"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_TRAIL_CHANGE_PATTERN = (
+    "{ ($.eventName = CreateTrail) || ($.eventName = UpdateTrail) || "
+    "($.eventName = DeleteTrail) || ($.eventName = StartLogging) || "
+    "($.eventName = StopLogging) }"
+)
+
+
+class AwsTrailChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-011"
+    name = "CloudTrail configuration changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a trail is changed, deleted, or has its "
+        "logging stopped. Every other alarm in this section is downstream of the "
+        "trail, so this is the one whose failure hides the others."
+    )
+    severity = Severity.HIGH
+    event = "a trail is changed or its logging is stopped"
+    # ``$.eventName``, the call that blinds the account, and one of the two that
+    # rewrite or remove the trail itself.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("StopLogging",),
+        ("DeleteTrail", "UpdateTrail"),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "`StopLogging` is one call, takes effect immediately, and is the "
+        "standard first move once an attacker has permission to make it. "
+        "Everything after it happened to an account nobody was recording, and "
+        "the gap in the trail is the only evidence left."
+    )
+    remediation = _monitoring_remediation("CloudTrailChanges", _TRAIL_CHANGE_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "CloudTrailChanges",
+        _TRAIL_CHANGE_PATTERN,
+        "AWS-LOG-001 asks whether the trail exists and AWS-LOG-002 whether its "
+        "files can be shown to be intact. This asks whether anybody hears it "
+        "stop.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.5"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_AUTH_FAILURE_PATTERN = (
+    '{ ($.eventName = ConsoleLogin) && ($.errorMessage = "Failed authentication") }'
+)
+
+
+class AwsConsoleAuthFailureMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-012"
+    name = "Console authentication failures raise no alarm"
+    description = (
+        "No CloudWatch alarm fires on failed console sign-ins. One is somebody "
+        "mistyping a password; several hundred against one account is a "
+        "password spray, and the two look identical until somebody counts."
+    )
+    severity = Severity.LOW
+    event = "a console sign-in fails"
+    # ``$.eventName``, the sign-in event, and the message AWS puts on a refusal.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("ConsoleLogin",),
+        ("Failed authentication", "$.errorMessage"),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "Lowest of the thirteen, and deliberately: a password policy and "
+        "enforced MFA are preventive, this is only detective, and CloudGuard "
+        "checks both of those separately. It still earns its place — a spray "
+        "that eventually succeeds produces a *successful* sign-in nothing else "
+        "distinguishes from a Monday morning."
+    )
+    remediation = _monitoring_remediation("ConsoleSignInFailures", _AUTH_FAILURE_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "ConsoleSignInFailures",
+        _AUTH_FAILURE_PATTERN,
+        "A threshold of one on this alarm is noise. Raise the threshold or "
+        "lengthen the period rather than muting it, or it ends up ignored, "
+        "which is the same as not having it.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.6"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_KEY_DISABLE_PATTERN = (
+    "{ ($.eventSource = kms.amazonaws.com) && "
+    "(($.eventName=DisableKey)||($.eventName=ScheduleKeyDeletion)) }"
+)
+
+
+class AwsKeyDisableMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-013"
+    name = "Disabling or deleting a customer key raises no alarm"
+    description = (
+        "No CloudWatch alarm fires when a KMS key is disabled or scheduled for "
+        "deletion. Everything encrypted under that key becomes unreadable when "
+        "the deletion lands, and the waiting period is the entire window in "
+        "which anybody can stop it."
+    )
+    severity = Severity.HIGH
+    event = "a customer key is disabled or scheduled for deletion"
+    # The service, and both calls CIS names. A pattern carrying only one of them
+    # is watching half of a two-step nobody performs by accident.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("kms.amazonaws.com",),
+        ("DisableKey",),
+        ("ScheduleKeyDeletion",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "This is the destructive path that needs no data access at all: a "
+        "principal that can schedule a key for deletion can make a backup, a "
+        "bucket and a database unreadable without reading one byte of any of "
+        "them. The minimum waiting period is seven days, and it is only a "
+        "safeguard if somebody is told the clock started."
+    )
+    remediation = _monitoring_remediation("DisableOrDeleteCMK", _KEY_DISABLE_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "DisableOrDeleteCMK",
+        _KEY_DISABLE_PATTERN,
+        "Cancel a deletion with `aws kms cancel-key-deletion --key-id <id>` "
+        "while the waiting period is still running. After it, the key material "
+        "is gone and AWS cannot recover it.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.7"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_BUCKET_POLICY_PATTERN = (
+    "{ ($.eventSource = s3.amazonaws.com) && (($.eventName = PutBucketAcl) || "
+    "($.eventName = PutBucketPolicy) || ($.eventName = PutBucketCors) || "
+    "($.eventName = PutBucketLifecycle) || ($.eventName = PutBucketReplication) "
+    "|| ($.eventName = DeleteBucketPolicy) || ($.eventName = DeleteBucketCors) "
+    "|| ($.eventName = DeleteBucketLifecycle) || "
+    "($.eventName = DeleteBucketReplication)) }"
+)
+
+
+class AwsBucketPolicyChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-014"
+    name = "S3 bucket policy changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a bucket's policy or ACL is rewritten. "
+        "AWS-STO-001 finds a bucket that is public at the moment of a scan; this "
+        "is what tells somebody on the afternoon it becomes public."
+    )
+    severity = Severity.MEDIUM
+    event = "a bucket policy or ACL is changed"
+    # The service, and both directions: a policy written, and one removed.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("s3.amazonaws.com",),
+        ("PutBucketPolicy",),
+        ("DeleteBucketPolicy",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "A scan is periodic and an exposure is not. A bucket opened and closed "
+        "between two scans never appears in a finding, and the copy somebody "
+        "took while it was open is not undone by closing it."
+    )
+    remediation = _monitoring_remediation("S3BucketPolicyChanges", _BUCKET_POLICY_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "S3BucketPolicyChanges",
+        _BUCKET_POLICY_PATTERN,
+        "An account-level public access block is the preventive control and "
+        "should be on regardless; this reports the attempts it refuses as well "
+        "as the changes it does not cover.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.8"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_CONFIG_CHANGE_PATTERN = (
+    "{ ($.eventSource = config.amazonaws.com) && "
+    "(($.eventName=StopConfigurationRecorder)||"
+    "($.eventName=DeleteDeliveryChannel)||($.eventName=PutDeliveryChannel)||"
+    "($.eventName=PutConfigurationRecorder)) }"
+)
+
+
+class AwsConfigChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-015"
+    name = "AWS Config changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when configuration recording is stopped or "
+        "its delivery channel is changed. The recorder is the account's history "
+        "of what its resources looked like, and stopping it is quiet."
+    )
+    severity = Severity.MEDIUM
+    event = "configuration recording is stopped or redirected"
+    # The service, the call that stops recording, and the one that removes where
+    # the recordings go.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("config.amazonaws.com",),
+        ("StopConfigurationRecorder",),
+        ("DeleteDeliveryChannel",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "AWS-LOG-005 reports a recorder that is off at scan time. The gap it "
+        "cannot report is a recorder switched off and back on between scans, "
+        "which is exactly the shape of somebody covering a change."
+    )
+    remediation = _monitoring_remediation("AWSConfigChanges", _CONFIG_CHANGE_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "AWSConfigChanges",
+        _CONFIG_CHANGE_PATTERN,
+        "`PutConfigurationRecorder` and `PutDeliveryChannel` are in the pattern "
+        "too: a recorder narrowed to one resource type records almost nothing "
+        "while still reporting itself as recording.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.9"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_SECURITY_GROUP_PATTERN = (
+    "{ ($.eventName = AuthorizeSecurityGroupIngress) || "
+    "($.eventName = AuthorizeSecurityGroupEgress) || "
+    "($.eventName = RevokeSecurityGroupIngress) || "
+    "($.eventName = RevokeSecurityGroupEgress) || "
+    "($.eventName = CreateSecurityGroup) || ($.eventName = DeleteSecurityGroup) }"
+)
+
+
+class AwsSecurityGroupChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-016"
+    name = "Security group changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a security group rule is added or "
+        "removed. A security group is the account's firewall, and one added rule "
+        "is the difference between a private database and a public one."
+    )
+    severity = Severity.MEDIUM
+    event = "a security group rule is added or removed"
+    # ``$.eventName``, the call that opens a port, and one that creates or
+    # removes a group outright.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("AuthorizeSecurityGroupIngress",),
+        ("CreateSecurityGroup", "DeleteSecurityGroup"),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "AWS-NET-001 through AWS-NET-003 report a port open to the internet at "
+        "scan time. `AuthorizeSecurityGroupIngress` is the call that opened it, "
+        "and knowing who made it and when is most of an incident's timeline."
+    )
+    remediation = _monitoring_remediation("SecurityGroupChanges", _SECURITY_GROUP_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "SecurityGroupChanges",
+        _SECURITY_GROUP_PATTERN,
+        "In an account where groups are managed by Terraform or CloudFormation, "
+        "every alarm from this is either a deployment or an unplanned change, "
+        "and the two are easy to tell apart by the principal that made it.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.10"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_NETWORK_ACL_PATTERN = (
+    "{ ($.eventName = CreateNetworkAcl) || ($.eventName = CreateNetworkAclEntry) "
+    "|| ($.eventName = DeleteNetworkAcl) || ($.eventName = DeleteNetworkAclEntry) "
+    "|| ($.eventName = ReplaceNetworkAclEntry) || "
+    "($.eventName = ReplaceNetworkAclAssociation) }"
+)
+
+
+class AwsNetworkAclChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-017"
+    name = "Network ACL changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a network ACL entry is written or "
+        "replaced. An ACL sits in front of every security group in its subnet, "
+        "so a change here quietly widens what all of them allow."
+    )
+    severity = Severity.MEDIUM
+    event = "a network ACL entry is changed"
+    # ``$.eventName``, an entry written, and an ACL or entry removed.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("CreateNetworkAclEntry",),
+        ("DeleteNetworkAcl",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "ACLs are edited rarely and by few people, which makes an alarm on them "
+        "close to silent in a healthy account — and unusually informative when "
+        "it does fire."
+    )
+    remediation = _monitoring_remediation("NetworkAclChanges", _NETWORK_ACL_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "NetworkAclChanges",
+        _NETWORK_ACL_PATTERN,
+        "`ReplaceNetworkAclAssociation` is in the pattern because moving a "
+        "subnet to a permissive ACL changes what it allows without editing any "
+        "rule.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.11"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_GATEWAY_PATTERN = (
+    "{ ($.eventName = CreateCustomerGateway) || "
+    "($.eventName = DeleteCustomerGateway) || "
+    "($.eventName = AttachInternetGateway) || "
+    "($.eventName = CreateInternetGateway) || "
+    "($.eventName = DeleteInternetGateway) || "
+    "($.eventName = DetachInternetGateway) }"
+)
+
+
+class AwsGatewayChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-018"
+    name = "Network gateway changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when an internet or customer gateway is "
+        "created, attached or detached. Attaching an internet gateway is the "
+        "single call that gives a private VPC a route to the internet."
+    )
+    severity = Severity.MEDIUM
+    event = "a network gateway is attached or removed"
+    # ``$.eventName``, and both directions of the attachment that matters.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("CreateInternetGateway", "AttachInternetGateway"),
+        ("DeleteInternetGateway", "DetachInternetGateway"),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "A workload nobody meant to expose is usually exposed in two calls: a "
+        "gateway attached and a route added. This is the first of them, and "
+        "AWS-LOG-019 is the second."
+    )
+    remediation = _monitoring_remediation("NetworkGatewayChanges", _GATEWAY_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "NetworkGatewayChanges",
+        _GATEWAY_PATTERN,
+        "Detaching a gateway is in the pattern as well as attaching one: it "
+        "takes a production network offline, which is an outage somebody should "
+        "hear about immediately.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.12"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_ROUTE_TABLE_PATTERN = (
+    "{ ($.eventName = CreateRoute) || ($.eventName = CreateRouteTable) || "
+    "($.eventName = ReplaceRoute) || ($.eventName = ReplaceRouteTableAssociation) "
+    "|| ($.eventName = DeleteRoute) || ($.eventName = DeleteRouteTable) || "
+    "($.eventName = DisassociateRouteTable) }"
+)
+
+
+class AwsRouteTableChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-019"
+    name = "Route table changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a route is added, replaced or removed. A "
+        "route decides where a subnet's traffic goes, and neither a security "
+        "group nor an ACL says anything about it."
+    )
+    severity = Severity.MEDIUM
+    event = "a route table is changed"
+    # ``$.eventName``, a route added, and a route redirected.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("CreateRoute",),
+        ("ReplaceRoute",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "Adding `0.0.0.0/0` to a private subnet's table exposes everything in it "
+        "without touching a single firewall rule, so nothing else in this "
+        "product's network checks would see it happen."
+    )
+    remediation = _monitoring_remediation("RouteTableChanges", _ROUTE_TABLE_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "RouteTableChanges",
+        _ROUTE_TABLE_PATTERN,
+        "`ReplaceRouteTableAssociation` moves a subnet to a different table "
+        "wholesale, which changes every route it follows in one call.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.13"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_VPC_PATTERN = (
+    "{ ($.eventName = CreateVpc) || ($.eventName = DeleteVpc) || "
+    "($.eventName = ModifyVpcAttribute) || "
+    "($.eventName = AcceptVpcPeeringConnection) || "
+    "($.eventName = CreateVpcPeeringConnection) || "
+    "($.eventName = DeleteVpcPeeringConnection) || "
+    "($.eventName = RejectVpcPeeringConnection) || "
+    "($.eventName = AttachClassicLinkVpc) || "
+    "($.eventName = DetachClassicLinkVpc) || "
+    "($.eventName = DisableVpcClassicLink) || "
+    "($.eventName = EnableVpcClassicLink) }"
+)
+
+
+class AwsVpcChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-020"
+    name = "VPC changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when a VPC is created or deleted, or when a "
+        "peering connection is made or accepted. A peering connection joins two "
+        "networks that were separate, and one end of it can be an account "
+        "nobody here controls."
+    )
+    severity = Severity.MEDIUM
+    event = "a VPC or a peering connection is changed"
+    # ``$.eventName`` and both ends of a VPC's life. ``CreateVpc`` also matches
+    # the peering calls, which is the intent -- they are the same control.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("$.eventName",),
+        ("CreateVpc",),
+        ("DeleteVpc",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "Accepting a peering connection is a one-sided decision with a two-sided "
+        "consequence: after it, another account's instances are inside this "
+        "network's routable space, and no security group written before it knew "
+        "that was possible."
+    )
+    remediation = _monitoring_remediation("VPCChanges", _VPC_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "VPCChanges",
+        _VPC_PATTERN,
+        "A new VPC is also worth hearing about on its own: it starts outside "
+        "whatever flow logging, ACLs and tagging the existing ones were given.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.14"],
+        **_MONITORING_MAPPINGS,
+    }
+
+
+_ORGANIZATIONS_PATTERN = (
+    "{ ($.eventSource = organizations.amazonaws.com) && "
+    '(($.eventName = "AcceptHandshake") || ($.eventName = "AttachPolicy") || '
+    '($.eventName = "CreateAccount") || '
+    '($.eventName = "CreateOrganizationalUnit") || '
+    '($.eventName = "CreatePolicy") || ($.eventName = "DeclineHandshake") || '
+    '($.eventName = "DeleteOrganization") || '
+    '($.eventName = "DeleteOrganizationalUnit") || '
+    '($.eventName = "DeletePolicy") || ($.eventName = "DetachPolicy") || '
+    '($.eventName = "DisablePolicyType") || ($.eventName = "EnablePolicyType") '
+    '|| ($.eventName = "InviteAccountToOrganization") || '
+    '($.eventName = "LeaveOrganization") || ($.eventName = "MoveAccount") || '
+    '($.eventName = "RemoveAccountFromOrganization") || '
+    '($.eventName = "UpdatePolicy") || '
+    '($.eventName = "UpdateOrganizationalUnit")) }'
+)
+
+
+class AwsOrganizationsChangeMonitoringRule(_MonitoredEventRule):
+    rule_id = "AWS-LOG-021"
+    name = "AWS Organizations changes raise no alarm"
+    description = (
+        "No CloudWatch alarm fires when an organization's structure or its "
+        "policies change. A service control policy is the one boundary an "
+        "account's own administrator cannot argue with, and detaching one is a "
+        "single call."
+    )
+    severity = Severity.HIGH
+    event = "an organization's structure or policies change"
+    # The service, an account leaving, and a policy detached. Both are things
+    # that remove a boundary rather than move something inside one.
+    required: ClassVar[tuple[tuple[str, ...], ...]] = (
+        ("organizations.amazonaws.com",),
+        ("LeaveOrganization",),
+        ("DetachPolicy",),
+    )
+    estimated_effort_minutes = 30
+    rationale = (
+        "Everything CloudGuard checks in a member account is checked under the "
+        "assumption that the organization above it still constrains that "
+        "account. `LeaveOrganization` and `DetachPolicy` end that assumption "
+        "without changing anything inside the account, so no other check in this "
+        "product would notice."
+    )
+    remediation = _monitoring_remediation("OrganizationsChanges", _ORGANIZATIONS_PATTERN)
+    remediation_spec: ClassVar[RemediationSpec | None] = _monitoring_spec(
+        "OrganizationsChanges",
+        _ORGANIZATIONS_PATTERN,
+        "Organizations is a global service that logs to us-east-1. The filter "
+        "belongs on the log group of a trail that covers that region, or it "
+        "matches nothing at all.",
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["4.15"],
+        **_MONITORING_MAPPINGS,
+    }

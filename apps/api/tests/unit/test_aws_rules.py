@@ -16,6 +16,8 @@ bucket.
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
 from app.connectors.aws.normalizer import AwsNormalizer
 from app.connectors.base import RawSnapshot
 from app.core.enums import Provider, RuleState
@@ -45,6 +47,7 @@ from app.rules.aws.logging.trails import (
     AwsTrailEncryptionRule,
     AwsTrailValidationRule,
     AwsUnauthorizedApiMonitoringRule,
+    _MonitoredEventRule,
 )
 from app.rules.aws.network.exposure import (
     AwsDefaultSecurityGroupRule,
@@ -1192,6 +1195,55 @@ def test_a_failed_filter_listing_degrades_rather_than_passes() -> None:
         gaps={"log_metric_filters": "AccessDenied"}, **monitoring()
     )
     assert verdict(AwsUnauthorizedApiMonitoringRule(), context) is RuleState.UNKNOWN
+
+
+# ---------------------------------------------- the rest of CIS AWS section 4
+# Fifteen controls of one shape, so the interesting question is not whether the
+# walk works -- three hops of it are tested above -- but whether the fifteen are
+# fifteen different questions. Both tests below are over the registry rather
+# than a list written here, so a sixteenth rule is covered the day it is added.
+
+SECTION_FOUR = [rule for rule in RULE_REGISTRY if isinstance(rule, _MonitoredEventRule)]
+
+
+def declared_pattern(rule) -> str:
+    """The filter pattern out of the command the rule tells a customer to run."""
+    return rule.remediation_spec.cli[0].split("--filter-pattern '", 1)[1].split(
+        "' --metric-transformations", 1
+    )[0]
+
+
+def declared_metric(rule) -> str:
+    return rule.remediation_spec.cli[1].split("--alarm-name ", 1)[1].split(" ", 1)[0]
+
+
+@pytest.mark.parametrize("rule", SECTION_FOUR, ids=lambda r: r.rule_id)
+def test_the_filter_the_remediation_prints_satisfies_the_check(rule) -> None:
+    """A customer who runs exactly what the finding told them to run passes.
+
+    The same discipline ``test_remediation_spec.py`` applies to the rules that
+    can state an expected value, applied to the ones that cannot: the pattern in
+    the remediation and the ingredients in the check are one claim written
+    twice, and this is what keeps them the same claim.
+    """
+    context = context_from(
+        **monitoring(pattern=declared_pattern(rule), metric=declared_metric(rule))
+    )
+    assert verdict(rule, context) is RuleState.PASS
+
+
+@pytest.mark.parametrize("rule", SECTION_FOUR, ids=lambda r: r.rule_id)
+def test_no_rule_here_is_satisfied_by_another_one_s_filter(rule) -> None:
+    """Thirteen rules sharing one evaluation is a saving right up until two of
+    them accept the same filter -- at which point an account is told it watches
+    an event nothing watches."""
+    for other in SECTION_FOUR:
+        if other.rule_id == rule.rule_id:
+            continue
+        context = context_from(
+            **monitoring(pattern=declared_pattern(other), metric=declared_metric(other))
+        )
+        assert verdict(rule, context) is RuleState.FAIL, other.rule_id
 
 
 # ---------------------------------------------------- who can call AWS
