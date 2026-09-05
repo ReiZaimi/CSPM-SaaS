@@ -26,14 +26,16 @@ Overview                            ✓ Assessed 31 Aug 01:51  [Scan now] [Repor
 
 ┌────────────────────────┬────────────────────────────────────┐
 │ PRIORITY RISKS         │ SHORTEST ATTACK PATH               │
-│ ① Public database  94  │ vm-jump-01 → prodstorage           │
+│ ▣ Public database      │ vm-jump-01 → prodstorage           │
 │   Internet-facing      │ ① runs as mi-jump                  │
 │   Sensitive data       │ ✂ can act over prodstorage         │
+│                94 CRIT │                                    │
 └────────────────────────┴────────────────────────────────────┘
 
 ┌────────────────────────┬────────────────────────────────────┐
 │ REMEDIATION            │ RECENT CHANGES                     │
-│ 34% verified fixed     │ ↑ exposure · storage-prod    2h    │
+│ 34% verified fixed     │  2h ●─ storage-prod — exposure ↑   │
+│                        │  1d ●─ vm-jump-01 — appeared       │
 └────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -55,7 +57,19 @@ wrong has to see what could not be answered in the same glance.
 **A ranked risk carries the terms it was ranked by** — internet-facing,
 sensitive data, business-critical — so a rank reads as a reason rather than as
 an assertion. A scenario is marked as a route, because it groups findings that
-are already counted individually.
+are already counted individually. The row leads with a severity-tinted mark
+rather than an ordinal: the list is already in rank order, so a number column
+would restate the reading direction, and the tint is what a reader actually
+scans a list of five for. Score and severity badge sit together at the trailing
+edge, where the eye lands after the title.
+
+**Recent changes is drawn as a timeline** — date gutter, spine, entry — because
+the question it answers is temporal: one bad afternoon and a steady drift are
+the same five rows in a flat list and visibly different on a spine. The spine
+stops at the first and last mark rather than running off the ends, which would
+imply rows that are not there. A movement keeps its shape as well as its colour,
+so a regression stays distinguishable from an arrival, and an attribute that
+moved into UNKNOWN renders neutral in both.
 
 **The charts follow the question, not the variety.** Rings only where the data
 is a whole divided in two or three (coverage; finding status); severity as one

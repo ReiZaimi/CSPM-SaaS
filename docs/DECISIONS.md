@@ -4009,6 +4009,50 @@ and whether those payloads are the payloads AWS actually sends is still
 about exactly the ARN shape and the `metricTransformations` spelling this family
 joins on.
 
+## 83. The dashboard's two list panels are Cards, and the feed is a timeline
+
+Every dashboard panel drew its own chrome — a `<section>` with a hand-written
+`rounded-xl bg-card ring-1 ring-foreground/10` and its own header padding —
+which is the `Card` primitive's job (§24) copied nine times. `PriorityRisks` and
+`RecentChanges` are the first two to move: both now use `Card` / `CardHeader` /
+`CardTitle` / `CardDescription` / `CardAction` / `CardContent`, with
+`role="region"` carrying the labelling the `<section>` used to, and
+`--card-spacing` set to 5 so their padding still lines up with the seven
+neighbours that have not moved yet. Those seven are a follow-on, not a
+different decision: the two panels here changed because their *content* was
+being restyled, and converting the rest is a mechanical edit with no visual
+consequence.
+
+### A risk row leads with severity, not with an ordinal
+
+The rank was rendered as a small grey `1 2 3` in its own column. The list is
+already in rank order, so the column spent a column restating the reading
+direction. It is replaced by a severity-tinted mark that takes its colours from
+`levelStyle` — the same map `SeverityBadge` reads, so a row's tile and its badge
+can never disagree about what CRITICAL looks like — and its *shape* from what
+the row is: a route mark for a scenario, a shield for everything else.
+
+The badge moved to the trailing cluster beside the score, where the eye lands
+after the title rather than before it. Nothing was dropped: the score, the
+scenario marker, and the exposure/sensitivity/criticality terms that explain the
+ranking all still render, the last of these now each with their own icon rather
+than three identical radar glyphs.
+
+### The change feed is drawn as the sequence it is
+
+`RecentChanges` was five flat rows with a date pinned to the right edge. It is
+now a three-column timeline — date gutter, spine, entry — because the question
+it answers is temporal: whether a week's movement was one bad afternoon or a
+steady drift is visible in the spacing of the marks and invisible in a right-
+aligned column of dates.
+
+The spine stops at the first and last mark rather than running to the edges of
+the list, which would imply rows that are not there. The mark keeps both its
+colour and its shape (`TrendingUp` for a regression, `Plus` for an arrival,
+`Minus` for neutral), so the §66-adjacent honesty rule survives the restyle: an
+attribute that moved into UNKNOWN is a loss of knowledge, renders neutral, and
+is still distinguishable from an improvement without relying on hue.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
