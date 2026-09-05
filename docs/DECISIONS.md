@@ -3516,6 +3516,66 @@ entries are things the customer needs in front of them — the role ARN to check
 what they deployed, the external id to check their own trust policy requires
 it — and neither is a credential.
 
+## 76. Change-triggered scanning on AWS, and the handshake that fetches
+
+Change events were deliberately out of the first AWS slice (§72). They are in
+now, and one difference from Azure turned out to have a security consequence
+rather than a cosmetic one.
+
+**The path is EventBridge → SNS → HTTPS.** EventBridge cannot post to an
+arbitrary HTTPS endpoint on its own; doing it directly needs an API destination,
+which needs the customer to create a connection holding a credential, then a
+destination, then a rule — three resources and a secret of ours in their
+account. An SNS topic with an HTTPS subscription is one more command than Azure
+needs and stores nothing of ours. The topic is theirs, in their account, and
+CloudGuard holds no permission over it — the same trade as the Event Grid
+subscription: CloudGuard generates the commands and the customer runs them,
+because creating any of it is a *write*.
+
+### The handshake is an SSRF if you let it be
+
+Event Grid confirms a subscription by asking for a code echoed in the response
+body. **SNS confirms by handing over a URL and activating when it is fetched.**
+That is an outbound request triggered by an inbound payload, from an endpoint
+anybody holding the connection's token can reach — so the host is not taken on
+trust. `confirmation_url` returns the URL only when it matches
+`sns.<region>.amazonaws.com` (or `.com.cn`), and `None` for everything else;
+`None` is refused rather than fetched.
+
+The check lives in the *feed*, not in the endpoint, because the cloud that knows
+what its own hosts look like is the one that should be saying. `test_aws_change_events.py`
+pins the four ways this gets written wrongly: a suffix test passes
+`…amazonaws.com.evil.test`, a substring test passes `evil.test/sns.…amazonaws.com`,
+and anything splitting on the wrong character passes
+`https://sns.…amazonaws.com@evil.test/`.
+
+The contract gained `confirmation_url` for this. Azure answers `None` — it
+echoes instead — so the endpoint serves both without learning which cloud does
+which.
+
+### One route, and the URL customers already have
+
+`/events/azure/{id}` became `/events/{provider}/{id}`. The provider is a path
+segment rather than a lookup, which means every Event Grid subscription already
+wired to the old URL keeps working unchanged — the literal `azure` still
+matches. An unknown provider, or one with no feed, is a 404 rather than a
+dropped event: that is not a delivery CloudGuard decided against, it is a URL
+nothing should be posting to.
+
+### What is filtered, and where
+
+Both feeds filter twice, and for the same reason. The endpoint drops what it
+cannot use anyway; a filter the *provider* applies is traffic that never leaves
+the customer's account. AWS's rule pattern names the nine event sources rules
+actually read, and the endpoint additionally drops reads (`Get`, `List`,
+`Describe`…) and failed calls — a scan started because somebody listed their
+buckets is a scan nothing asked for, and a call that failed left the environment
+as it was.
+
+A malformed `Message` is dropped rather than raised. The endpoint answers 200 to
+everything it decides not to act on, and an exception would turn that into hours
+of SNS redelivering the same unparseable payload.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

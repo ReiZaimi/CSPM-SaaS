@@ -19,11 +19,17 @@ import { Skeleton } from "@/components/ui/skeleton";
  * after somebody opened it.
  *
  * The copy carries one thing the toggle cannot: turning this on wires nothing
- * up. Creating the Event Grid subscription is a write in the customer's tenant,
- * and CloudGuard holds no write permission anywhere -- so it opens the webhook
- * and hands over the command. A switch that looked like it had done the work
- * would leave a customer believing they were monitored when nothing was ever
- * going to arrive.
+ * up. Creating the delivery is a write in the customer's cloud -- an Event Grid
+ * subscription on Azure, an SNS topic and an EventBridge rule on AWS -- and
+ * CloudGuard holds no write permission anywhere, so it opens the webhook and
+ * hands over the commands. A switch that looked like it had done the work would
+ * leave a customer believing they were monitored when nothing was ever going to
+ * arrive.
+ *
+ * AWS needs three commands where Azure needs one, because no AWS call points a
+ * rule at an HTTPS endpoint directly. That is a difference in the copy and not
+ * in the mechanism: both are generated per connection, and both carry a token
+ * that works for this connection alone.
  */
 export function ChangeEventsControl({
   connection,
@@ -159,13 +165,17 @@ export function ChangeEventsControl({
           {data.enabled && (
             <>
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                {t.connection.changeNotWired}
+                {connection.provider === "aws"
+                  ? t.connection.changeNotWiredAws
+                  : t.connection.changeNotWired}
               </p>
 
               {data.commands.length > 0 && (
                 <div className="mt-3">
                   <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    {t.connection.changeCommandsLabel}
+                    {connection.provider === "aws"
+                      ? t.connection.changeCommandsLabelAws
+                      : t.connection.changeCommandsLabel}
                   </p>
                   <ul className="mt-2 flex flex-col gap-2">
                     {data.commands.map((entry) => (

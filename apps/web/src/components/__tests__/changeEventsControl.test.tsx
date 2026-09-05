@@ -62,7 +62,7 @@ describe("the change-events control", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Listening for changes")).toBeInTheDocument());
-    expect(screen.getByText(/cannot create that subscription for you/)).toBeInTheDocument();
+    expect(screen.getByText(/cannot create that wiring for you/)).toBeInTheDocument();
   });
 
   it("shows the command in full, one per subscription", async () => {

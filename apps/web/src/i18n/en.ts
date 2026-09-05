@@ -166,12 +166,18 @@ export const en = {
     changeDisable: "Turn off",
     changeSaving: "Saving\u2026",
     changeNotWired:
-      "The webhook is open. Nothing reaches it until you run the command below in each subscription \u2014 CloudGuard cannot create that subscription for you, because it holds no write permission in your tenant and does not ask for one.",
-    changeCommandsLabel: "Run this once per subscription",
+      "The webhook is open. Nothing reaches it until you run the command below in each account \u2014 CloudGuard cannot create that wiring for you, because it holds no write permission in your cloud and does not ask for one.",
+    changeCommandsLabel: "Run this once per account",
+    // AWS needs three commands rather than one, and the reason is worth
+    // stating: there is no single AWS call that points a rule at an HTTPS
+    // endpoint, so the delivery goes through a topic the customer owns.
+    changeCommandsLabelAws: "Run these once per account",
+    changeNotWiredAws:
+      "The webhook is open. Nothing reaches it until you run the commands below \u2014 EventBridge cannot deliver to an HTTPS endpoint on its own, so the change goes through an SNS topic in your account. CloudGuard creates none of it: it holds no write permission in your cloud and does not ask for one.",
     changeCopyCommand: "Copy command",
     changeNoEndpoint: "CloudGuard has no public address to receive deliveries",
     changeNoEndpointHelp:
-      "This deployment has no public API base URL configured, so there is no endpoint for Event Grid to deliver to. Change detection cannot be wired up until that is set.",
+      "This deployment has no public API base URL configured, so there is no endpoint for your cloud to deliver to. Change detection cannot be wired up until that is set.",
     changeLastEvent: "Last change heard",
     changeNeverHeard: "Nothing yet",
     changePending: "A change is settling; a scan starts once the environment is quiet",

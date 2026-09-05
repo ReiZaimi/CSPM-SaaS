@@ -37,8 +37,9 @@ the read fails several minutes into a scan with `AccessDenied`.
 | 8 | Each per-bucket call is made in the bucket's own region | Otherwise `PermanentRedirect`, which reads as a permission problem |
 | 9 | `organizations:ListAccounts` returns member accounts from the management account | Discovery produces nothing otherwise, and a connection scans one account while claiming an organization |
 | 10 | The response shapes match what `normalizer.py` reads | A wrong key silently normalises to an empty estate |
+| 11 | An SNS subscription confirms, and a notification reaches the webhook | The confirmation is fetched, not echoed — a different mechanism from Azure's |
 
-Once all ten pass: remove the `# UNVERIFIED` markers in
+Once all eleven pass: remove the `# UNVERIFIED` markers in
 `app/connectors/aws/iam.py`, drop the warnings from the module docstrings in
 `app/connectors/aws/`, and enable AWS in the provider picker.
 
@@ -199,7 +200,28 @@ credential-age check reports UNKNOWN.
 
 ---
 
-## 6. Error handling
+## 6. Change-triggered scanning
+
+A schedule promises the environment is re-read at least this often; this
+promises a change is *noticed*. The delivery path is **EventBridge → SNS →
+HTTPS**, because EventBridge cannot post to an arbitrary endpoint on its own and
+an API destination would put a credential of ours in the customer's account.
+
+Three commands where Azure needs one, all generated per connection and carrying
+a token that works for that connection alone. CloudGuard creates none of it: the
+topic and the rule are writes in the customer's account, and holding no write
+permission is the strongest claim this product makes.
+
+**The confirmation is fetched, not echoed**, and that is the one place the two
+clouds differ in a way that matters. SNS hands over a `SubscribeURL`; fetching
+it is an outbound request triggered by an inbound payload, from an endpoint
+anyone with the connection's token can reach. Only `sns.<region>.amazonaws.com`
+(and `.com.cn`) is accepted — everything else is refused rather than fetched
+(`DECISIONS.md` §76).
+
+---
+
+## 7. Error handling
 
 The same three outcomes the Azure connector uses, because the rule engine
 already speaks them.

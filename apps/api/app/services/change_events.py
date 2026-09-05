@@ -65,6 +65,23 @@ def validation_response(
     return response
 
 
+def confirmation_url(
+    event: dict[str, Any], provider: Provider = Provider.AZURE
+) -> str | None:
+    """Where a subscription is activated, for a cloud that activates out of band.
+
+    Azure echoes a code in the response and answers ``None`` here; SNS hands
+    over a URL that has to be fetched. Asked of the provider rather than decided
+    by the endpoint, so the neutral half never learns which cloud does which.
+
+    The provider is also what refuses an unsafe URL. Fetching one named in an
+    inbound payload is an SSRF unless the host is checked, and the check belongs
+    with the cloud that knows what its own hosts look like.
+    """
+    url: str | None = get_change_feed(provider).confirmation_url(event)
+    return url
+
+
 def is_relevant(event: dict[str, Any], provider: Provider = Provider.AZURE) -> bool:
     return bool(get_change_feed(provider).is_relevant(event))
 

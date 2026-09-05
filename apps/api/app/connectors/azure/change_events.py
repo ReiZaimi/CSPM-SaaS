@@ -64,6 +64,16 @@ def validation_response(event: dict[str, Any]) -> dict[str, str] | None:
     return {"validationResponse": str(code)} if code else None
 
 
+def confirmation_url(event: dict[str, Any]) -> str | None:
+    """Nothing to fetch. Event Grid confirms in the response body.
+
+    ``None`` is a complete answer rather than a failure. SNS activates a
+    subscription by handing over a URL to fetch, and this exists so the endpoint
+    can serve both without knowing which cloud it is answering.
+    """
+    return None
+
+
 def is_relevant(event: dict[str, Any]) -> bool:
     """Whether this event could change a verdict.
 

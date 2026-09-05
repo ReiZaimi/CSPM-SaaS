@@ -7,6 +7,7 @@ Adding AWS later is a line in this dict plus a package under ``connectors/``.
 from types import ModuleType
 from typing import Any
 
+from app.connectors.aws import change_events as aws_change_events
 from app.connectors.aws.connector import AwsConnector
 from app.connectors.aws.onboarding import AwsOnboarding
 from app.connectors.azure import change_events as azure_change_events
@@ -37,6 +38,7 @@ ONBOARDING: dict[Provider, type[ProviderOnboarding]] = {
 # import that would fetch some.
 CHANGE_FEEDS: dict[Provider, ModuleType] = {
     Provider.AZURE: azure_change_events,
+    Provider.AWS: aws_change_events,
 }
 
 

@@ -982,7 +982,10 @@ def event_webhook_url(connection: CloudConnection) -> str | None:
     if not base:
         return None
     token = event_webhook_token(connection)
-    return f"{base}/api/v1/events/azure/{connection.id}?token={token}"
+    return (
+        f"{base}/api/v1/events/{connection.provider.value}/{connection.id}"
+        f"?token={token}"
+    )
 
 
 async def set_change_events(
