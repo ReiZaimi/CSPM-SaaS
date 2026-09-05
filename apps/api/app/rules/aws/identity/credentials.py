@@ -10,7 +10,7 @@ Ages come off the resource, computed by the normalizer against the capture's own
 which would make "verified fixed" a statement about when somebody asked.
 """
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from app.connectors.aws.evidence import AwsEvidence
 from app.core.enums import Provider, ResourceType, RuleScope, Severity
@@ -744,3 +744,107 @@ class AwsAccessAnalyzerRule(SecurityRule):
                 f"{len(enabled)} enabled regions: {', '.join(uncovered)}"
             ),
         )
+
+
+class AwsSupportRoleRule(SecurityRule):
+    rule_id = "AWS-IAM-009"
+    name = "Nobody can manage AWS Support cases"
+    description = (
+        "No role, user or group holds AWS's `AWSSupportAccess` policy. During an "
+        "incident, opening a case with AWS then needs the root user — the one "
+        "identity that should not be signed into under pressure, and often the "
+        "one whose credentials nobody on the call has."
+    )
+    category = "authorization"
+    provider = Provider.AWS
+    severity = Severity.LOW
+    # Not exploitable, and not "barely": there is no attack here at all. It is a
+    # readiness gap — the cost is paid during an incident rather than caused by
+    # one — so it scores as nothing and is reported anyway.
+    exploitability = 0
+    scope = RuleScope.AGGREGATE
+    requires_evidence: ClassVar[tuple[AwsEvidence, ...]] = (
+        AwsEvidence.IAM_SUPPORT_ACCESS,
+    )
+    estimated_effort_minutes = 10
+    rationale = (
+        "The moment this matters is the worst moment to discover it. An account "
+        "under active abuse needs a case opened with AWS, and without this "
+        "policy attached to somebody the only way in is root — which is slow, "
+        "usually held by one person, and exactly the credential an incident "
+        "response should not be reaching for."
+    )
+    remediation = (
+        "Attach AWS's own managed policy to whoever handles incidents. A role "
+        "your responders can assume is better than a user, for the ordinary "
+        "reason: it is temporary, and it is logged as an assumption.\n\n"
+        "  aws iam create-role --role-name AWSSupportAccess \\\n"
+        "    --assume-role-policy-document file://trust.json\n"
+        "  aws iam attach-role-policy --role-name AWSSupportAccess \\\n"
+        "    --policy-arn arn:aws:iam::aws:policy/AWSSupportAccess\n\n"
+        "Confirm it took, which is also how CloudGuard checks it:\n"
+        "  aws iam list-entities-for-policy "
+        "--policy-arn arn:aws:iam::aws:policy/AWSSupportAccess\n\n"
+        "The policy grants support-case management and nothing else — it reads "
+        "and writes cases, and touches no resource in the account."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        # Aggregate: a fact about the account rather than about any asset, and
+        # about a policy rather than a setting on one.
+        expected=(),
+        cli=(
+            "aws iam attach-role-policy --role-name AWSSupportAccess "
+            "--policy-arn arn:aws:iam::aws:policy/AWSSupportAccess",
+            "aws iam list-entities-for-policy "
+            "--policy-arn arn:aws:iam::aws:policy/AWSSupportAccess",
+        ),
+        notes=(
+            "A role responders assume beats a standing user: temporary, and "
+            "logged as an assumption. The policy grants case management only."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["1.17"],
+        "ISO_27001": ["A.5.30"],
+        "NIST_CSF": ["RS.RP-1"],
+        "NIST_800_53": ["IR-4"],
+        "SOC2": ["CC7.4"],
+        "PCI_DSS_4": ["12.10.1"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Support access unavailable: {failure}")
+
+        holders = context.controls.get("support_access_holders")
+        if holders is None:
+            return RuleResult.unknown("Support policy attachments missing from snapshot")
+
+        evidence = {
+            "holders": [
+                {"kind": row.get("kind"), "name": _holder_name(row)} for row in holders
+            ]
+        }
+        if holders:
+            return RuleResult.passed(evidence)
+
+        return RuleResult.failed(
+            evidence=evidence,
+            message="No role, user or group can manage AWS Support cases",
+        )
+
+
+def _holder_name(row: dict[str, Any]) -> str:
+    """Whichever name field this kind of principal carries.
+
+    ``ListEntitiesForPolicy`` answers with three differently-shaped lists, and
+    the finding wants one readable name per holder rather than a shape the
+    reader has to decode.
+    """
+    for field in ("RoleName", "UserName", "GroupName"):
+        if row.get(field):
+            return str(row[field])
+    return ""

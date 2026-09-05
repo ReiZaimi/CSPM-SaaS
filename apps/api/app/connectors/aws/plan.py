@@ -44,6 +44,11 @@ from app.core.logging import get_logger
 
 log = get_logger(__name__)
 
+# AWS's own policy for managing support cases. The ARN is identical in every
+# account, which is what makes CIS 1.17 answerable with one call: ask who holds
+# this, rather than asking every principal what it holds.
+SUPPORT_ACCESS_POLICY_ARN = "arn:aws:iam::aws:policy/AWSSupportAccess"
+
 # How many per-resource detail calls one task runs at once. Buckets are the
 # case that needs it: three calls per bucket, and an account with four hundred
 # buckets would otherwise make twelve hundred sequential round trips.
@@ -109,6 +114,7 @@ ACTION_KEYS: dict[str, tuple[AwsEvidence, ...]] = {
     "config:DescribeConfigurationRecorderStatus": (AwsEvidence.CONFIG_RECORDERS,),
     "logs:DescribeMetricFilters": (AwsEvidence.LOG_METRIC_FILTERS,),
     "cloudwatch:DescribeAlarms": (AwsEvidence.CLOUDWATCH_ALARMS,),
+    "iam:ListEntitiesForPolicy": (AwsEvidence.IAM_SUPPORT_ACCESS,),
 }
 
 
@@ -377,6 +383,14 @@ class AwsPlanBuilder:
                 actions=("iam:ListServerCertificates",),
                 endpoints=(
                     endpoint("iam", "ListServerCertificates", "2010-05-08"),
+                ),
+            ),
+            CollectionTask(
+                key=AwsEvidence.IAM_SUPPORT_ACCESS,
+                run=self._iam_support_access,
+                actions=("iam:ListEntitiesForPolicy",),
+                endpoints=(
+                    endpoint("iam", "ListEntitiesForPolicy", "2010-05-08"),
                 ),
             ),
         ]
@@ -939,6 +953,32 @@ class AwsPlanBuilder:
                     else None
                 ),
             )
+
+    async def _iam_support_access(self, collected: dict[str, Any]) -> TaskData:
+        """Who holds AWS's ``AWSSupportAccess`` policy.
+
+        One row per attachment -- a role, a user or a group -- flattened into a
+        single list, because the question is whether *anybody* holds it and the
+        kind of principal is a detail on the answer rather than a separate
+        answer. The policy ARN is AWS's own and identical in every account,
+        which is what makes this one call rather than a walk over every
+        principal's attachments.
+        """
+        async with self.client("iam") as iam:
+            found = await iam.optional(
+                "list_entities_for_policy", PolicyArn=SUPPORT_ACCESS_POLICY_ARN
+            )
+            if found is None:
+                # ``NoSuchEntity`` on an AWS-managed policy would be very odd,
+                # and it is still an answer rather than a gap: nothing holds a
+                # policy that is not there.
+                return TaskData({AwsEvidence.IAM_SUPPORT_ACCESS.value: []})
+            holders = (
+                [{"kind": "role", **row} for row in found.get("PolicyRoles") or []]
+                + [{"kind": "user", **row} for row in found.get("PolicyUsers") or []]
+                + [{"kind": "group", **row} for row in found.get("PolicyGroups") or []]
+            )
+            return TaskData({AwsEvidence.IAM_SUPPORT_ACCESS.value: holders})
 
     async def _s3_bucket_policy(self, collected: dict[str, Any]) -> TaskData:
         """Each bucket's policy document, parsed.

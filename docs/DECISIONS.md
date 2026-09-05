@@ -3584,7 +3584,8 @@ closed as far as they honestly can be: **thirty AWS rules, no key collected and
 unjudged unless it is declared baseline, and 28 of 31 controls covered.**
 
 The three that remain are named rather than quietly absent. 1.17 (a support role
-exists) is organizational and marked `technically_assessable=False`. 4.1 and 4.3
+exists) was called organizational here and marked `technically_assessable=False`
+— **that was wrong, and §81 corrects it**. 4.1 and 4.3
 are CloudWatch metric filters with alarms attached, which needs a collection this
 connector does not have and a match against CIS's exact filter patterns — a
 check that got the pattern slightly wrong would report a control satisfied that
@@ -3855,9 +3856,10 @@ already followed.
 
 ### Where this leaves the benchmark
 
-**30 of 31 CIS AWS controls covered.** The one remaining is 1.17, "a support role
-exists to manage incidents with AWS Support", which is organizational and carries
-`technically_assessable=False` — a fact about the control, not a backlog item.
+**30 of 31 CIS AWS controls covered** at the time this was written. The one
+remaining was 1.17, "a support role exists to manage incidents with AWS Support",
+described here as organizational — **§81 corrects that, and corrects the
+catalogue it was counted against**.
 
 The policy goes to **v3** for `logs:DescribeMetricFilters` and
 `cloudwatch:DescribeAlarms`. Both are very likely already inside `SecurityAudit`,
@@ -3865,6 +3867,59 @@ which carries `logs:Describe*` and `cloudwatch:Describe*`; they are granted
 anyway, in the direction `rbac.py` already prefers — a redundant read action
 costs a redeploy prompt, and a missing one costs two checks whose cause is one
 denied call several minutes into a scan.
+
+## 81. 1.17 was not organizational, and the catalogue was flattering itself
+
+Two corrections, and the second is the one that mattered.
+
+### The control
+
+§77 and §80 said CIS AWS 1.17 — "a support role exists to manage incidents with
+AWS Support" — was organizational and marked `technically_assessable=False`. That
+was an assumption from the control's wording, and it was wrong. **CIS's own audit
+procedure for it is a single API call:**
+
+```
+aws iam list-entities-for-policy --policy-arn arn:aws:iam::aws:policy/AWSSupportAccess
+```
+
+The policy ARN is AWS's own and identical in every account, which is what makes
+this one call rather than a walk over every principal's attachments. AWS-IAM-009
+asks exactly that question, and the flag on the catalogue entry is now gone.
+
+It is the first rule with `exploitability = 0`, and that is precise rather than
+lazy: there is no attack here at all. The cost is paid *during* an incident
+rather than caused by one — an account under active abuse needs a case opened
+with AWS, and without this policy attached to somebody the only way in is root,
+which is slow, usually held by one person, and exactly the credential an incident
+response should not be reaching for. It scores as nothing and is reported anyway,
+because a product that only reported what scores would never mention it.
+
+### The catalogue
+
+Covering 1.17 took CIS AWS to 31 of 31, and
+`test_catalogue_lists_controls_no_rule_covers` failed — correctly. Its reason is
+in its own name: *"a catalogue of only what CloudGuard checks would report full
+coverage forever."*
+
+The catalogue was not complete; it was **the controls I had written rules for,
+plus the handful I had written down as gaps.** Full coverage of that is not a
+number worth printing, and the guard is what stopped it being printed.
+
+So the catalogue grew to the shape it should have had: the whole of section 4
+rather than the three controls referenced, the section 1 controls a scanner
+genuinely cannot reach (contact details, security questions), and the section 2
+and 5 entries this product does not check. **31 of 56**, and every one of the
+twenty-five gaps is a real control somebody could ask about.
+
+Thirteen of those gaps are section-4 metric filters, all the same shape as the
+two now covered (§80). That makes them a backlog item rather than a limitation,
+and the catalogue says so — which is a more useful thing for a customer to read
+than a coverage bar at 100%.
+
+**The lesson is the guard's, not mine.** A test asserting that every framework
+has an uncovered control looks like an odd thing to write until the day a
+catalogue quietly becomes a list of answers rather than a list of questions.
 
 ## Settings: the evidence a person supplies
 

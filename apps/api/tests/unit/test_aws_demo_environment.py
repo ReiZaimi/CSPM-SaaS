@@ -46,6 +46,7 @@ EXPECTED_FAILURES = {
     "AWS-IAM-001",  # a console user has no MFA
     "AWS-IAM-003",  # a CI key has gone unused
     "AWS-IAM-006",  # a legacy policy grants *:*
+    "AWS-IAM-009",  # nobody can open a support case without root
     "AWS-LOG-008",  # nobody is alerted when root is used
     "AWS-NET-001",  # SSH is open to the internet
     "AWS-NET-004",  # a network ACL admits everything

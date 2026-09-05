@@ -757,6 +757,13 @@ class AwsNormalizer:
             # same way a credential's age is: a replayed scan has to reach the
             # verdict the original one did, or "verified fixed" becomes a
             # statement about when somebody asked.
+            # Who can open a support case without being root. Kept whole
+            # rather than reduced to a count: "which role" is the first thing
+            # somebody asks, and the answer is one field away.
+            "support_access_holders": [
+                row
+                for _, row in regional_items(data, AwsEvidence.IAM_SUPPORT_ACCESS)
+            ],
             "server_certificates": [
                 {**row, "Expired": _expired(row.get("Expiration"), collected_at)}
                 for _, row in regional_items(

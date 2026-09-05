@@ -64,6 +64,11 @@ class AwsEvidence(EvidenceKey):
     # certificates live now -- and an expired one is either forgotten or in use,
     # both of which are worth saying.
     IAM_SERVER_CERTIFICATES = "iam_server_certificates"
+    # Who holds AWS's own ``AWSSupportAccess`` policy. One call against one
+    # known policy ARN rather than a walk over every principal's attachments:
+    # the question is "does anybody hold this", and asking it the other way
+    # round would be a listing per role to answer a fact about one policy.
+    IAM_SUPPORT_ACCESS = "iam_support_access"
     # IAM's own report on every credential in the account: when each password
     # and access key was last used, whether MFA is on, whether the root account
     # still has keys. One call rather than four per user, and the only place
@@ -199,6 +204,7 @@ _CATEGORIES: dict[AwsEvidence, EvidenceCategory] = {
     AwsEvidence.IAM_POLICY_DOCUMENTS: EvidenceCategory.AUTHORIZATION,
     AwsEvidence.IAM_INSTANCE_PROFILES: EvidenceCategory.IDENTITY,
     AwsEvidence.IAM_SERVER_CERTIFICATES: EvidenceCategory.IDENTITY,
+    AwsEvidence.IAM_SUPPORT_ACCESS: EvidenceCategory.AUTHORIZATION,
     AwsEvidence.ACCESS_ANALYZERS: EvidenceCategory.AUTHORIZATION,
     AwsEvidence.IAM_CREDENTIAL_REPORT: EvidenceCategory.IDENTITY,
     AwsEvidence.ACCOUNT_PASSWORD_POLICY: EvidenceCategory.IDENTITY,

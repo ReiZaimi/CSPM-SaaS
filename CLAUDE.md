@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CloudGuard — an Azure-first CSPM (Cloud Security Posture Management) SaaS. Modular monolith API + Celery worker backend, React SPA frontend.
 
-AWS is implemented behind the same connector seam — connector, IAM manifest, onboarding, change events, thirty-two rules, CIS AWS 3.0 (30 of 31 controls) — and **has never been run against a live AWS account**. It is reachable through the API and gated out of the UI by `AWS_ENABLED` until `docs/AWS_INTEGRATION.md` §1's checklist passes. Treat every string in `app/connectors/aws/` as unverified until then.
+AWS is implemented behind the same connector seam — connector, IAM manifest, onboarding, change events, thirty-three rules, CIS AWS 3.0 (31 of 56 catalogued controls) — and **has never been run against a live AWS account**. It is reachable through the API and gated out of the UI by `AWS_ENABLED` until `docs/AWS_INTEGRATION.md` §1's checklist passes. Treat every string in `app/connectors/aws/` as unverified until then.
 
 ## Commands
 

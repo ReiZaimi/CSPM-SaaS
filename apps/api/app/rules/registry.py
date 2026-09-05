@@ -19,6 +19,7 @@ from app.rules.aws.identity.credentials import (
     AwsRootAccessKeyRule,
     AwsRootMfaRule,
     AwsStaleAccessKeyRule,
+    AwsSupportRoleRule,
     AwsUserWithoutMfaRule,
 )
 from app.rules.aws.logging.trails import (
@@ -170,6 +171,7 @@ RULE_REGISTRY: list[SecurityRule] = [
     AwsAdministratorPolicyRule(),
     AwsExpiredCertificateRule(),
     AwsAccessAnalyzerRule(),
+    AwsSupportRoleRule(),
     AwsInstanceMetadataRule(),
     AwsKeyRotationRule(),
     AwsCloudTrailCoverageRule(),

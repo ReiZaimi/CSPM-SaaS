@@ -32,6 +32,7 @@ from app.rules.aws.identity.credentials import (
     AwsRootAccessKeyRule,
     AwsRootMfaRule,
     AwsStaleAccessKeyRule,
+    AwsSupportRoleRule,
     AwsUserWithoutMfaRule,
 )
 from app.rules.aws.logging.trails import (
@@ -1191,3 +1192,69 @@ def test_a_failed_filter_listing_degrades_rather_than_passes() -> None:
         gaps={"log_metric_filters": "AccessDenied"}, **monitoring()
     )
     assert verdict(AwsUnauthorizedApiMonitoringRule(), context) is RuleState.UNKNOWN
+
+
+# ---------------------------------------------------- who can call AWS
+def test_an_account_where_nobody_holds_support_access_fails() -> None:
+    """The moment this matters is the worst moment to discover it.
+
+    An account under active abuse needs a case opened with AWS, and without the
+    policy attached to somebody the only way in is root.
+    """
+    context = context_from(iam_support_access=[])
+    assert verdict(AwsSupportRoleRule(), context) is RuleState.FAIL
+
+
+def test_a_role_holding_support_access_passes() -> None:
+    context = context_from(
+        iam_support_access=[
+            {"kind": "role", "RoleName": "incident-response", "RoleId": "AROA1"}
+        ]
+    )
+    assert verdict(AwsSupportRoleRule(), context) is RuleState.PASS
+
+
+def test_any_kind_of_principal_counts() -> None:
+    """CIS asks whether anybody can manage a case, not what shape they are.
+    ``ListEntitiesForPolicy`` answers with three differently-shaped lists and
+    a check reading only one of them would fail an account that is fine."""
+    for kind, field in (
+        ("role", "RoleName"),
+        ("user", "UserName"),
+        ("group", "GroupName"),
+    ):
+        context = context_from(iam_support_access=[{"kind": kind, field: "support"}])
+        assert verdict(AwsSupportRoleRule(), context) is RuleState.PASS, kind
+
+
+def test_the_holders_are_named_in_the_evidence() -> None:
+    """"Which role" is the first thing somebody asks, and the answer is one
+    field away."""
+    context = context_from(
+        iam_support_access=[{"kind": "role", "RoleName": "incident-response"}]
+    )
+    result = AwsSupportRoleRule().evaluate(None, context)
+
+    assert result.evidence["holders"] == [
+        {"kind": "role", "name": "incident-response"}
+    ]
+
+
+def test_a_readiness_gap_scores_as_nothing_and_is_reported_anyway() -> None:
+    """There is no attack here at all. The cost is paid during an incident
+    rather than caused by one, so it contributes nothing to the risk score --
+    and a product that only reported what scores would never mention it."""
+    rule = AwsSupportRoleRule()
+    result = rule.evaluate(None, context_from(iam_support_access=[]))
+
+    assert result.state is RuleState.FAIL
+    assert rule.effective_exploitability(result) == 0
+
+
+def test_a_failed_support_listing_degrades_rather_than_fails() -> None:
+    """"We could not ask" is not "nobody holds it" -- and this is a finding
+    somebody would go and create a role over."""
+    context = context_from(
+        gaps={"iam_support_access": "AccessDenied"}, iam_support_access=[]
+    )
+    assert verdict(AwsSupportRoleRule(), context) is RuleState.UNKNOWN

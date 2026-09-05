@@ -757,13 +757,33 @@ CIS_AWS = Framework(
         "prescriptive, technical, and checkable without interviewing anybody."
     ),
     scope_note=(
-        "Covers the benchmark sections a posture scanner can reach. Controls "
+        "A subset of the published benchmark: the controls a read-only posture "
+        "scanner could reach, plus the account-level ones it cannot. Controls "
         "listed without a CloudGuard check behind them are shown so the gap is "
         "visible rather than absent -- a catalogue of only what this product "
-        "checks would report full coverage for ever."
+        "checks would report full coverage for ever, which is the same class of "
+        "misleading number the coverage ledger exists to prevent."
     ),
     controls=(
         # 1 -- Identity and Access Management
+        Control(
+            "1.1",
+            "Current contact details are maintained",
+            "Identity and Access Management",
+            technically_assessable=False,
+        ),
+        Control(
+            "1.2",
+            "Security contact information is registered",
+            "Identity and Access Management",
+            technically_assessable=False,
+        ),
+        Control(
+            "1.3",
+            "Security questions are registered in the account",
+            "Identity and Access Management",
+            technically_assessable=False,
+        ),
         Control("1.4", "No root user access key exists", "Identity and Access Management"),
         Control(
             "1.5",
@@ -771,8 +791,23 @@ CIS_AWS = Framework(
             "Identity and Access Management",
         ),
         Control(
+            "1.6",
+            "Hardware MFA is enabled for the root user",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.7",
+            "The root user is not used for day-to-day tasks",
+            "Identity and Access Management",
+        ),
+        Control(
             "1.8",
             "IAM password policy requires a minimum length of 14",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.9",
+            "IAM password policy prevents password reuse",
             "Identity and Access Management",
         ),
         Control(
@@ -791,6 +826,16 @@ CIS_AWS = Framework(
             "Identity and Access Management",
         ),
         Control(
+            "1.13",
+            "Only one active access key exists per IAM user",
+            "Identity and Access Management",
+        ),
+        Control(
+            "1.15",
+            "IAM users receive permissions only through groups",
+            "Identity and Access Management",
+        ),
+        Control(
             "1.16",
             "IAM policies that allow full administrative privileges are not attached",
             "Identity and Access Management",
@@ -799,7 +844,11 @@ CIS_AWS = Framework(
             "1.17",
             "A support role exists to manage incidents with AWS Support",
             "Identity and Access Management",
-            technically_assessable=False,
+        ),
+        Control(
+            "1.18",
+            "EC2 instances use IAM roles rather than stored credentials",
+            "Identity and Access Management",
         ),
         Control(
             "1.19",
@@ -823,6 +872,11 @@ CIS_AWS = Framework(
         Control("2.3.1", "RDS instances encrypt their storage at rest", "Storage"),
         Control("2.3.2", "RDS instances have auto minor version upgrade on", "Storage"),
         Control("2.3.3", "RDS instances are not publicly accessible", "Storage"),
+        Control(
+            "2.4.1",
+            "EFS file systems encrypt data at rest",
+            "Storage",
+        ),
         # 3 -- Logging
         Control("3.1", "CloudTrail is enabled in all regions", "Logging"),
         Control("3.2", "CloudTrail log file validation is enabled", "Logging"),
@@ -831,17 +885,86 @@ CIS_AWS = Framework(
         Control("3.5", "CloudTrail logs are encrypted at rest with a KMS key", "Logging"),
         Control("3.6", "KMS key rotation is enabled", "Logging"),
         Control("3.7", "VPC flow logging is enabled in all VPCs", "Logging"),
-        # 4 -- Monitoring. Every control in this section is a metric filter and
-        # alarm over CloudTrail, which CloudGuard does not read: the group is
-        # listed whole so the gap is visible rather than absent.
+        # 4 -- Monitoring. Every control here is the same shape: a metric filter
+        # over the CloudTrail log group, a metric, and an alarm that notifies
+        # somebody. CloudGuard walks that chain for two of them (DECISIONS.md
+        # §80). The rest are listed whole, because a catalogue of only what this
+        # product checks would report full coverage for ever -- and because the
+        # two that are covered prove the other thirteen are reachable, which
+        # makes them a backlog item rather than a limitation.
         Control(
             "4.1",
             "A log metric filter and alarm exist for unauthorized API calls",
             "Monitoring",
         ),
         Control(
+            "4.2",
+            "A log metric filter and alarm exist for console sign-in without MFA",
+            "Monitoring",
+        ),
+        Control(
             "4.3",
             "A log metric filter and alarm exist for root account usage",
+            "Monitoring",
+        ),
+        Control(
+            "4.4",
+            "A log metric filter and alarm exist for IAM policy changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.5",
+            "A log metric filter and alarm exist for CloudTrail configuration changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.6",
+            "A log metric filter and alarm exist for console authentication failures",
+            "Monitoring",
+        ),
+        Control(
+            "4.7",
+            "A log metric filter and alarm exist for disabling or deleting customer keys",
+            "Monitoring",
+        ),
+        Control(
+            "4.8",
+            "A log metric filter and alarm exist for S3 bucket policy changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.9",
+            "A log metric filter and alarm exist for AWS Config configuration changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.10",
+            "A log metric filter and alarm exist for security group changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.11",
+            "A log metric filter and alarm exist for network ACL changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.12",
+            "A log metric filter and alarm exist for network gateway changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.13",
+            "A log metric filter and alarm exist for route table changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.14",
+            "A log metric filter and alarm exist for VPC changes",
+            "Monitoring",
+        ),
+        Control(
+            "4.15",
+            "A log metric filter and alarm exist for AWS Organizations changes",
             "Monitoring",
         ),
         Control(
@@ -863,6 +986,16 @@ CIS_AWS = Framework(
         Control(
             "5.4",
             "The default security group of every VPC restricts all traffic",
+            "Networking",
+        ),
+        Control(
+            "5.3",
+            "VPC default security groups are not used by any resource",
+            "Networking",
+        ),
+        Control(
+            "5.5",
+            "Routing tables for VPC peering are least access",
             "Networking",
         ),
         Control(

@@ -40,7 +40,7 @@ from typing import Any
 from app.connectors.evidence import EvidenceCategory
 
 # Bump when the action set changes.
-POLICY_VERSION = "v3"
+POLICY_VERSION = "v4"
 
 STACK_NAME = "CloudGuardSecurityScanner"
 ROLE_NAME = "CloudGuardScannerRole"
@@ -131,6 +131,10 @@ INLINE_READ_ACTIONS: tuple[str, ...] = (
     # denied call several minutes into a scan. UNVERIFIED.
     "logs:DescribeMetricFilters",
     "cloudwatch:DescribeAlarms",
+    # --- v4 -------------------------------------------------------------
+    # Who holds AWS's own ``AWSSupportAccess`` policy. This is CIS 1.17's audit
+    # procedure verbatim -- one call against one policy ARN. UNVERIFIED.
+    "iam:ListEntitiesForPolicy",
 )
 
 # Which action each client call needs. The link between the code and the policy,
@@ -187,6 +191,7 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     ),
     "logs:describe_metric_filters": ("logs:DescribeMetricFilters",),
     "cloudwatch:describe_alarms": ("cloudwatch:DescribeAlarms",),
+    "iam:list_entities_for_policy": ("iam:ListEntitiesForPolicy",),
 }
 
 # Actions the managed policies supply, listed so the two-way test can tell
@@ -252,9 +257,16 @@ V2_ACTIONS: tuple[str, ...] = (
     "config:DescribeConfigurationRecorderStatus",
 )
 
+V3_ACTIONS: tuple[str, ...] = (
+    *V2_ACTIONS,
+    "logs:DescribeMetricFilters",
+    "cloudwatch:DescribeAlarms",
+)
+
 POLICY_HISTORY: dict[str, tuple[str, ...]] = {
     "v1": V1_ACTIONS,
     "v2": V2_ACTIONS,
+    "v3": V3_ACTIONS,
     POLICY_VERSION: INLINE_READ_ACTIONS,
 }
 
