@@ -90,3 +90,4 @@ npm test                         # vitest run
 - Onboarding sits behind `ProviderOnboarding`; the seam test has no exceptions left (§71)
 - AWS's external id is generated server-side, is never client-supplied, and a role is never assumed without one (§73)
 - Compliance frameworks about one cloud are shown only to organizations that use it (§74)
+- Identifiers keep Azure's vocabulary; sentences do not — `app/core/vocabulary.py` and `src/lib/vocabulary.ts` (§78)

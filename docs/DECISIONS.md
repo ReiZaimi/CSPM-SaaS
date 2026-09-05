@@ -3659,6 +3659,71 @@ rather than sliced off v2: what an older stack grants is a fact about that stack
 and deriving it from today's list would make it change every time today's list
 does.
 
+## 78. The columns say "subscription" and the sentences do not
+
+`DECISIONS.md` §70 kept `tenant_id` and `subscription_id` under Azure's names,
+because `RawSnapshot.to_json` writes them into every stored capture and renaming
+them would make each one unreplayable. That decision was about *identifiers*, and
+it quietly became a decision about *sentences* too — which it was never meant to
+be.
+
+The result was a product that told an AWS customer "this subscription is no
+longer connected to CloudGuard", showed "3 of 5 subscriptions" against their
+organization, and offered a button reading **Connect Azure** on the page where
+they were about to connect AWS. Each is small. Together they are a CSPM that has
+not noticed which cloud it is looking at, which is not a small thing for a
+product whose whole claim is that it looked.
+
+So the split is now explicit: **identifiers stay Azure-flavoured, sentences do
+not.** `app/core/vocabulary.py` and `src/lib/vocabulary.ts` are the two places
+that know the difference.
+
+### Nouns, not sentences
+
+Both hold `account` / `accounts` / `boundary` / `directory` / `artifact` /
+`console` and nothing longer. A sentence per provider would be two sentences to
+keep in step, and the half nobody was looking at would drift — the same reason
+`t.setup.aws` is an override rather than a second copy of the setup block.
+
+An unknown provider gets Azure's words rather than an exception. This is a
+sentence, not a security decision: a missing noun should read slightly wrong
+rather than break the page somebody is trying to read.
+
+### Where it is applied, and where it is not
+
+Applied to what a **customer** reads: the scanner's scope and collection errors,
+`ScanStep.describe`, the scan's problem list (which becomes `error_message`), the
+stalled-deployment message, the finding route's directory error, the connection
+row, the account scope list, the scan detail panel.
+
+Not applied to the log lines. `_log_step` keeps the neutral default, because a
+log line is read by us and threading a provider through it would cost a query per
+step to change a word nobody outside is reading.
+
+Not applied to `t.setup`, either: that block is Azure's, and AWS overrides it
+whole. Two of its strings still say "subscription" and are correct — they are the
+Azure branch.
+
+`DEPLOY_STALLED_DETAIL` stopped being a constant and became
+`deploy_stalled_detail(connection)`. It names both the artefact and the console,
+and it is shown at the moment a customer is most likely to be confused about
+which step they are on — "the scanner role … in Azure Portal" is the wrong pair
+of nouns for somebody who ran a CloudFormation stack.
+
+### The scan scope now says which cloud it read
+
+`ScanScope` gained `provider`. The field names around it keep Azure's vocabulary
+because the columns do; this is the one field that lets the panel reading them
+choose the right label rather than guess from the shape of an id.
+
+### What is deliberately unchanged
+
+Every API field name and every database column. `subscriptions`,
+`subscription_id`, `subscription_count`, `tenant_id`. Renaming them is a
+migration of stored captures plus a breaking change to the frontend, buys no
+customer anything, and is the work §70 already argued should happen on its own
+rather than inside the change that adds a second provider.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

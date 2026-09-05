@@ -40,7 +40,7 @@ export const en = {
     removingOrg: "Removing\u2026",
     removeOrgTitle: "Remove",
     removeOrgDetail:
-      "Its cloud connections, discovered subscriptions, assets, scan history, findings and risks are all deleted with it. This cannot be undone.",
+      "Its cloud connections, discovered accounts, assets, scan history, findings and risks are all deleted with it. This cannot be undone.",
     removeOrgOwnerOnly: "Only an owner can remove an organization.",
     keep: "Keep it",
   },
@@ -111,11 +111,11 @@ export const en = {
   connection: {
     title: "Cloud connections",
     intro:
-      "One connection per tenant or management group. Subscriptions beneath it are discovered, not registered by hand \u2014 so an environment created next month gets scanned instead of quietly missed.",
-    connectAzure: "Connect Azure",
+      "One connection per trust boundary. Everything beneath it is discovered, not registered by hand \u2014 so an environment created next month gets scanned instead of quietly missed.",
+    connectCloud: "Connect a cloud",
     noConnections: "No cloud environment connected yet.",
     noConnectionsHelp:
-      "Connecting takes two grants and about three minutes. You will not be asked for a tenant id, a subscription id, or any credential.",
+      "Connecting takes a few minutes and one deployment you run yourself. You will not be asked for any credential.",
     step: "Step",
     of: "of",
     stepConsent: "Grant admin consent",
@@ -199,10 +199,13 @@ export const en = {
     // The connections list: one row per connection, opened for the detail.
     columnConnection: "Connection",
     columnStatus: "Status",
-    columnSubscriptions: "Subscriptions",
+    // Column heading and section headings are rendered from the connection's
+    // own vocabulary (lib/vocabulary.ts) where a provider is in hand. These
+    // remain for the table header, which spans connections to both clouds and
+    // so cannot be either one's word alone.
+    columnSubscriptions: "Accounts",
     columnLastRead: "Last read",
     columnActions: "Actions",
-    subscriptionsHeading: "Subscriptions",
     allInScope: "all in scope",
     someInScope: "in scope",
     expandRow: "Show this connection's detail",
@@ -235,21 +238,21 @@ export const en = {
     firstSeen: "first seen",
     newSinceLastRead: "new since last read",
     excludedByYou: "excluded by you",
-    moreSubscriptions: "more subscriptions",
+    moreSubscriptions: "more",
     discoveryPromise:
-      "A subscription created in this tenant appears here on the next read.",
+      "Anything created beneath this connection appears here on the next read.",
     scopeFootnote:
-      "Unticking a subscription stops CloudGuard reading it. Existing findings for it are kept and marked out of scope, not deleted.",
+      "Unticking one stops CloudGuard reading it. Existing findings for it are kept and marked out of scope, not deleted.",
 
-    noSubscriptionsTitle: "No subscriptions found yet",
+    noSubscriptionsTitle: "Nothing found yet",
     noSubscriptionsBody:
-      "Both grants are working, but CloudGuard cannot see any subscription to scan. A role assigned moments ago can take a few minutes to show up, and a role deployed to the wrong scope will never show up at all.",
-    lookAgain: "Look for subscriptions again",
+      "The grant is working, but CloudGuard cannot see anything to scan. Access granted moments ago can take a few minutes to show up, and a grant deployed to the wrong scope will never show up at all.",
+    lookAgain: "Look again",
     lookingAgain: "Looking…",
     runFirstScan: "Run a scan",
-    noSubscriptionsYet: "No subscriptions discovered yet",
+    noSubscriptionsYet: "Nothing discovered yet",
     noSubscriptionsYetHelp:
-      "The connection is verified but nothing was found beneath it. If the scanner role was deployed at a narrower scope than this connection covers, no subscription is visible to it.",
+      "The connection is verified but nothing was found beneath it. If the grant was deployed at a narrower scope than this connection covers, nothing beneath it is visible.",
     cannotStartConsent: "CloudGuard cannot start the consent flow",
     cannotDeployYet: "CloudGuard cannot generate the deployment yet",
     whoYouNeed: "Who you will need",
@@ -265,9 +268,9 @@ export const en = {
     copied: "Copied",
     waitingForAccess: "Waiting for the read access grant\u2026",
     verified: "Connection verified",
-    discovered: "subscriptions found",
-    inScopeCount: "subscriptions in scope",
-    inScope: "Scan this subscription",
+    discovered: "found",
+    inScopeCount: "in scope",
+    inScope: "Scan this",
     saveScope: "Save selection",
     done: "Done",
     lastDiscovery: "Last checked",
@@ -298,7 +301,7 @@ export const en = {
     removing: "Removing\u2026",
     removeTitle: "Remove this connection?",
     removeDetail:
-      "Its discovered subscriptions, their assets, scan history and findings are deleted with it. This cannot be undone.",
+      "Its discovered accounts, their assets, scan history and findings are deleted with it. This cannot be undone.",
     revokeTitle: "Revoke access in Azure",
     revokeIntro:
       "Removing the connection here deletes CloudGuard's copy of the data. It does not take away the access you granted \u2014 run these in Azure to do that.",
@@ -419,14 +422,14 @@ export const en = {
     checking: "Checking\u2026",
     changeScope: "Choose a different scope",
 
-    // Subscriptions step.
-    discoverTitle: "Looking for subscriptions",
+    // The accounts step.
+    discoverTitle: "Looking for what is beneath it",
     reviewTitle: "Choose what CloudGuard reads",
     reviewBody:
       "Everything beneath the scope is in scope by default. Unticking one stops CloudGuard reading it; existing findings are kept and marked out of scope, not deleted.",
     nothingInScopeTitle: "Nothing is ticked, so nothing will be read",
     nothingInScopeBody:
-      "Every subscription found beneath this scope is out of scope. Tick at least one above, or leave it — the connection stays and picks up whatever is ticked later.",
+      "Everything found beneath this scope is out of scope. Tick at least one above, or leave it — the connection stays and picks up whatever is ticked later.",
     doneTitle: "Connected",
     doneBody:
       "Nothing is read until a scan runs. The first one is worth starting now \u2014 after that, the scans page decides how often this environment is re-read.",
@@ -463,7 +466,7 @@ export const en = {
       "How much of your environment CloudGuard could conclusively assess. Tracked separately from your score so the score stays easy to explain.",
     assets: "Assets discovered",
     noScans: "No scan has run yet",
-    noScansHelp: "Connect an Azure subscription and run your first scan to see your posture.",
+    noScansHelp: "Connect a cloud environment and run your first scan to see your posture.",
     runFirstScan: "Run your first scan",
     allClear: "No open findings. Nice.",
     couldNotLoad: "Couldn't load your dashboard",
@@ -671,14 +674,14 @@ export const en = {
       "This capture is no longer CloudGuard's current picture of the environment \u2014 it has been read again since. The counts below say what today's rules would have made of it. No finding was created, resolved or reopened: a capture from before nobody looked at cannot verify a fix.",
     replayCurrentTitle: "Applied to your current picture",
     replayCurrentDetail:
-      "This was still the newest capture for its subscriptions, so the results count: findings were raised, resolved and reopened exactly as a fresh scan would have done, without reading your cloud again.",
+      "This was still the newest capture for everything it covered, so the results count: findings were raised, resolved and reopened exactly as a fresh scan would have done, without reading your cloud again.",
     wouldHaveFound: "Findings (would have)",
     stuckTitle: "Nothing has picked this scan up",
     stuckDetail:
       "A scan is collected by CloudGuard's worker within seconds of being queued. Minutes of silence means no worker is running \u2014 check that the Celery worker service is deployed and can reach Redis.",
-    nothingFound: "No resources were found in this subscription",
+    nothingFound: "No resources were found here",
     nothingFoundHelp:
-      "Every resource category CloudGuard reads returned successfully and was empty, so there is nothing here to assess. If that is unexpected, check in Details which subscription this scan covered \u2014 a connection discovers every subscription it can see, including empty ones.",
+      "Every resource category CloudGuard reads returned successfully and was empty, so there is nothing here to assess. If that is unexpected, check in Details what this scan covered \u2014 a connection discovers everything it can see, including empty environments.",
     nothingFoundPartial:
       "Nothing was assessed, and some categories could not be read at all \u2014 see the gaps below. A category that failed is not the same as a category that was empty.",
     supportsOne: "1 finding rests on this",
@@ -862,12 +865,12 @@ export const en = {
       "Your role can read this but not change it. An owner or an admin can edit the organization.",
 
     // The declarations. This is the part that changes what CloudGuard reports.
-    contextTitle: "What your subscriptions are for",
+    contextTitle: "What your environments are for",
     contextHelp:
       "CloudGuard scores a finding by what it would cost you \u2014 how critical the asset is, how sensitive its data, how exposed it is. It infers those from names and tags where it can, and inference is the weakest evidence it has. Anything you declare here beats it.",
-    contextEmpty: "No subscriptions have been discovered yet",
+    contextEmpty: "Nothing has been discovered yet",
     contextEmptyDetail:
-      "Connect a cloud environment and CloudGuard will discover the subscriptions beneath it. There is nothing to describe until then.",
+      "Connect a cloud environment and CloudGuard will discover what is beneath it. There is nothing to describe until then.",
     environment: "Environment",
     criticality: "Criticality",
     dataSensitivity: "Data sensitivity",
@@ -887,11 +890,11 @@ export const en = {
     contextFailed: "Could not save the declaration",
     // The honest bit: a declaration is not retroactive.
     appliesNext:
-      "Applied by the next evaluation of this subscription \u2014 the next scan, or a replay of its latest capture. Existing scores are left alone: a risk score is what a scan concluded, and rewriting stored numbers from a form would leave findings carrying figures no observation ever produced.",
+      "Applied by the next evaluation of this environment \u2014 the next scan, or a replay of its latest capture. Existing scores are left alone: a risk score is what a scan concluded, and rewriting stored numbers from a form would leave findings carrying figures no observation ever produced.",
 
     dangerTitle: "Delete this organization",
     dangerHelp:
-      "Removes the organization and everything under it: connections, discovered subscriptions, assets, scans, findings, risks and audit history. There is no soft delete and no undo.",
+      "Removes the organization and everything under it: connections, discovered accounts, assets, scans, findings, risks and audit history. There is no soft delete and no undo.",
     dangerConfirmLabel: "Type the organization name to confirm",
     delete: "Delete organization",
     deleting: "Deleting\u2026",

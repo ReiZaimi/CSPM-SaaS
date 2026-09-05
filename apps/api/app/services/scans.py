@@ -366,6 +366,16 @@ async def scan_context(session: AsyncSession, scan: Scan) -> dict:
             for a in accounts
         ],
         "subscription_count": len(accounts),
+        # Which cloud this scan read. The keys around it keep Azure's
+        # vocabulary because the columns do (DECISIONS.md §70); this is what
+        # lets the screen reading them use the right noun.
+        "provider": (
+            connection.provider.value
+            if connection
+            else first.provider.value
+            if first
+            else None
+        ),
         # Kept for the single-subscription case the detail panel still renders.
         "subscription_id": first.subscription_id if first else None,
         "subscription_name": first.display_name if first else None,

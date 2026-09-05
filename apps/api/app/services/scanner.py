@@ -62,6 +62,7 @@ from app.core.enums import (
 from app.core.errors import SnapshotUnavailable
 from app.core.logging import get_logger, log_context
 from app.core.payloads import digest
+from app.core.vocabulary import words
 from app.domain.resource import CloudResource
 from app.graph import AssetGraph, Path
 from app.models.cloud_account import CloudAccount
@@ -631,13 +632,20 @@ class ScanPipeline:
                 return []
 
             accounts = await self._resolve_scope(session, scan)
+            connection = await self._resolve_connection(session, scan, accounts)
+            # The nouns this scan's messages are written in. A customer reading
+            # "subscription" about an AWS account is reading a product that has
+            # not noticed which cloud it is looking at. Resolved before the
+            # scope check, because that message is one of the ones that needs
+            # them and fires when there is no account left to ask.
+            scope_words = words(connection.provider if connection else None)
             if not accounts:
                 raise ScanScopeEmpty(
-                    "This scan has nothing in scope. Its subscriptions may have "
-                    "been removed, excluded from scanning, or never discovered."
+                    f"This scan has nothing in scope. Its {scope_words.accounts} "
+                    "may have been removed, excluded from scanning, or never "
+                    "discovered."
                 )
 
-            connection = await self._resolve_connection(session, scan, accounts)
             scan.started_at = scan.started_at or datetime.now(UTC)
             await orchestrator.create_collect_steps(
                 session,
@@ -687,12 +695,14 @@ class ScanPipeline:
             connection = await self._resolve_connection(
                 session, scan, await self._resolve_scope(session, scan)
             )
+            scope_words = words(connection.provider if connection else None)
             await self._discard_prior_attempt(session, scan, step.cloud_account_id)
 
             if step.is_directory:
                 if connection is None or not connection.tenant_id:
                     raise CollectionUnavailable(
-                        "This connection has no tenant to read a directory from."
+                        f"This connection has no {scope_words.boundary} to read "
+                        f"its {scope_words.directory} from."
                     )
                 await self._collect_directory(
                     session,
@@ -708,7 +718,8 @@ class ScanPipeline:
             account = await session.get(CloudAccount, step.cloud_account_id)
             if account is None:
                 raise CollectionUnavailable(
-                    "This subscription is no longer connected to CloudGuard."
+                    f"This {scope_words.account} is no longer connected to "
+                    "CloudGuard."
                 )
 
             connector = get_connector(
@@ -1461,16 +1472,26 @@ class ScanPipeline:
             )
         ).scalar_one_or_none()
 
+        # The connection this scan runs through, for its words alone. A customer
+        # reading "the tenant directory" about an AWS organization is reading a
+        # product that has not noticed which cloud it is looking at.
+        connection = (
+            await session.get(CloudConnection, scan.connection_id)
+            if scan.connection_id
+            else None
+        )
+        scope_words = words(connection.provider if connection else None)
         if step is None:
             reason = (
                 "This scan has no cloud connection behind it, so CloudGuard has "
-                "no grant to read the tenant directory. Reconnect it from the "
-                "connections page."
+                f"no grant to read its {scope_words.directory}. Reconnect it "
+                "from the connections page."
             )
         else:
             reason = (
-                "The tenant directory could not be read for this scan, so no "
-                f"identity check could reach a verdict. ({step.error or 'unknown error'})"
+                f"The {scope_words.directory} could not be read for this scan, "
+                "so no identity check could reach a verdict. "
+                f"({step.error or 'unknown error'})"
             )
 
         # Asked of the connector rather than of Azure's key enum directly. The

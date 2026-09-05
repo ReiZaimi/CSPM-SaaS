@@ -89,7 +89,7 @@ describe("the connections page", () => {
     expect(
       screen.getByText(/a global administrator grants admin consent/i),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /connect azure/i })[0]).toHaveAttribute(
+    expect(screen.getAllByRole("link", { name: /connect a cloud/i })[0]).toHaveAttribute(
       "href",
       "/connections/new",
     );

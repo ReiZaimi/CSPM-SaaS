@@ -68,7 +68,7 @@ export function ConnectEmpty({ provider = "azure" }: { provider?: Provider }) {
           </p>
           <div className="mt-6 flex flex-wrap gap-2">
             <Link to="/connections/new" className={cn(buttonVariants())}>
-              {t.connection.connectAzure}
+              {t.connection.connectCloud}
             </Link>
             <Button variant="outline" onClick={() => setShowing((open) => !open)}>
               {showing ? t.connection.hideWhatItDoes : t.connection.readWhatItDoes}

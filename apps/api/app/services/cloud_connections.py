@@ -42,6 +42,7 @@ from app.core.enums import (
 from app.core.errors import CloudAccountNotFound, ValidationFailed
 from app.core.logging import get_logger
 from app.core.signing import sign_state
+from app.core.vocabulary import words
 from app.models.cloud_account import CloudAccount
 from app.models.cloud_connection import CloudConnection
 from app.schemas.cloud_connection import CloudConnectionCreate
@@ -628,12 +629,22 @@ def deploy_stalled(connection: CloudConnection) -> bool:
     return waited.total_seconds() > DEPLOY_PATIENCE_SECONDS
 
 
-DEPLOY_STALLED_DETAIL = (
-    "CloudGuard still cannot read this environment. The scanner role may not "
-    "have been deployed yet, or it may have been deployed at a different scope "
-    "than this connection covers. Check that the deployment succeeded in Azure "
-    "and that its scope matches, then it will verify on its own."
-)
+def deploy_stalled_detail(connection: CloudConnection) -> str:
+    """Why nothing has arrived yet, in the words of the cloud it is about.
+
+    A sentence rather than a constant, because "the scanner role ... in Azure
+    Portal" is the wrong pair of nouns for a customer who deployed a
+    CloudFormation stack -- and this message is the one shown at the moment they
+    are most likely to be confused about which step they are on.
+    """
+    scope_words = words(connection.provider)
+    return (
+        "CloudGuard still cannot read this environment. The "
+        f"{scope_words.artifact} may not have been deployed yet, or it may have "
+        "been deployed at a different scope than this connection covers. Check "
+        f"that the deployment succeeded in {scope_words.console} and that its "
+        "scope matches, then it will verify on its own."
+    )
 
 
 async def try_auto_validate(
@@ -683,8 +694,9 @@ async def try_auto_validate(
             # Committed so the message survives the request. Status is left
             # alone: nothing here is known to be broken, and marking a
             # connection ERROR because a colleague is slow would be a lie.
-            if connection.status_detail != DEPLOY_STALLED_DETAIL:
-                connection.status_detail = DEPLOY_STALLED_DETAIL
+            stalled_detail = deploy_stalled_detail(connection)
+            if connection.status_detail != stalled_detail:
+                connection.status_detail = stalled_detail
                 await commit_unless_externally_managed(session)
 
     # Auto-discover subscriptions once validated

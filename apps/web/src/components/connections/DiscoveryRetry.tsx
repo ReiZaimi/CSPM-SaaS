@@ -34,7 +34,7 @@ export function DiscoveryRetry({
       queryClient.invalidateQueries({ queryKey: ["cloud-connections"] });
     },
     onError: (err) =>
-      onError?.(err instanceof Error ? err.message : "Could not look for subscriptions"),
+      onError?.(err instanceof Error ? err.message : "Could not look again"),
   });
 
   const button = (

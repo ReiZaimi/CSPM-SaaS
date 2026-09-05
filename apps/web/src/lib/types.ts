@@ -809,6 +809,14 @@ export interface RevocationCheck {
 }
 
 export interface ScanScope {
+  /**
+   * Which cloud this scan read.
+   *
+   * The field names around it keep Azure's vocabulary because the columns
+   * behind them do; this is what lets the panel label them with the right
+   * noun (`lib/vocabulary.ts`).
+   */
+  provider: Provider | null;
   subscription_id: string | null;
   subscription_name: string | null;
   tenant_id: string | null;

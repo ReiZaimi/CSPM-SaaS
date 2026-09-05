@@ -67,8 +67,8 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    1734 tests   pytest, ruff, mypy
-frontend    350 tests   vitest, tsc
+backend    1742 tests   pytest, ruff, mypy
+frontend    354 tests   vitest, tsc
 ```
 
 Rule tests run against fixture JSON in `apps/api/tests/fixtures/` — no database,

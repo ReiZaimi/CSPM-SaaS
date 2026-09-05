@@ -20,7 +20,7 @@ const STAGE_LABELS: Record<ScanStage["stage"], string> = {
 };
 
 const STAGE_BLURB: Record<ScanStage["stage"], string> = {
-  PLAN: "Work out which subscriptions this scan covers",
+  PLAN: "Work out what this scan covers",
   COLLECT: "Read each scope and store what came back",
   ANALYZE: "Interpret every capture: normalize, evaluate, score",
 };

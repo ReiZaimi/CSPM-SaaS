@@ -8,6 +8,7 @@ from sqlalchemy.sql.elements import UnaryExpression
 from app.core.deps import DbSession, Tenant
 from app.core.enums import FindingStatus, ScanStatus, Severity
 from app.core.errors import ConflictError, ValidationFailed, envelope
+from app.core.vocabulary import words
 from app.graph import Path
 from app.models.finding import Finding, FindingEvidence
 from app.models.resource import ResourceRecord
@@ -333,10 +334,11 @@ async def rescan_finding(finding_id: UUID, session: DbSession, tenant: Tenant) -
             session, tenant, resource.connection_id
         )
         if account is None:
+            scope_words = words(resource.provider)
             raise ValidationFailed(
-                "This finding is about the tenant directory, and the connection "
-                "it came from has no subscription ready to scan. Validate the "
-                "connection, then try again."
+                f"This finding is about the {scope_words.directory}, and the "
+                f"connection it came from has no {scope_words.account} ready to "
+                "scan. Validate the connection, then try again."
             )
     else:
         account = await accounts_service.get_cloud_account(

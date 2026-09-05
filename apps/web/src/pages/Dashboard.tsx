@@ -144,7 +144,7 @@ export function DashboardPage() {
               to={hasConnection ? "/scans" : "/connections/new"}
               className={buttonVariants()}
             >
-              {hasConnection ? t.dashboard.runFirstScan : t.connection.connectAzure}
+              {hasConnection ? t.dashboard.runFirstScan : t.connection.connectCloud}
             </Link>
           }
         />

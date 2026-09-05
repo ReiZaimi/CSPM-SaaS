@@ -15,6 +15,7 @@ import { DiscoveryRetry } from "@/components/connections/DiscoveryRetry";
 import { ReadCadencePanel } from "@/components/connections/ReadCadencePanel";
 import { RemoveConfirm } from "@/components/connections/RemoveConfirm";
 import { SubscriptionScopeList } from "@/components/connections/SubscriptionScopeList";
+import { words } from "@/lib/vocabulary";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn, formatRelative } from "@/lib/format";
@@ -63,6 +64,10 @@ export function ConnectionRow({
   const connection = detail.data ?? initial;
   const subscriptions = connection.subscriptions ?? [];
   const scoped = subscriptions.filter((s) => s.in_scope);
+  // The identifiers keep Azure's vocabulary because the API's do; the words on
+  // screen do not. A customer with an AWS connection reading "3 subscriptions"
+  // is reading a product that has not noticed which cloud it is looking at.
+  const vocabulary = words(connection.provider);
   const stage = connectionStage(connection);
   const inSetup = stage === "consent" || stage === "deploy" || stage === "paused";
   const status = statusSummary(connection);
@@ -211,7 +216,7 @@ export function ConnectionRow({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {t.connection.subscriptionsHeading}
+                {vocabulary.Accounts}
               </p>
               {connection.is_verified && subscriptions.length > 0 && (
                 <DiscoveryRetry connection={connection} onError={setError} compact />
@@ -279,13 +284,25 @@ export function ConnectionRow({
   );
 }
 
+/**
+ * What this connection covers, in one line and in its own cloud's words.
+ *
+ * Six scopes across two clouds rather than three, and the boundary is not the
+ * same noun either: a tenant id and an organization id are the same column and
+ * different things to whoever is reading the row.
+ */
 function scopeSummary(connection: CloudConnection): string {
+  const vocabulary = words(connection.provider);
   const scope =
     connection.scope_type === "TENANT_ROOT"
       ? "Entire tenant"
-      : connection.scope_type === "MANAGEMENT_GROUP"
-        ? `Management group ${connection.scope_id}`
-        : `Subscription ${connection.scope_id}`;
-  const tenant = connection.tenant_id ? ` · ${connection.tenant_id}` : "";
-  return `${scope}${tenant} · ${connection.role_version}`;
+      : connection.scope_type === "ORGANIZATION"
+        ? `Organization ${connection.scope_id}`
+        : connection.scope_type === "MANAGEMENT_GROUP"
+          ? `Management group ${connection.scope_id}`
+          : connection.scope_type === "ORGANIZATIONAL_UNIT"
+            ? `Organizational unit ${connection.scope_id}`
+            : `${vocabulary.Account} ${connection.scope_id}`;
+  const boundary = connection.tenant_id ? ` · ${connection.tenant_id}` : "";
+  return `${scope}${boundary} · ${connection.role_version}`;
 }

@@ -5,7 +5,7 @@ import { cn } from "@/lib/format";
 /** Where a context value came from, said the way a customer would say it. */
 const SOURCE_LABEL: Record<string, string> = {
   customer: "You declared this",
-  inherited: "You declared this for the subscription",
+  inherited: "You declared this for the whole environment",
   provider_tag: "Read from a tag on the resource",
   type_floor: "True of this kind of resource",
   inferred: "Worked out from the name",

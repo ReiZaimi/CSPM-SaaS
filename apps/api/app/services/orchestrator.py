@@ -30,9 +30,10 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ScanStatus, ScanStepKind, ScanStepStatus
+from app.core.enums import Provider, ScanStatus, ScanStepKind, ScanStepStatus
 from app.core.logging import get_logger
 from app.models.cloud_account import CloudAccount
+from app.models.cloud_connection import CloudConnection
 from app.models.scan import Scan, ScanStep
 
 log = get_logger(__name__)
@@ -398,7 +399,9 @@ async def reap_expired_steps(session: AsyncSession) -> list[UUID]:
     return sorted(reclaimed)
 
 
-def summarize(steps: Sequence[ScanStep]) -> tuple[bool, bool, list[str]]:
+def summarize(
+    steps: Sequence[ScanStep], provider: Provider | None = None
+) -> tuple[bool, bool, list[str]]:
     """Whether the scan is finished, whether it is degraded, and why.
 
     Degraded rather than failed is the important distinction and the one the
@@ -412,7 +415,7 @@ def summarize(steps: Sequence[ScanStep]) -> tuple[bool, bool, list[str]]:
 
     finished = all(step.status.is_settled for step in steps)
     problems = [
-        f"{step.describe()}: {step.error or 'failed'}"
+        f"{step.describe(provider)}: {step.error or 'failed'}"
         for step in steps
         if step.status in (ScanStepStatus.FAILED, ScanStepStatus.SKIPPED)
     ]
@@ -521,7 +524,17 @@ async def sync_scan_state(session: AsyncSession, scan: Scan) -> list[ScanStep]:
         await session.commit()
         return steps
 
-    finished, _degraded, problems = summarize(steps)
+    # The connection's words, for the problem list a customer reads. Resolved
+    # once per settle rather than per step: this is the sentence that ends up in
+    # ``error_message``, and it names scopes.
+    connection = (
+        await session.get(CloudConnection, scan.connection_id)
+        if scan.connection_id
+        else None
+    )
+    finished, _degraded, problems = summarize(
+        steps, connection.provider if connection else None
+    )
     # Two independent sources of degradation, and the scan is PARTIAL for
     # either. A step that failed lost a whole scope; ``collection_errors`` is a
     # scope that was read with a listing missing from it.

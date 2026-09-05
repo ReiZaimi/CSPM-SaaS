@@ -54,7 +54,7 @@ export function ConnectPage() {
         actions={
           rows.length > 0 ? (
             <Link to="/connections/new" className={cn(buttonVariants())}>
-              {t.connection.connectAzure}
+              {t.connection.connectCloud}
             </Link>
           ) : undefined
         }

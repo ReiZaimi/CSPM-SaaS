@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { ScanDetail } from "@/lib/types";
 import { useT } from "@/i18n";
+import { words } from "@/lib/vocabulary";
 import { SeverityBadge } from "@/components/security/SeverityBadge";
 import { ScanProgress } from "@/components/scans/ScanProgress";
 import { CollectionPanel } from "@/components/scans/CollectionPanel";
@@ -26,6 +27,7 @@ export function ScanDetailPanel({ scanId }: { scanId: string }) {
   if (!detail.data) return null;
 
   const { scope, findings_by_severity: severities } = detail.data;
+  const vocabulary = words(scope.provider);
   const scanned = detail.data.progress_total ?? 0;
 
   return (
@@ -34,8 +36,14 @@ export function ScanDetailPanel({ scanId }: { scanId: string }) {
         <SectionLabel>{t.scans.scope}</SectionLabel>
         <dl className="mt-1.5 flex flex-col gap-1 text-xs">
           <Row label={t.connection.connectionName} value={scope.connection_name} />
-          <Row label="Subscription" value={scope.subscription_name ?? scope.subscription_id} />
-          <Row label="Tenant" value={scope.tenant_id} />
+          <Row
+            label={vocabulary.Account}
+            value={scope.subscription_name ?? scope.subscription_id}
+          />
+          <Row
+            label={vocabulary.boundary === "tenant" ? "Tenant" : "Organization"}
+            value={scope.tenant_id}
+          />
           <Row label={t.scans.evaluated} value={scanned ? String(scanned) : null} />
         </dl>
       </div>

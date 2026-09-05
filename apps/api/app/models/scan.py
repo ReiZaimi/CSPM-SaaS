@@ -29,6 +29,7 @@ from app.core.enums import (
 )
 from app.core.errors import SnapshotUnavailable
 from app.core.payloads import compress, decompress
+from app.core.vocabulary import words
 from app.models.base import Base, StrEnumType, TenantOwned, Timestamps, UUIDPrimaryKey
 
 
@@ -574,11 +575,22 @@ class ScanStep(UUIDPrimaryKey, TenantOwned, Base):
 
     @property
     def is_directory(self) -> bool:
-        """Whether this COLLECT step reads the tenant rather than a subscription."""
+        """Whether this COLLECT step reads the trust boundary rather than one
+        account beneath it."""
         return self.kind == ScanStepKind.COLLECT and self.cloud_account_id is None
 
-    def describe(self) -> str:
-        """What this step is, for a log line or an error message."""
+    def describe(self, provider: Provider | None = None) -> str:
+        """What this step is, for a log line or an error message.
+
+        Takes the provider because the answer is a sentence a customer reads,
+        and "one subscription" is the wrong noun for an AWS account. The columns
+        keep Azure's names (``DECISIONS.md`` §70); the words do not.
+        """
         if self.kind != ScanStepKind.COLLECT:
             return self.kind.value.lower()
-        return "the tenant directory" if self.is_directory else "one subscription"
+        vocabulary = words(provider)
+        return (
+            f"the {vocabulary.directory}"
+            if self.is_directory
+            else f"one {vocabulary.account}"
+        )

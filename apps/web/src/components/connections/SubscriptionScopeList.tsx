@@ -4,6 +4,7 @@ import { ChevronDownIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { CloudConnection, DiscoveredSubscription } from "@/lib/types";
+import { words } from "@/lib/vocabulary";
 import { useT } from "@/i18n";
 import { isNewSinceLastRead, lastReadAt } from "@/lib/connectionSummary";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,7 @@ export function SubscriptionScopeList({
 
   const subscriptions = connection.subscriptions ?? [];
   const scoped = subscriptions.filter((s) => s.in_scope);
+  const vocabulary = words(connection.provider);
   const lastRead = lastReadAt(connection);
   const shown = expanded ? subscriptions : subscriptions.slice(0, VISIBLE);
   const hidden = subscriptions.length - shown.length;
@@ -71,7 +73,8 @@ export function SubscriptionScopeList({
   return (
     <div>
       <p className="text-xs text-muted-foreground">
-        {scoped.length} of {subscriptions.length} {t.connection.inScopeCount}
+        {scoped.length} of {subscriptions.length} {vocabulary.accounts}{" "}
+        {t.connection.inScopeCount}
         {connection.last_discovery_at && (
           <> · {t.connection.lastDiscovery} {formatDateTime(connection.last_discovery_at)}</>
         )}
@@ -115,7 +118,7 @@ export function SubscriptionScopeList({
           className="mt-1 w-full justify-center text-muted-foreground"
           onClick={() => setExpanded(true)}
         >
-          {hidden} {t.connection.moreSubscriptions}
+          {hidden} {t.connection.moreSubscriptions} {vocabulary.accounts}
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
       )}
