@@ -83,7 +83,17 @@ One IAM user (or role) in CloudGuard's account, whose only permission is
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_PRINCIPAL_ARN=arn:aws:iam::<cloudguard-account-id>:user/cloudguard-scanner
+API_URL=https://<your-railway-api-domain>
+AWS_ENABLED=false          # true only after §1's checklist passes
 ```
+
+`API_URL` is **not optional for AWS**, though it is for Azure. Azure derives this
+API's own public address from `AZURE_REDIRECT_URI`, which Entra forces to be
+correct — consent fails outright if it is wrong. AWS has no consent round trip
+and therefore no such value, and without a public address there is nowhere for
+CloudFormation to fetch the stack from or for SNS to deliver change events to.
+The provider picker refuses AWS with that reason rather than letting somebody
+reach a deploy step with no template behind it.
 
 `AWS_PRINCIPAL_ARN` is what the generated template names, so it must match
 character for character: a wrong value fails when the customer clicks deploy,

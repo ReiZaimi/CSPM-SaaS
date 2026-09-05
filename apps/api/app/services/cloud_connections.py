@@ -395,10 +395,16 @@ def public_api_base() -> str | None:
     host.
 
     ``API_URL`` is the direct answer but is not a required variable, so it may
-    be unset. ``AZURE_REDIRECT_URI`` is the reliable fallback: it is this API's
-    own public callback URL, and it cannot be subtly wrong, because Entra
+    be unset. ``AZURE_REDIRECT_URI`` is the fallback *for Azure*: it is this
+    API's own public callback URL, and it cannot be subtly wrong, because Entra
     compares it character for character and consent fails outright otherwise.
-    Anything reaching this function has already completed consent.
+    An Azure connection reaching this function has already completed consent.
+
+    **An AWS-only deployment has neither fallback.** There is no consent round
+    trip and so no redirect URI, which means ``API_URL`` is not optional there:
+    without it the Launch Stack link and the change-event webhook both have no
+    host to name. ``available_providers`` refuses AWS for that reason rather
+    than letting a customer reach a deploy step with no template behind it.
 
     None rather than a guess when neither is available -- a hidden button is
     recoverable, a link to the wrong host is a support ticket.
@@ -1142,19 +1148,22 @@ def available_providers() -> list[dict]:
     silently held one option answers "does this product support AWS?" with
     nothing; one that shows it greyed out with a reason answers it.
     """
+    # Availability is *derived* from the reason rather than computed beside it.
+    # Two expressions of one fact drift, and the way this one drifts is the bad
+    # way round: a provider reported available with a reason attached lets a
+    # customer start a flow the deployment cannot finish.
+    offered = [
+        (Provider.AZURE, "Microsoft Azure", settings.azure_consent_problem),
+        (Provider.AWS, "Amazon Web Services", _aws_problem()),
+    ]
     return [
         {
-            "id": Provider.AZURE.value,
-            "name": "Microsoft Azure",
-            "available": settings.azure_consent_ready,
-            "unavailable_reason": settings.azure_consent_problem,
-        },
-        {
-            "id": Provider.AWS.value,
-            "name": "Amazon Web Services",
-            "available": settings.aws_offered,
-            "unavailable_reason": _aws_problem(),
-        },
+            "id": provider.value,
+            "name": name,
+            "available": problem is None,
+            "unavailable_reason": problem,
+        }
+        for provider, name, problem in offered
     ]
 
 
@@ -1177,6 +1186,18 @@ def _aws_problem() -> str | None:
             "AWS support is built but has not been verified against a live "
             "account yet. Complete the checklist in docs/AWS_INTEGRATION.md §1, "
             "then set AWS_ENABLED=true."
+        )
+    if public_api_base() is None:
+        # Azure gets this host from AZURE_REDIRECT_URI, which consent forces to
+        # be correct. AWS has no consent round trip and therefore no such
+        # value, so API_URL stops being optional -- and a customer allowed to
+        # reach the deploy step would find a Launch Stack link with no template
+        # behind it, which reads as a broken product rather than a missing
+        # variable.
+        return (
+            "This deployment has no public API address configured, so there is "
+            "nowhere for CloudFormation to fetch the stack from or for AWS to "
+            "deliver change events to. Set API_URL."
         )
     return None
 

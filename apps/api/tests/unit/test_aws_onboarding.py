@@ -238,3 +238,71 @@ def _fake_client(listings: dict[str, list[dict]], fails: bool = False):
             return list(listings.get(operation) or [])
 
     return lambda self, conn, service: FakeClient()
+
+
+# ------------------------------------------------- what the deployment needs
+def test_aws_is_refused_without_a_public_api_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Azure gets this host from AZURE_REDIRECT_URI, which consent forces to be
+    correct. AWS has no consent round trip and therefore no such value.
+
+    Allowed through, a customer would reach the deploy step and find a Launch
+    Stack link with no template behind it — which reads as a broken product
+    rather than a missing variable.
+    """
+    from app.services.cloud_connections import available_providers
+
+    monkeypatch.setattr("app.core.config.settings.aws_access_key_id", "AKIA")
+    monkeypatch.setattr("app.core.config.settings.aws_secret_access_key", "secret")
+    monkeypatch.setattr(
+        "app.core.config.settings.aws_principal_arn", "arn:aws:iam::9:user/cg"
+    )
+    monkeypatch.setattr("app.core.config.settings.aws_enabled", True)
+    monkeypatch.setattr("app.core.config.settings.api_url", "")
+    monkeypatch.setattr("app.core.config.settings.azure_redirect_uri", "")
+
+    aws = next(p for p in available_providers() if p["id"] == "aws")
+
+    assert aws["available"] is False
+    assert "API_URL" in (aws["unavailable_reason"] or "")
+
+
+def test_aws_is_offered_once_the_address_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.cloud_connections import available_providers
+
+    monkeypatch.setattr("app.core.config.settings.aws_access_key_id", "AKIA")
+    monkeypatch.setattr("app.core.config.settings.aws_secret_access_key", "secret")
+    monkeypatch.setattr(
+        "app.core.config.settings.aws_principal_arn", "arn:aws:iam::9:user/cg"
+    )
+    monkeypatch.setattr("app.core.config.settings.aws_enabled", True)
+    monkeypatch.setattr("app.core.config.settings.api_url", "https://api.example.com")
+
+    aws = next(p for p in available_providers() if p["id"] == "aws")
+
+    assert aws["available"] is True
+    assert aws["unavailable_reason"] is None
+
+
+def test_the_checklist_gate_is_reported_before_the_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two reasons, and the order is the order somebody can act on them: a
+    missing variable is five minutes, and the checklist is an afternoon with a
+    real AWS account."""
+    from app.services.cloud_connections import available_providers
+
+    monkeypatch.setattr("app.core.config.settings.aws_access_key_id", "AKIA")
+    monkeypatch.setattr("app.core.config.settings.aws_secret_access_key", "secret")
+    monkeypatch.setattr(
+        "app.core.config.settings.aws_principal_arn", "arn:aws:iam::9:user/cg"
+    )
+    monkeypatch.setattr("app.core.config.settings.aws_enabled", False)
+    monkeypatch.setattr("app.core.config.settings.api_url", "")
+
+    aws = next(p for p in available_providers() if p["id"] == "aws")
+
+    assert "AWS_INTEGRATION.md" in (aws["unavailable_reason"] or "")

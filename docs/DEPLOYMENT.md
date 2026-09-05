@@ -273,6 +273,12 @@ Node installed on your machine.
    AWS_SECRET_ACCESS_KEY=
    AWS_PRINCIPAL_ARN=arn:aws:iam::<cloudguard-account-id>:user/cloudguard-scanner
 
+   # Required if you connect AWS, optional if you only connect Azure. Azure
+   # derives this API's public address from AZURE_REDIRECT_URI, which Entra
+   # forces to be correct; AWS has no consent round trip and so no such value,
+   # and without an address CloudFormation has nowhere to fetch the stack from.
+   API_URL=https://<your-railway-api-domain>
+
    # Whether AWS appears in the connection wizard. Off by default, and
    # deliberately separate from having credentials: the connector has never
    # been run against a live AWS account. Set this to true only after the
