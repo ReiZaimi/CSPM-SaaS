@@ -6,7 +6,9 @@ import { CheckIcon, CloudIcon, LockIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AzurePermissions } from "@/lib/types";
 import { useT } from "@/i18n";
-import { SETUP_STEPS } from "@/lib/connectionStage";
+import { setupSteps } from "@/lib/connectionStage";
+import { setupCopy } from "@/lib/setupCopy";
+import type { Provider } from "@/lib/types";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/format";
@@ -22,13 +24,19 @@ import { cn } from "@/lib/format";
  * abandons it is a worse outcome than somebody who reads that first and comes
  * back with the right colleague.
  *
- * The four steps are the wizard's own rail, from `SETUP_STEPS`, in the same
- * words. A preview that drifted from the flow it previews would be worse than
- * no preview.
+ * The steps are the wizard's own rail, from `setupSteps`, in the same words. A
+ * preview that drifted from the flow it previews would be worse than no
+ * preview.
+ *
+ * Shown for one cloud at a time. Somebody who has connected nothing is about to
+ * connect *something*, and a preview that hedged across both would describe a
+ * flow neither of them has.
  */
-export function ConnectEmpty() {
+export function ConnectEmpty({ provider = "azure" }: { provider?: Provider }) {
   const t = useT();
-  const last = SETUP_STEPS.length - 1;
+  const copy = setupCopy(t, provider);
+  const steps = setupSteps(provider);
+  const last = steps.length - 1;
   const [showing, setShowing] = useState(false);
 
   // Fetched rather than written into the page, and only when asked for. The
@@ -129,10 +137,10 @@ export function ConnectEmpty() {
 
         <div className="lg:border-l lg:border-border lg:pl-12">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {t.setup.railTitle}
+            {copy.railTitle}
           </p>
           <ol className="mt-5 space-y-5">
-            {SETUP_STEPS.map((step, index) => {
+            {steps.map((step, index) => {
               // The last row is not a step: it is what the customer gets for
               // the three above it, and it is ticked because CloudGuard does it
               // rather than asks for it.
@@ -156,10 +164,10 @@ export function ConnectEmpty() {
                         payoff ? "text-ok" : "text-foreground",
                       )}
                     >
-                      {t.setup[step.key]}
+                      {copy[step.key]}
                     </span>
                     <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
-                      {t.setup[`${step.key}Detail`]}
+                      {copy[`${step.key}Detail`]}
                     </span>
                   </span>
                 </li>

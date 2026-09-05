@@ -529,11 +529,43 @@ export interface ComplianceFrameworkDetail extends ComplianceFramework {
 }
 
 /** Cloud connections. Mirrors app/models/cloud_connection.py. */
-export type ConnectionScope = "TENANT_ROOT" | "MANAGEMENT_GROUP" | "SUBSCRIPTION";
+
+/** Which cloud a connection reads. */
+export type Provider = "azure" | "aws";
+
+/**
+ * How much of a cloud one connection covers.
+ *
+ * One union across both clouds, because it is one question with a different
+ * vocabulary each time: a trust boundary, a grouping inside it, and the unit a
+ * scan reads. Named in each provider's own words rather than abstracted --
+ * whoever reads a row is usually matching it against a portal that says
+ * "management group" or "organizational unit".
+ */
+export type ConnectionScope =
+  | "TENANT_ROOT"
+  | "MANAGEMENT_GROUP"
+  | "SUBSCRIPTION"
+  | "ORGANIZATION"
+  | "ORGANIZATIONAL_UNIT"
+  | "ACCOUNT";
+
+/** What a deployment can actually connect, and why not. */
+export interface ProviderOption {
+  id: Provider;
+  name: string;
+  available: boolean;
+  /**
+   * Why this cloud cannot be chosen here. Shown rather than hidden: a picker
+   * that silently held an option answers "does this support AWS?" with
+   * nothing.
+   */
+  unavailable_reason: string | null;
+}
 
 export interface CloudConnection {
   id: string;
-  provider: string;
+  provider: Provider;
   name: string;
   scope_type: ConnectionScope;
   scope_id: string | null;
@@ -578,6 +610,17 @@ export interface CloudConnection {
   subscriptions: DiscoveredSubscription[];
   consent_url: string | null;
   template_url: string | null;
+  /**
+   * What only this connection's cloud has a word for, filtered by the API to
+   * what a customer is meant to read.
+   *
+   * On AWS: the scanner role's ARN, and the external id its trust policy must
+   * require. The external id is shown on purpose -- the customer needs it to
+   * check their own trust policy, and it is not a credential: it means nothing
+   * without a role that demands it. Empty for Azure, which keeps nothing per
+   * customer.
+   */
+  provider_ref: { role_arn?: string; external_id?: string };
   /** True once waiting no longer explains why read access has not appeared. */
   deploy_stalled: boolean;
   /** Whether this environment reports its own changes, and when it last did. */

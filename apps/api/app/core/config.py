@@ -133,6 +133,17 @@ class Settings(BaseSettings):
     # Empty means the console link is not offered and the template is served
     # from this API, token-gated, the way the ARM template is.
     aws_template_url: str = ""
+    # Whether AWS is offered in the connection wizard.
+    #
+    # Off by default, and deliberately separate from having credentials. Every
+    # IAM action name, response shape and template string in the AWS connector
+    # is written from AWS's published reference and has been called by nothing;
+    # AWS_INTEGRATION.md section 1 holds the ten-item checklist that turns that
+    # from plausible into verified. Until it has been run against a real
+    # account, AWS is reachable through the API and is not offered in the UI --
+    # because shipping the picker first would be a product claiming to scan a
+    # cloud nobody has scanned.
+    aws_enabled: bool = False
 
     sentry_dsn: str = ""
 
@@ -180,6 +191,15 @@ class Settings(BaseSettings):
             and self.aws_secret_access_key
             and self.aws_principal_arn
         )
+
+    @property
+    def aws_offered(self) -> bool:
+        """Whether a customer may choose AWS in the wizard.
+
+        Both halves: the credentials have to exist, *and* somebody has to have
+        run the live checklist. Either alone is a connection that cannot finish.
+        """
+        return self.aws_configured and self.aws_enabled
 
     @property
     def azure_configured(self) -> bool:

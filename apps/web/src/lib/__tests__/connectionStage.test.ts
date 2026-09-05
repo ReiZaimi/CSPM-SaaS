@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { connectionStage, stepIndex } from "@/lib/connectionStage";
+import {
+  connectionStage,
+  needsScopeId,
+  setupSteps,
+  stepIndex,
+} from "@/lib/connectionStage";
 import type { CloudConnection } from "@/lib/types";
 
 function connection(overrides: Partial<CloudConnection> = {}): CloudConnection {
@@ -111,9 +116,36 @@ describe("which step a connection is on", () => {
     ).toBe("done");
   });
 
-  it("collapses the three subscription states onto one rail row", () => {
-    // Otherwise the finish line moves when a subscription appears.
-    expect(stepIndex("discover")).toBe(stepIndex("review"));
-    expect(stepIndex("review")).toBe(stepIndex("done"));
+  it("collapses the three account states onto one rail row", () => {
+    // Otherwise the finish line moves when an account appears.
+    expect(stepIndex("discover", "azure")).toBe(stepIndex("review", "azure"));
+    expect(stepIndex("review", "azure")).toBe(stepIndex("done", "azure"));
+  });
+
+  it("gives AWS one fewer step, because it has no consent to grant", () => {
+    // A rail with a permanently grey "Grant consent" row would read as a flow
+    // stuck on something nobody is going to do.
+    expect(setupSteps("aws").map((step) => step.stage)).toEqual([
+      "scope",
+      "deploy",
+      "review",
+    ]);
+    expect(setupSteps("azure").map((step) => step.stage)).toContain("consent");
+  });
+
+  it("never leaves an AWS connection waiting for a consent step", () => {
+    const link = connection({
+      provider: "aws",
+      consent_status: "PENDING",
+      rbac_verified_at: null,
+    } as Partial<CloudConnection>);
+    expect(connectionStage(link)).toBe("deploy");
+  });
+
+  it("asks for an account id at every AWS scope, including the widest", () => {
+    // Azure's tenant root needs none because consent reports the tenant. AWS
+    // has no call it can make until it knows an account to assume a role in.
+    expect(needsScopeId("aws", "ORGANIZATION")).toBe(true);
+    expect(needsScopeId("azure", "TENANT_ROOT")).toBe(false);
   });
 });

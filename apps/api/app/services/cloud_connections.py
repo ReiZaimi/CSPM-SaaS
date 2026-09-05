@@ -1115,6 +1115,57 @@ async def _scannable_accounts(
     return [account for account in rows if account.is_scannable]
 
 
+def available_providers() -> list[dict]:
+    """Which clouds this deployment can actually connect, and why not.
+
+    Answered by the API rather than hard-coded in the wizard, because the
+    answer is a property of the deployment: an installation with no Entra app
+    registration cannot start a consent flow, and one that has not run the AWS
+    verification checklist must not be offering AWS at all.
+
+    Unavailable providers are returned rather than omitted. A picker that
+    silently held one option answers "does this product support AWS?" with
+    nothing; one that shows it greyed out with a reason answers it.
+    """
+    return [
+        {
+            "id": Provider.AZURE.value,
+            "name": "Microsoft Azure",
+            "available": settings.azure_consent_ready,
+            "unavailable_reason": settings.azure_consent_problem,
+        },
+        {
+            "id": Provider.AWS.value,
+            "name": "Amazon Web Services",
+            "available": settings.aws_offered,
+            "unavailable_reason": _aws_problem(),
+        },
+    ]
+
+
+def _aws_problem() -> str | None:
+    """Why AWS cannot be chosen here, in the order a reader can act on.
+
+    The second reason is the honest one and is not a configuration error: the
+    connector has never been run against a live account, and until
+    ``docs/AWS_INTEGRATION.md`` section 1 has been completed, offering it would
+    be claiming to scan a cloud nobody has scanned.
+    """
+    if not settings.aws_configured:
+        return (
+            "CloudGuard has no AWS identity on this deployment. Set "
+            "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_PRINCIPAL_ARN "
+            "(docs/AWS_INTEGRATION.md §2)."
+        )
+    if not settings.aws_enabled:
+        return (
+            "AWS support is built but has not been verified against a live "
+            "account yet. Complete the checklist in docs/AWS_INTEGRATION.md §1, "
+            "then set AWS_ENABLED=true."
+        )
+    return None
+
+
 def self_registration(provider: Provider) -> dict | None:
     """What CloudGuard's *own* identity in a cloud must declare.
 

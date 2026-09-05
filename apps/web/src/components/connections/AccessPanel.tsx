@@ -2,6 +2,7 @@ import { ArrowUpRightIcon } from "lucide-react";
 
 import type { CloudConnection } from "@/lib/types";
 import { useT } from "@/i18n";
+import { hasConsentStep } from "@/lib/connectionStage";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { collectionCategoryLabel, formatDate } from "@/lib/format";
@@ -9,7 +10,13 @@ import { collectionCategoryLabel, formatDate } from "@/lib/format";
 /**
  * What CloudGuard was granted, and what it was not.
  *
- * The third line is the one worth having. Consent and the reader role are
+ * How many grants there are is the provider's answer. Azure has two that fail
+ * independently -- admin consent for Graph, and the ARM role -- and a customer
+ * very often completes the first and forgets the second, which is why both get
+ * a line. AWS has one, and a permanently green "Consent: granted" row beside it
+ * would be describing a step that never happened.
+ *
+ * The last line is the one worth having. Consent and the reader role are
  * facts the customer can check in their own portal; "write permission: none, by
  * design" is the product's central claim about itself, and stating it beside
  * the grants -- rather than in a marketing paragraph -- puts it where somebody
@@ -51,17 +58,25 @@ export function AccessPanel({
       </p>
 
       <dl className="mt-3 space-y-2 text-sm">
-        <Line label={t.connection.consentSignal}>
-          {connection.consent_status === "GRANTED" ? (
-            <span className="text-ok">
-              {t.connection.granted}
-              {connection.consented_at && ` ${formatDate(connection.consented_at)}`}
-            </span>
-          ) : (
-            <span className="text-high">{t.connection.notGranted}</span>
-          )}
-        </Line>
-        <Line label={t.connection.readerRole}>
+        {hasConsentStep(connection.provider) && (
+          <Line label={t.connection.consentSignal}>
+            {connection.consent_status === "GRANTED" ? (
+              <span className="text-ok">
+                {t.connection.granted}
+                {connection.consented_at && ` ${formatDate(connection.consented_at)}`}
+              </span>
+            ) : (
+              <span className="text-high">{t.connection.notGranted}</span>
+            )}
+          </Line>
+        )}
+        <Line
+          label={
+            connection.provider === "aws"
+              ? t.connection.scannerRole
+              : t.connection.readerRole
+          }
+        >
           {!connection.rbac_verified_at ? (
             <span className="text-high">{t.connection.notVerified}</span>
           ) : connection.role_upgrade_available ? (
@@ -80,6 +95,13 @@ export function AccessPanel({
             </span>
           )}
         </Line>
+        {connection.provider_ref?.external_id && (
+          <Line label={t.setup.aws.externalIdTitle}>
+            <code className="font-mono text-xs">
+              {connection.provider_ref.external_id}
+            </code>
+          </Line>
+        )}
         <Line label={t.connection.writePermission}>{t.connection.noneByDesign}</Line>
       </dl>
 

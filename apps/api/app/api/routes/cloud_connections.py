@@ -33,6 +33,16 @@ TEMPLATE_CORS_HEADERS = {
     "Cache-Control": "no-store",
 }
 
+# What of a connection's provider reference reaches the browser.
+#
+# An allow-list rather than a denylist: this column is where a provider-shaped
+# field lands, and the next one added should have to be named here before a
+# customer can see it. Both entries are things the customer needs in front of
+# them -- the role ARN to check what they deployed, the external id to check
+# their own trust policy requires it. Neither is a credential; the external id
+# means nothing without a role that demands it.
+VISIBLE_PROVIDER_REF = frozenset({"role_arn", "external_id"})
+
 
 def _serialize(
     connection: CloudConnection,
@@ -43,6 +53,15 @@ def _serialize(
     data = CloudConnectionOut.model_validate(connection).model_dump(mode="json")
     data["is_verified"] = connection.is_verified
     data["scope_path"] = service.scope_path(connection)
+    # Filtered rather than passed through. ``provider_ref`` is where a future
+    # field could land that a viewer should not see, and a serializer that
+    # forwarded the whole blob would carry it to the browser without anybody
+    # deciding to.
+    data["provider_ref"] = {
+        key: value
+        for key, value in (connection.provider_ref or {}).items()
+        if key in VISIBLE_PROVIDER_REF
+    }
     data["subscription_count"] = subscription_count
     data["template_url"] = service.deployment_url(connection)
     # Lets the card stop showing a spinner once waiting has stopped being a
@@ -167,6 +186,19 @@ async def arm_template(
             **TEMPLATE_CORS_HEADERS,
         },
     )
+
+
+@router.get("/providers")
+async def list_providers(tenant: Tenant) -> dict:
+    """Which clouds this deployment can connect, and why not.
+
+    Behind authentication because it describes the deployment's configuration,
+    and read by the wizard's first step. Unavailable providers come back with a
+    reason rather than being omitted -- a picker that silently held an option
+    would answer "does this support AWS?" with nothing.
+    """
+    assert tenant  # authenticated; the answer is the same for every tenant
+    return envelope(service.available_providers())
 
 
 @router.get("/azure/app-registration")

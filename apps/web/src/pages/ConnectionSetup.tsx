@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { ArrowLeftIcon } from "lucide-react";
 
 import { api } from "@/lib/api";
-import type { CloudConnection } from "@/lib/types";
+import type { CloudConnection, Provider } from "@/lib/types";
 import { useT } from "@/i18n";
 import { connectionStage, setupPath } from "@/lib/connectionStage";
 import { SetupRail } from "@/components/connections/setup/SetupRail";
@@ -60,6 +60,12 @@ export function ConnectionSetupPage() {
 
   const connection = detail.data ?? null;
   const stage = connectionStage(connection);
+  // Which cloud the wizard is describing. Before a connection exists, the
+  // picker in the first step decides; after it does, the connection itself is
+  // the answer -- the provider is not editable, because the grant and the
+  // artefact are both bound to it.
+  const [chosen, setChosen] = useState<Provider>("azure");
+  const provider = connection?.provider ?? chosen;
 
   const setCancelled = useMutation({
     mutationFn: (value: boolean) =>
@@ -135,6 +141,8 @@ export function ConnectionSetupPage() {
 
             {!connectionId && (
               <StepScope
+                provider={provider}
+                onProviderChange={setChosen}
                 onCreated={(id) => navigate(setupPath(id), { replace: true })}
               />
             )}
@@ -215,7 +223,7 @@ export function ConnectionSetupPage() {
           </CardContent>
         </Card>
 
-        <SetupRail stage={stage} />
+        <SetupRail stage={stage} provider={provider} />
       </div>
     </div>
   );

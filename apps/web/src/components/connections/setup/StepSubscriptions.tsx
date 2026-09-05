@@ -9,14 +9,14 @@ import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/format";
 
 /**
- * Step four: what CloudGuard found, and what it will read.
+ * The last step: what CloudGuard found, and what it will read.
  *
  * Three states of one step rather than three steps. Discovery runs server-side
- * on every read of the connection, so between "verified" and "here are your
- * subscriptions" there is a gap of a few seconds -- occasionally of minutes, if
- * the role landed at a narrower scope than the connection covers and the answer
- * is going to be nothing at all. The customer is in the same place throughout;
- * only what is on the page changes.
+ * on every read of the connection, so between "verified" and "here is what is
+ * beneath it" there is a gap of a few seconds -- occasionally of minutes, if
+ * the grant landed at a narrower scope than the connection covers and the
+ * answer is going to be nothing at all. The customer is in the same place
+ * throughout; only what is on the page changes.
  */
 export function StepSubscriptions({
   connection,

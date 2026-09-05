@@ -121,6 +121,7 @@ export const en = {
     stepConsent: "Grant admin consent",
     stepDeploy: "Deploy the scanner role",
     scope: "Scope",
+    cloud: "Cloud",
     connectionName: "Connection name",
     managementGroupId: "Management group id",
     subscriptionId: "Subscription id",
@@ -210,6 +211,7 @@ export const en = {
     cadenceClock: "On a clock",
     cadenceOnChange: "On change",
     accessTitle: "Access",
+    scannerRole: "Scanner role",
     readerRole: "Reader role",
     verifiedOn: "verified",
     roleBehind: "behind",
@@ -325,9 +327,55 @@ export const en = {
     stepDeploy: "Deploy the reader role",
     stepDeployDetail:
       "One ARM template in Azure Portal. Needs Owner at the scope you chose \u2014 the form says which, before you start.",
-    stepSubscriptions: "Then CloudGuard finds the rest",
-    stepSubscriptionsDetail:
+    stepAccounts: "Then CloudGuard finds the rest",
+    stepAccountsDetail:
       "Every subscription beneath the scope is discovered and kept in step \u2014 including the ones created after today.",
+
+    // AWS says the same four things in its own words, and one fewer of them.
+    // Held as an override rather than as a second copy of the whole block:
+    // most of setup is identical, and two full sets would drift.
+    aws: {
+      title: "Connect AWS",
+      intro:
+        "One stack and about two minutes. There is no consent screen and no credential to hand over \u2014 you deploy a read-only role, and CloudGuard proves it works by using it.",
+      stepScope: "Choose the scope, and name it",
+      stepScopeDetail:
+        "A whole organization, one organizational unit, or a single account. Either way you name the account CloudGuard starts from.",
+      stepDeploy: "Deploy the scanner stack",
+      stepDeployDetail:
+        "One CloudFormation stack, pre-filled. It creates a read-only role that only CloudGuard can assume, and only with the external id below.",
+      stepAccounts: "Then CloudGuard finds the rest",
+      stepAccountsDetail:
+        "Every account in the organization is discovered and kept in step \u2014 including the ones opened after today.",
+      deployTitle: "Deploy the scanner stack",
+      deployBody:
+        "This creates one IAM role in your account. Every permission on it is a read of configuration \u2014 nothing it grants can read the contents of a bucket, a database or a secret.",
+      launchStack: "Launch stack in AWS",
+      externalIdTitle: "Your external id",
+      externalIdBody:
+        "The stack requires this value before the role can be assumed, and CloudGuard generated it for this connection alone. It is not a password: on its own it grants nothing, and it is useless to anyone without a role that demands it. Check it appears in the trust policy you are about to create.",
+      roleArnTitle: "The role CloudGuard will assume",
+      stackScopeOrganization:
+        "Deployed in the management account you named. Use a StackSet to reach the member accounts, or run the same stack in each.",
+      stackScopeAccount: "Deployed in the one account you named.",
+      organizationId: "Management account id",
+      organizationalUnitId: "Organizational unit id",
+      accountId: "Account id",
+      scopeOrganization: "Entire organization",
+      scopeOrganizationDetail:
+        "Discover and scan every account in the organization.",
+      scopeOrganizationRequires:
+        "Needs permission to create the stack in the management account, and a StackSet or one deployment per member account.",
+      scopeOrganizationalUnit: "Organizational unit",
+      scopeOrganizationalUnitDetail:
+        "Limit to the accounts under one organizational unit.",
+      scopeOrganizationalUnitRequires:
+        "Needs the same stack in each account beneath the unit.",
+      scopeAccount: "Single account",
+      scopeAccountDetail: "Scan one account only.",
+      scopeAccountRequires:
+        "Needs permission to create a stack and an IAM role in that account \u2014 usually the easiest to complete.",
+    },
 
     // Consent step.
     consentTitle: "Ask a Global Administrator to consent",

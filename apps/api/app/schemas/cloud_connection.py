@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.enums import (
     CloudAccountStatus,
@@ -55,6 +55,21 @@ class CloudConnectionOut(BaseModel):
     subscriptions: list["DiscoveredSubscription"] = Field(default_factory=list)
     consent_url: str | None = None
     template_url: str | None = None
+    # What only this connection's cloud has a word for, filtered to what a
+    # customer is meant to read. The external id is here on purpose: they have
+    # to see it to check their own trust policy, and it is not a credential --
+    # it means nothing without a role that requires it.
+    provider_ref: dict = Field(default_factory=dict)
+
+    @field_validator("provider_ref", mode="before")
+    @classmethod
+    def _reference_or_empty(cls, value: object) -> object:
+        """A connection built in memory has not had the column default applied.
+
+        Empty rather than null, so no reader has to decide what the absence of
+        a provider reference means before looking a key up in it.
+        """
+        return value if isinstance(value, dict) else {}
     # True once the deployment has been outstanding long enough that "still in
     # progress" no longer explains it.
     deploy_stalled: bool = False

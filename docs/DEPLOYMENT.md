@@ -273,6 +273,12 @@ Node installed on your machine.
    AWS_SECRET_ACCESS_KEY=
    AWS_PRINCIPAL_ARN=arn:aws:iam::<cloudguard-account-id>:user/cloudguard-scanner
 
+   # Whether AWS appears in the connection wizard. Off by default, and
+   # deliberately separate from having credentials: the connector has never
+   # been run against a live AWS account. Set this to true only after the
+   # ten-item checklist in AWS_INTEGRATION.md §1 has passed.
+   AWS_ENABLED=false
+
    SENTRY_DSN=
 
    # Optional, both with defaults, both about disk rather than correctness.

@@ -2,20 +2,25 @@ import { useState } from "react";
 
 import type { CloudConnection } from "@/lib/types";
 import { useT } from "@/i18n";
+import { setupCopy } from "@/lib/setupCopy";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { CopyButton } from "@/components/common/CopyButton";
 import { cn } from "@/lib/format";
 import { WaitingNote } from "@/components/connections/setup/WaitingNote";
 
 /**
- * Step three: the reader role.
+ * The grant that lets CloudGuard read anything.
  *
- * Consent proved CloudGuard may ask the directory who exists. This is the grant
- * that lets it read anything, and it is the step that fails -- the template is
- * pre-filled and cannot be typed wrong, so when nothing arrives the cause is
- * always one of scope, permission or propagation. Those three are named here
- * rather than left to a support conversation, in the order they are worth
- * checking.
+ * On Azure it is step three and follows consent, which proved only that
+ * CloudGuard may ask the directory who exists. On AWS it is step two and it is
+ * the whole grant -- there is nothing to consent to, so this panel is where a
+ * connection either works or does not.
+ *
+ * It is the step that fails, in both clouds. The artefact is pre-filled and
+ * cannot be typed wrong, so when nothing arrives the cause is always one of
+ * scope, permission or propagation. Those three are named here rather than left
+ * to a support conversation, in the order they are worth checking.
  */
 export function StepDeploy({
   connection,
@@ -31,7 +36,9 @@ export function StepDeploy({
   discarding: boolean;
 }) {
   const t = useT();
+  const copy = setupCopy(t, connection.provider);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const externalId = connection.provider_ref?.external_id;
 
   // Consented, but CloudGuard cannot produce a template. Nothing the customer
   // does in Azure advances this, so it is shown as a problem and not as a wait.
@@ -54,26 +61,55 @@ export function StepDeploy({
       ? t.setup.stalledScopeTenant
       : connection.scope_type === "MANAGEMENT_GROUP"
         ? t.setup.stalledScopeGroup
-        : t.setup.stalledScopeSubscription;
+        : connection.scope_type === "ORGANIZATION"
+          ? t.setup.aws.stackScopeOrganization
+          : connection.scope_type === "ACCOUNT"
+            ? t.setup.aws.stackScopeAccount
+            : t.setup.stalledScopeSubscription;
 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-base font-semibold text-foreground">{t.setup.deployTitle}</h2>
+        <h2 className="text-base font-semibold text-foreground">{copy.deployTitle}</h2>
         <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          {t.setup.deployBody}
+          {copy.deployBody}
         </p>
       </div>
 
+      {/* The external id, in front of the customer *before* they deploy.
+          They are about to create a trust policy that requires it, and the one
+          thing that makes this integration safe is that the policy demands a
+          value only they and CloudGuard know. Somebody who cannot see it cannot
+          check that the stack they ran actually asks for it. */}
+      {externalId && (
+        <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {t.setup.aws.externalIdTitle}
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded bg-background px-2 py-1.5 font-mono text-xs text-foreground">
+              {externalId}
+            </code>
+            <CopyButton text={externalId} label={t.setup.aws.externalIdTitle} />
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            {t.setup.aws.externalIdBody}
+          </p>
+        </div>
+      )}
+
       <div>
-        {/* See the note in StepConsent: this one leaves for Azure Portal. */}
+        {/* See the note in StepConsent: this one leaves for the provider's
+            console, which is why it is an anchor rather than a button. */}
         <a
           href={connection.template_url}
           target="_blank"
           rel="noopener noreferrer"
           className={cn(buttonVariants())}
         >
-          {t.setup.deployToAzure}
+          {connection.provider === "aws"
+            ? t.setup.aws.launchStack
+            : t.setup.deployToAzure}
         </a>
       </div>
 

@@ -3451,6 +3451,71 @@ producing plan per provider, and a new sibling asserts a rule declares its *own*
 provider's evidence — a key from the wrong cloud degrades on something that
 never runs, and would never appear in that scan's gaps either.
 
+## 75. The wizard learns there are two clouds, and one of them is not offered yet
+
+The setup flow was written for Azure and read as Azure everywhere: four rail
+rows, a consent step, "Deploy to Azure", "subscriptions". Most of it generalized
+by naming things differently; three parts did not, and those are the ones worth
+recording.
+
+**The rail is a function of the provider, not a constant.** AWS has three steps
+where Azure has four, because there is nothing to consent to. A rail with a
+permanently grey "Grant consent" row would read as a flow stuck on something
+nobody is going to do — so `setupSteps(provider)` returns the rows and
+`connectionStage` never returns `"consent"` for a cloud without one.
+
+**The external id is on the deploy panel, before the customer deploys.** They
+are about to create a trust policy that requires it, and the single thing making
+this integration safe is that the policy demands a value only they and
+CloudGuard know. Somebody who cannot see it cannot check that the stack they ran
+actually asks for it. It is shown as copyable text with a sentence saying it is
+not a password: on its own it grants nothing, and it is useless to anyone
+without a role that demands it.
+
+**The access panel states one grant or two, from the provider.** A permanently
+green "Consent: granted" row beside a single AWS grant would be describing a
+step that never happened.
+
+### The copy is an override, not a second copy
+
+`t.setup.aws` holds the dozen sentences that differ and nothing else;
+`setupCopy(t, provider)` spreads it over the shared block. Two full sets would
+drift, and the half that drifted would be the half nobody was looking at.
+
+The types needed one accommodation: `en.ts` is a const object, so every value
+has a literal type and an intersection of `"Connect Azure"` and `"Connect AWS"`
+is `never`. `AsStrings<T>` widens, which is what lets one component read a
+sentence whose wording depends on the cloud.
+
+### AWS is in the picker and cannot be chosen
+
+`GET /cloud-connections/providers` answers what this deployment can connect,
+and the wizard renders unavailable options **greyed out with the reason** rather
+than hiding them. A picker that silently held an option back answers "does this
+support AWS?" with nothing; one that shows it disabled with a sentence answers
+it, and tells an operator what to do about it.
+
+Two reasons it can be unavailable, and they are different in kind. No AWS
+identity configured is an ordinary deployment gap. `AWS_ENABLED=false` — the
+default — is the honest one: every IAM action name, response shape and template
+string in the connector was written from AWS's published reference and has been
+called by nothing. `docs/AWS_INTEGRATION.md` §1 holds the ten-item checklist,
+and until it has been run against a real account, offering AWS would be a
+product claiming to scan a cloud nobody has scanned.
+
+That gate is deliberately separate from having credentials, because the two
+failures need different people. One is an environment variable; the other is an
+afternoon with a real AWS account.
+
+### What reaches the browser
+
+`provider_ref` is filtered through an allow-list on the way out, not passed
+through. That column is where a provider-shaped field lands, and the next one
+added should have to be named before a customer can see it. Both current
+entries are things the customer needs in front of them — the role ARN to check
+what they deployed, the external id to check their own trust policy requires
+it — and neither is a credential.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*
