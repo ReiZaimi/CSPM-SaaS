@@ -2,13 +2,26 @@
 
 Azure-first Cloud Security Posture Management. Prototype v0.1.
 
-CloudGuard connects to a customer's Azure environment read-only, discovers what
-is there, evaluates it against deterministic security rules, scores the results
-as business risks rather than raw alerts, tells the user how to fix the ones
-that matter — and then **verifies the fix itself** on the next scan.
+CloudGuard connects to a customer's cloud read-only, discovers what is there,
+evaluates it against deterministic security rules, scores the results as
+business risks rather than raw alerts, tells the user how to fix the ones that
+matter — and then **verifies the fix itself** on the next scan.
 
 The specification this is built from lives in [`docs/`](docs/); start with
 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md).
+
+### AWS is built and is not offered yet
+
+An AWS connector, its permission manifest, its onboarding flow and thirteen AWS
+rules exist behind the same seam Azure sits behind
+([`docs/AWS_INTEGRATION.md`](docs/AWS_INTEGRATION.md)). **None of it has been
+run against a live AWS account.** Every IAM action name, response shape and
+CloudFormation string is written from AWS's published reference, so the wizard
+shows AWS greyed out with the reason until the ten-item checklist in
+`AWS_INTEGRATION.md` §1 has passed and `AWS_ENABLED=true` is set.
+
+That is why the line above still says Azure-first. It will stop saying so when
+somebody has scanned an AWS account with it, and not before.
 
 ---
 
@@ -54,8 +67,8 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    259 tests   pytest, ruff, mypy
-frontend    37 tests   vitest, tsc
+backend    1628 tests   pytest, ruff, mypy
+frontend    350 tests   vitest, tsc
 ```
 
 Rule tests run against fixture JSON in `apps/api/tests/fixtures/` — no database,

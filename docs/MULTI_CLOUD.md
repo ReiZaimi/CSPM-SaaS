@@ -267,8 +267,19 @@ benchmark appears while a customer is still setting AWS up.
    Without that gate this would be exactly what the paragraph warned about: a
    large body of code claiming to scan a cloud nobody had scanned, with the seam
    *looking* finished.
-3. The permission-manifest pattern generalized out of `rbac.py`, once there are
-   two instances to generalize from.
+3. **The permission-manifest pattern is not generalized, and that is a decision
+   rather than a gap.** There are two instances now — `azure/rbac.py` and
+   `aws/iam.py` — and they share a *discipline*, not a mechanism: every call has
+   a permission, every permission has a call, a version bump names the checks an
+   older grant loses, and the customer's artefact is generated from the
+   declaration rather than hand-maintained. What differs is everything a shared
+   module would have to hold. Azure grants a role definition whose actions ARM
+   validates atomically; AWS grants managed policies plus an inline document
+   that IAM will accept with an action that does not exist. One renders ARM
+   JSON at a scope path, the other renders CloudFormation with a trust policy
+   and an external id. A common base would be a parameter bag with two
+   implementations behind it, which is the abstraction with nothing in the
+   middle. Revisit at three.
 4. Scope vocabulary migration, driven by what the second connector actually
    needed rather than by this document's guess.
 5. ~~Onboarding services split by provider.~~ Done, and step 2 forced it

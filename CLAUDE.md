@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CloudGuard — an Azure-first CSPM (Cloud Security Posture Management) SaaS. Modular monolith API + Celery worker backend, React SPA frontend.
 
+AWS is implemented behind the same connector seam — connector, IAM manifest, onboarding, thirteen rules, CIS AWS 3.0 — and **has never been run against a live AWS account**. It is reachable through the API and gated out of the UI by `AWS_ENABLED` until `docs/AWS_INTEGRATION.md` §1's checklist passes. Treat every string in `app/connectors/aws/` as unverified until then.
+
 ## Commands
 
 ### Backend (apps/api)
@@ -47,11 +49,15 @@ npm test                         # vitest run
 
 **Multi-tenancy**: Dual-enforced. App layer derives `organization_id` from JWT. PostgreSQL RLS policies enforce row-level isolation via the `cloudguard_app` role.
 
-**Rule engine** (`app/rules/`): `SecurityRule` ABC. Rules are deterministic — no network, no database, no LLM calls inside evaluation. Results: PASS, FAIL, UNKNOWN, NOT_APPLICABLE. UNKNOWN is never treated as PASS.
+**Rule engine** (`app/rules/`): `SecurityRule` ABC. Rules are deterministic — no network, no database, no LLM calls inside evaluation. Results: PASS, FAIL, UNKNOWN, NOT_APPLICABLE. UNKNOWN is never treated as PASS. Rules are per provider over neutral `ResourceType`s: an S3 bucket and an Azure storage account are both `STORAGE_ACCOUNT`, so `matches()` compares the provider too. Never write one rule that branches on provider — `remediation` is snapshot-copied onto findings, and `aws s3api` is not a variant of `az storage account update` (DECISIONS.md §74).
 
 **Risk engine** (`app/risk/`): Scores findings by rule severity × asset criticality × data sensitivity × public exposure.
 
-**Cloud connectors** (`app/connectors/`): `CloudConnector` ABC with Azure implementation. Uses REST + MSAL directly (not azure-mgmt-* SDKs) to store verbatim JSON.
+**Cloud connectors** (`app/connectors/`): `CloudConnector` ABC with Azure and AWS implementations. Azure uses REST + MSAL directly (not azure-mgmt-* SDKs) to store verbatim JSON; AWS uses `aiobotocore`, because AWS is three wire protocols under SigV4 rather than one uniform REST surface — the principle is unchanged, store what the provider said (DECISIONS.md §72).
+
+**Onboarding** (`app/connectors/onboarding.py`): `ProviderOnboarding` ABC — how a customer grants access, and how CloudGuard proves they did. `services/cloud_connections.py` holds the neutral half and nothing provider-shaped; `tests/unit/test_provider_seam.py` fails the build on a provider import from anywhere neutral.
+
+**Regions**: AWS reads per region, so a *reading* is scoped by evidence key **and** region while a *verdict* stays per key — a key is trustworthy only if every region's reading of it was (DECISIONS.md §69). Never put a region into an `EvidenceKey`.
 
 **Auth**: Supabase Auth on frontend, JWT verification on backend (ES256/RS256/HS256). Azure integration uses a separate multi-tenant Entra app with admin consent.
 
@@ -79,3 +85,8 @@ npm test                         # vitest run
 - API response envelope: `{ "data": ..., "error": null, "meta": {} }`
 - A step is fenced to the worker that claimed it; one advisory lock per scan target (§65)
 - The frontend catches its own failures: error boundaries, request timeouts, 401 signs out (§66)
+- A reading is scoped by region; a verdict is not (§69)
+- Two neutral scope columns plus `provider_ref`; the rename to `provider_directory_id` is deferred because `RawSnapshot` writes the old names into stored captures (§70)
+- Onboarding sits behind `ProviderOnboarding`; the seam test has no exceptions left (§71)
+- AWS's external id is generated server-side, is never client-supplied, and a role is never assumed without one (§73)
+- Compliance frameworks about one cloud are shown only to organizations that use it (§74)
