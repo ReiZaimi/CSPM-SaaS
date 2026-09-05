@@ -12,12 +12,12 @@ The specification this is built from lives in [`docs/`](docs/); start with
 
 ### AWS is built and is not offered yet
 
-An AWS connector, its permission manifest, its onboarding flow and thirteen AWS
-rules exist behind the same seam Azure sits behind
+An AWS connector, its permission manifest, its onboarding flow, change-triggered
+scanning and thirty AWS rules exist behind the same seam Azure sits behind
 ([`docs/AWS_INTEGRATION.md`](docs/AWS_INTEGRATION.md)). **None of it has been
 run against a live AWS account.** Every IAM action name, response shape and
 CloudFormation string is written from AWS's published reference, so the wizard
-shows AWS greyed out with the reason until the ten-item checklist in
+shows AWS greyed out with the reason until the fifteen-item checklist in
 `AWS_INTEGRATION.md` §1 has passed and `AWS_ENABLED=true` is set.
 
 That is why the line above still says Azure-first. It will stop saying so when
@@ -67,7 +67,7 @@ which provisions PostgreSQL and Redis as service containers. That is the
 supported way to run them.
 
 ```
-backend    1628 tests   pytest, ruff, mypy
+backend    1734 tests   pytest, ruff, mypy
 frontend    350 tests   vitest, tsc
 ```
 

@@ -94,7 +94,7 @@ class AwsNormalizer:
         state.resources.extend(self._roles(data))
 
         state.relationships.extend(self._relationships(data, account_id))
-        state.controls.update(self._controls(data))
+        state.controls.update(self._controls(data, snapshot.collected_at))
         return state
 
     # ------------------------------------------------------------- the account
@@ -128,6 +128,12 @@ class AwsNormalizer:
         access = self._by_bucket(data, AwsEvidence.S3_PUBLIC_ACCESS_BLOCK)
         policy = self._by_bucket(data, AwsEvidence.S3_BUCKET_POLICY_STATUS)
         encryption = self._by_bucket(data, AwsEvidence.S3_ENCRYPTION)
+        logging_by_bucket = self._by_bucket(data, AwsEvidence.S3_BUCKET_LOGGING)
+        documents = {
+            str(row.get("Bucket")): row.get("Document")
+            for _, row in regional_items(data, AwsEvidence.S3_BUCKET_POLICY)
+            if row.get("Bucket")
+        }
 
         resources: list[CloudResource] = []
         for _, bucket in regional_items(data, AwsEvidence.S3_BUCKETS):
@@ -165,6 +171,16 @@ class AwsNormalizer:
             # None in both, so a missing reading cannot read as "no encryption".
             metadata["default_encryption_enabled"] = (
                 bool(algorithm) if name in encryption else None
+            )
+            metadata["access_logging_enabled"] = (
+                bool((logging_by_bucket.get(name) or {}).get("LoggingEnabled"))
+                if name in logging_by_bucket
+                else None
+            )
+            metadata["policy_denies_insecure_transport"] = (
+                _denies_insecure_transport(documents.get(name))
+                if name in documents
+                else None
             )
 
             resources.append(
@@ -239,6 +255,14 @@ class AwsNormalizer:
             instance_id = str(instance.get("InstanceId") or "")
             if not instance_id:
                 continue
+            metadata = dict(instance)
+            # Whether the metadata service demands a session token. Without it,
+            # any request that can be made *through* the instance -- an SSRF in
+            # an application on it -- reads the role's credentials.
+            tokens = (instance.get("MetadataOptions") or {}).get("HttpTokens")
+            metadata["imdsv2_required"] = (
+                None if tokens is None else str(tokens) == "required"
+            )
             resources.append(
                 CloudResource(
                     provider_resource_id=instance_id,
@@ -249,7 +273,7 @@ class AwsNormalizer:
                     public_exposure=(
                         Level.HIGH if instance.get("PublicIpAddress") else Level.LOW
                     ),
-                    metadata=dict(instance),
+                    metadata=metadata,
                 )
             )
         return resources
@@ -269,6 +293,14 @@ class AwsNormalizer:
             # of the same nested structure and a fifth copy of the parser is a
             # fifth chance to read ``-1`` as "no ports" rather than "all".
             metadata["open_ingress"] = _open_ingress(group)
+            # Every VPC has one and nothing should use it. Named rather than
+            # inferred from the id, because AWS guarantees the name and not the
+            # identifier.
+            metadata["is_default"] = str(group.get("GroupName")) == "default"
+            metadata["has_any_rule"] = bool(
+                (group.get("IpPermissions") or [])
+                or (group.get("IpPermissionsEgress") or [])
+            )
             resources.append(
                 CloudResource(
                     provider_resource_id=group_id,
@@ -387,6 +419,9 @@ class AwsNormalizer:
             metadata = dict(instance)
             metadata["publicly_accessible"] = instance.get("PubliclyAccessible")
             metadata["storage_encrypted"] = instance.get("StorageEncrypted")
+            metadata["auto_minor_version_upgrade"] = instance.get(
+                "AutoMinorVersionUpgrade"
+            )
             resources.append(
                 CloudResource(
                     provider_resource_id=arn or identifier,
@@ -420,6 +455,13 @@ class AwsNormalizer:
             arn = str(key.get("Arn") or key.get("KeyId") or "")
             if not arn:
                 continue
+            metadata = dict(key)
+            # ``None`` where the key is AWS-managed and the question does not
+            # apply, or where the call was refused. Neither is "rotation is
+            # off", and a rule that read them as one would raise a finding
+            # about a key the customer does not control.
+            metadata["rotation_enabled"] = key.get("KeyRotationEnabled")
+            metadata["customer_managed"] = key.get("KeyManager") == "CUSTOMER"
             resources.append(
                 CloudResource(
                     provider_resource_id=arn,
@@ -427,7 +469,7 @@ class AwsNormalizer:
                     name=str(key.get("Description") or key.get("KeyId") or arn),
                     provider=Provider.AWS,
                     region=region,
-                    metadata=dict(key),
+                    metadata=metadata,
                 )
             )
         return resources
@@ -543,6 +585,7 @@ class AwsNormalizer:
         to do, which is why it is a capability edge and the others are not.
         """
         edges: list[tuple[str, RelationshipType, str]] = []
+        profiles = self._profile_roles(data)
 
         for _, instance in regional_items(data, AwsEvidence.EC2_INSTANCES):
             instance_id = str(instance.get("InstanceId") or "")
@@ -555,14 +598,17 @@ class AwsNormalizer:
 
             profile = (instance.get("IamInstanceProfile") or {}).get("Arn")
             if profile:
-                # The instance profile's ARN, not the role's -- they differ by
-                # one path segment and only the role exists as a resource. The
-                # graph resolves what it can and drops what it cannot, which is
-                # better than inventing a role ARN from a naming convention that
-                # holds only most of the time.
-                edges.append(
-                    (instance_id, RelationshipType.HAS_IDENTITY, str(profile))
-                )
+                # Resolved through the profile rather than pointing at it. An
+                # instance names its *profile* and the profile names the role,
+                # so an edge to the profile stops one hop short of everything
+                # the workload may actually do -- which is the hop that turns a
+                # foothold into a blast radius. The mapping is collected for
+                # exactly this: inventing the role ARN from the profile's name
+                # would hold most of the time, and be wrong silently.
+                for role_arn in profiles.get(str(profile), ()):
+                    edges.append(
+                        (instance_id, RelationshipType.HAS_IDENTITY, role_arn)
+                    )
 
         for _, interface in regional_items(data, AwsEvidence.NETWORK_INTERFACES):
             interface_id = str(interface.get("NetworkInterfaceId") or "")
@@ -580,9 +626,32 @@ class AwsNormalizer:
 
         return edges
 
+    @staticmethod
+    def _profile_roles(data: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+        """Instance profile ARN -> the role ARNs it carries.
+
+        A profile holds at most one role today, and the API returns a list
+        because it once could hold more. Read as a list rather than as
+        ``[0]``, because a shape that changes back is a shape that would
+        silently drop an edge.
+        """
+        mapping: dict[str, tuple[str, ...]] = {}
+        for _, profile in regional_items(data, AwsEvidence.IAM_INSTANCE_PROFILES):
+            arn = str(profile.get("Arn") or "")
+            if not arn:
+                continue
+            mapping[arn] = tuple(
+                str(role.get("Arn"))
+                for role in profile.get("Roles") or []
+                if role.get("Arn")
+            )
+        return mapping
+
     # ------------------------------------------------------------- controls
 
-    def _controls(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _controls(
+        self, data: dict[str, Any], collected_at: datetime
+    ) -> dict[str, Any]:
         """Account-level state that is not an asset.
 
         Nobody secures a password policy; it is a defence that lowers what a
@@ -615,6 +684,70 @@ class AwsNormalizer:
             # in eu-west-1" only means something against a list of the regions
             # that exist for this customer.
             "enabled_regions": list(data.get(AwsEvidence.ENABLED_REGIONS.value) or []),
+            # Each of these is a defence rather than an asset: nobody secures a
+            # trail, and no inventory should list one. They are kept per region
+            # because that is the unit each of them is switched on in, and "no
+            # trail in eu-west-1" is the whole finding.
+            "cloudtrail_trails": [
+                {"region": region, **trail}
+                for region, trail in trails
+                if region
+            ],
+            "config_recorders": [
+                {"region": region, **recorder}
+                for region, recorder in regional_items(
+                    data, AwsEvidence.CONFIG_RECORDERS
+                )
+                if region
+            ],
+            "network_acls": [
+                {"region": region, **acl}
+                for region, acl in regional_items(data, AwsEvidence.NETWORK_ACLS)
+                if region
+            ],
+            # Which resources anything records flows for. A set of ids rather
+            # than the log rows, because the question every time is "is this VPC
+            # covered" and a flow log names what it covers.
+            "flow_log_resources": sorted(
+                {
+                    str(log.get("ResourceId"))
+                    for _, log in regional_items(data, AwsEvidence.VPC_FLOW_LOGS)
+                    if log.get("ResourceId")
+                    and str(log.get("FlowLogStatus", "ACTIVE")).upper() == "ACTIVE"
+                }
+            ),
+            "securityhub_regions": sorted(
+                {
+                    region
+                    for region, hub in regional_items(
+                        data, AwsEvidence.SECURITYHUB_STATUS
+                    )
+                    if region and hub
+                }
+            ),
+            "access_analyzer_regions": sorted(
+                {
+                    region
+                    for region, analyzer in regional_items(
+                        data, AwsEvidence.ACCESS_ANALYZERS
+                    )
+                    if region and str(analyzer.get("status", "ACTIVE")).upper()
+                    == "ACTIVE"
+                }
+            ),
+            # Expiry decided against the capture rather than the clock, the
+            # same way a credential's age is: a replayed scan has to reach the
+            # verdict the original one did, or "verified fixed" becomes a
+            # statement about when somebody asked.
+            "server_certificates": [
+                {**row, "Expired": _expired(row.get("Expiration"), collected_at)}
+                for _, row in regional_items(
+                    data, AwsEvidence.IAM_SERVER_CERTIFICATES
+                )
+            ],
+            "iam_policy_documents": [
+                row for _, row in regional_items(data, AwsEvidence.IAM_POLICY_DOCUMENTS)
+            ],
             "ebs_encryption_by_default": {
                 region: bool(row.get("EbsEncryptionByDefault"))
                 for region, row in regional_items(
@@ -632,6 +765,22 @@ class AwsNormalizer:
             if str(tag.get("Key")) == key:
                 return str(tag.get("Value"))
         return None
+
+
+def _expired(expiration: Any, collected_at: datetime) -> bool | None:
+    """Whether a certificate had expired when the capture was taken.
+
+    ``None`` where the date is missing or unparseable, which is not "still
+    valid": a certificate CloudGuard could not read the expiry of is one it
+    cannot judge.
+    """
+    if isinstance(expiration, datetime):
+        moment: datetime | None = (
+            expiration if expiration.tzinfo else expiration.replace(tzinfo=UTC)
+        )
+    else:
+        moment = _parse(str(expiration or ""))
+    return None if moment is None else moment < collected_at
 
 
 def _parse(stamp: str) -> datetime | None:
@@ -723,3 +872,34 @@ def _open_ingress(group: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return found
+
+
+def _denies_insecure_transport(document: Any) -> bool:
+    """Whether a bucket policy refuses plaintext HTTP.
+
+    The shape AWS documents and every guide repeats: a ``Deny`` on ``s3:*`` (or
+    on everything) when ``aws:SecureTransport`` is false. Read structurally
+    rather than by string match, because a policy that says the same thing with
+    the action written as a list, or the principal as ``{"AWS": "*"}``, is the
+    same policy.
+
+    ``False`` for a bucket with no policy at all, which is not a missing reading
+    -- AWS answers ``NoSuchBucketPolicy`` and that *is* the finding.
+    """
+    statements = (document or {}).get("Statement") or []
+    if isinstance(statements, dict):
+        statements = [statements]
+    for statement in statements:
+        if not isinstance(statement, dict):
+            continue
+        if str(statement.get("Effect")) != "Deny":
+            continue
+        condition = statement.get("Condition") or {}
+        for operator, tests in condition.items():
+            if str(operator) != "Bool" or not isinstance(tests, dict):
+                continue
+            value = tests.get("aws:SecureTransport")
+            values = value if isinstance(value, list) else [value]
+            if any(str(v).lower() == "false" for v in values):
+                return True
+    return False

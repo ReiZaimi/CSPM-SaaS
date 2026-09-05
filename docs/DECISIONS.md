@@ -3576,6 +3576,89 @@ A malformed `Message` is dropped rather than raised. The endpoint answers 200 to
 everything it decides not to act on, and an exception would turn that into hours
 of SNS redelivering the same unparseable payload.
 
+## 77. Nothing is collected and unjudged, and the graph edge that stopped short
+
+The first AWS slice left eleven evidence keys collected and read by no rule, and
+nineteen of thirty-one CIS AWS controls with nothing behind them. Both are now
+closed as far as they honestly can be: **thirty AWS rules, no key collected and
+unjudged unless it is declared baseline, and 28 of 31 controls covered.**
+
+The three that remain are named rather than quietly absent. 1.17 (a support role
+exists) is organizational and marked `technically_assessable=False`. 4.1 and 4.3
+are CloudWatch metric filters with alarms attached, which needs a collection this
+connector does not have and a match against CIS's exact filter patterns — a
+check that got the pattern slightly wrong would report a control satisfied that
+is not, which is worse than reporting it uncovered.
+
+### The distinction that decides whether an unjudged key is a bug
+
+`BASELINE_EVIDENCE` is the answer, and it is not a loophole. VPCs, subnets,
+network interfaces, elastic IPs, IAM roles, instance profiles and the account
+list are collected because the *product* is built from them — the inventory, the
+graph — not because a rule judges them. Everything else that was unjudged now
+has a rule, and `test_aws_evidence.py` holds the line: every key is produced by
+something, and the ones no rule reads are declared.
+
+### The graph edge that stopped one hop short
+
+An EC2 instance names its **instance profile**; the profile names the **role**.
+The first pass drew `HAS_IDENTITY` to the profile ARN, which is not a resource
+CloudGuard holds — so the hop from a compromised workload to everything it may
+do ended nowhere. `iam:ListInstanceProfiles` is collected for exactly this, and
+the edge is resolved through it.
+
+Deriving the role ARN from the profile's name would have worked most of the
+time, which is the worst available property: the graph would have claimed a path
+to a role that does not exist. An unresolvable profile draws no edge.
+
+### Two collection calls that read like writes and are not
+
+`iam:GenerateCredentialReport` was the first (§72). `config:DescribeConfigurationRecorderStatus`
+is folded into the recorder task rather than given its own key — unusually for
+this connector, which normally splits anything separately deniable. It is not
+separately deniable here: both calls come from the same managed policy and are
+refused together, and **a recorder that exists and is stopped is the finding**,
+which needs both halves to see. Creating a recorder is two commands; starting it
+is the third, and it is the one people miss.
+
+### Where a naive check gets the wrong answer
+
+Four cases were worth the tests they carry.
+
+* **A network ACL's default entry is a deny-all on `0.0.0.0/0`.** Read without
+  checking `RuleAction`, every correctly-written ACL in AWS reports as open.
+  Egress entries are not ingress, either.
+* **A multi-region CloudTrail trail is returned by every region it covers.**
+  That is what makes coverage answerable (AWS-LOG-001) and what would make every
+  other trail rule count one trail seventeen times. `_unique_trails` keys by ARN.
+* **IAM accepts `*` and `*:*` and means the same thing.** A check that knew one
+  spelling would pass the other. A statement carrying a `Condition` is not the
+  unbounded grant this rule is about.
+* **A flow log or an analyzer in a non-ACTIVE state records nothing.** Reading
+  existence rather than status would pass an account logging nothing.
+
+And one where the honest answer is UNKNOWN: the CloudTrail bucket is very often
+in a *different* account — a dedicated log archive is the shape AWS recommends —
+and CloudGuard cannot read a bucket it was not granted. "We could not look" is
+not "logging is off".
+
+### Two rules that decline rather than raise
+
+An AWS-managed KMS key rotates on AWS's schedule and the setting cannot be
+changed, so AWS-SEC-001 returns NOT_APPLICABLE for one rather than a finding
+nobody can close. AWS-LOG-002 does the same when the account has no trail at all:
+that is AWS-LOG-001's finding, and raising both would charge the security score
+twice for one problem written two ways.
+
+### The policy goes to v2
+
+Eleven new actions, so every existing connection reports "redeploy the stack"
+until they do — the prompt is honest, the checks that need the new actions report
+UNKNOWN meanwhile, and no other category is affected. `V1_ACTIONS` is written out
+rather than sliced off v2: what an older stack grants is a fact about that stack,
+and deriving it from today's list would make it change every time today's list
+does.
+
 ## Settings: the evidence a person supplies
 
 `PATCH /organizations` takes no id in the path. Deleting a *different*

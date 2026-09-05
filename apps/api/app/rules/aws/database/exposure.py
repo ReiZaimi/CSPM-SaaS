@@ -198,3 +198,92 @@ class AwsDatabaseEncryptionRule(SecurityRule):
             evidence=evidence,
             message=f"{resource.name} stores its data unencrypted",
         )
+
+
+class AwsDatabasePatchingRule(SecurityRule):
+    rule_id = "AWS-DB-003"
+    name = "RDS instance does not take minor version upgrades"
+    description = (
+        "An RDS instance has automatic minor version upgrades switched off, so "
+        "engine security patches are applied only when somebody remembers."
+    )
+    category = "database"
+    provider = Provider.AWS
+    severity = Severity.MEDIUM
+    # Nothing to exploit directly. It is the mechanism that keeps the engine's
+    # own vulnerabilities from accumulating, and turning it off is how a
+    # database ends up years behind.
+    exploitability = 2
+    applies_to: ClassVar[list[ResourceType]] = RDS_TYPES
+    requires_evidence: ClassVar[tuple[AwsEvidence, ...]] = (
+        AwsEvidence.RDS_INSTANCES,
+    )
+    estimated_effort_minutes = 10
+    rationale = (
+        "Minor versions carry the engine's security fixes and are backwards "
+        "compatible by definition. Off, they wait for a maintenance window "
+        "somebody has to schedule — which in practice is how a database ends up "
+        "several years behind on published vulnerabilities."
+    )
+    remediation = (
+        "Turn it on and let it apply in the maintenance window:\n\n"
+        "  aws rds modify-db-instance --db-instance-identifier <id> \\\n"
+        "    --auto-minor-version-upgrade --apply-immediately\n\n"
+        "Set the maintenance window to a time you are happy to take a brief "
+        "failover; the upgrade itself is the same operation you would run by "
+        "hand, on a schedule instead of on a reminder."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="auto_minor_version_upgrade",
+                equals=True,
+                describes="Minor engine versions are applied automatically",
+                terraform_attribute="auto_minor_version_upgrade",
+            ),
+        ),
+        cli=(
+            "aws rds modify-db-instance --db-instance-identifier <id> "
+            "--auto-minor-version-upgrade --apply-immediately",
+        ),
+        notes=(
+            "Applied in the maintenance window, which is worth setting to a "
+            "time a brief failover is acceptable."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["2.3.2"],
+        "ISO_27001": ["A.8.8"],
+        "NIST_CSF": ["ID.RA-1"],
+        "NIST_800_53": ["SI-2"],
+        "SOC2": ["CC7.1"],
+        "PCI_DSS_4": ["6.3.3"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"RDS configuration unavailable: {failure}")
+
+        automatic = resource.get("auto_minor_version_upgrade")
+        if automatic is None:
+            return RuleResult.unknown("Upgrade setting missing from snapshot")
+
+        evidence = {
+            "auto_minor_version_upgrade": automatic,
+            "engine": resource.get("Engine"),
+            "engine_version": resource.get("EngineVersion"),
+            "region": resource.region,
+        }
+        if automatic:
+            return RuleResult.passed(evidence)
+
+        return RuleResult.failed(
+            evidence=evidence,
+            message=f"{resource.name} does not take minor version upgrades",
+        )

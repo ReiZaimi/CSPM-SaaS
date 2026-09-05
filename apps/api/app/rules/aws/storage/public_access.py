@@ -237,3 +237,97 @@ class AwsBucketEncryptionRule(SecurityRule):
             evidence=evidence,
             message=f"{resource.name} has no default encryption",
         )
+
+
+class AwsBucketTransportRule(SecurityRule):
+    rule_id = "AWS-STO-003"
+    name = "S3 bucket accepts plaintext HTTP"
+    description = (
+        "A bucket has no policy denying requests made without TLS, so an object "
+        "can be read or written over plaintext HTTP by anything that can reach "
+        "the endpoint."
+    )
+    category = "storage"
+    provider = Provider.AWS
+    severity = Severity.MEDIUM
+    # It needs somebody on the network path, which on the public internet is a
+    # real but not trivial position.
+    exploitability = 2
+    applies_to: ClassVar[list[ResourceType]] = [ResourceType.STORAGE_ACCOUNT]
+    requires_evidence: ClassVar[tuple[AwsEvidence, ...]] = (
+        AwsEvidence.S3_BUCKETS,
+        AwsEvidence.S3_BUCKET_POLICY,
+    )
+    estimated_effort_minutes = 15
+    rationale = (
+        "S3 answers HTTP as readily as HTTPS, and nothing in the service refuses "
+        "it. The only control is a bucket policy that denies the request, which "
+        "is why this is a policy check rather than a setting."
+    )
+    remediation = (
+        "Add a deny to the bucket policy:\n\n"
+        "  {\n"
+        '    "Effect": "Deny", "Principal": "*", "Action": "s3:*",\n'
+        '    "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"],\n'
+        '    "Condition": {"Bool": {"aws:SecureTransport": "false"}}\n'
+        "  }\n\n"
+        "  aws s3api put-bucket-policy --bucket <bucket> --policy file://policy.json\n\n"
+        "Both ARNs matter: the bucket for operations on the bucket itself, and "
+        "the wildcard for the objects in it."
+    )
+    remediation_spec: ClassVar[RemediationSpec | None] = RemediationSpec(
+        expected=(
+            ExpectedState(
+                field="policy_denies_insecure_transport",
+                equals=True,
+                describes=(
+                    "The bucket policy denies requests where "
+                    "aws:SecureTransport is false"
+                ),
+                terraform_attribute="aws_s3_bucket_policy.policy",
+            ),
+        ),
+        cli=(
+            "aws s3api put-bucket-policy --bucket <bucket> "
+            "--policy file://policy.json",
+        ),
+        notes=(
+            "The deny needs both ARNs -- the bucket and its objects -- or "
+            "operations on the bucket itself stay reachable over HTTP."
+        ),
+    )
+    compliance_mappings: ClassVar[dict[str, list[str]]] = {
+        "CIS_AWS_3.0": ["2.1.2"],
+        "ISO_27001": ["A.8.24"],
+        "NIST_CSF": ["PR.DS-2"],
+        "GDPR": ["32(1)(a)"],
+        "NIST_800_53": ["SC-8"],
+        "SOC2": ["CC6.7"],
+        "PCI_DSS_4": ["4.2.1"],
+    }
+
+    def evaluate(
+        self, resource: CloudResource | None, context: RuleContext
+    ) -> RuleResult | list[RuleResult]:
+        if resource is None:
+            return RuleResult.not_applicable("Rule is per-resource")
+
+        failure = context.has_collection_error(*self.requires_evidence)
+        if failure:
+            return RuleResult.unknown(f"Bucket policy unavailable: {failure}")
+
+        denies = resource.get("policy_denies_insecure_transport")
+        if denies is None:
+            return RuleResult.unknown("Bucket policy missing from snapshot")
+
+        evidence = {
+            "policy_denies_insecure_transport": denies,
+            "region": resource.region,
+        }
+        if denies:
+            return RuleResult.passed(evidence)
+
+        return RuleResult.failed(
+            evidence=evidence,
+            message=f"{resource.name} does not deny plaintext HTTP",
+        )

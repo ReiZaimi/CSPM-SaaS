@@ -40,7 +40,7 @@ from typing import Any
 from app.connectors.evidence import EvidenceCategory
 
 # Bump when the action set changes.
-POLICY_VERSION = "v1"
+POLICY_VERSION = "v2"
 
 STACK_NAME = "CloudGuardSecurityScanner"
 ROLE_NAME = "CloudGuardScannerRole"
@@ -94,6 +94,30 @@ INLINE_READ_ACTIONS: tuple[str, ...] = (
     # UNVERIFIED.
     "guardduty:ListDetectors",
     "guardduty:GetDetector",
+    # --- v2 -------------------------------------------------------------
+    # What a policy actually grants. ``ListPolicies`` answers metadata only, so
+    # without this no check can tell an administrator policy from any other.
+    # UNVERIFIED.
+    "iam:GetPolicyVersion",
+    # Which role an instance profile carries. The graph edge from a compromised
+    # workload to what it may do stops one short without it. UNVERIFIED.
+    "iam:ListInstanceProfiles",
+    # Certificates uploaded to IAM, so an expired one can be named. UNVERIFIED.
+    "iam:ListServerCertificates",
+    # The bucket policy document and the access log setting. The policy *status*
+    # answers only "is this public"; whether a policy denies plaintext HTTP
+    # cannot be read from a boolean. UNVERIFIED.
+    "s3:GetBucketPolicy",
+    "s3:GetBucketLogging",
+    # Whether a key rotates, and whether anything records network flows.
+    # UNVERIFIED.
+    "kms:GetKeyRotationStatus",
+    "ec2:DescribeFlowLogs",
+    "ec2:DescribeNetworkAcls",
+    # Whether the account's own watchers are switched on. UNVERIFIED.
+    "access-analyzer:ListAnalyzers",
+    "securityhub:DescribeHub",
+    "config:DescribeConfigurationRecorderStatus",
 )
 
 # Which action each client call needs. The link between the code and the policy,
@@ -135,6 +159,19 @@ CLIENT_ACTIONS: dict[str, tuple[str, ...]] = {
     ),
     "guardduty:list_detectors": ("guardduty:ListDetectors",),
     "guardduty:get_detector": ("guardduty:GetDetector",),
+    "iam:list_policy_versions": ("iam:GetPolicyVersion",),
+    "iam:list_instance_profiles": ("iam:ListInstanceProfiles",),
+    "iam:list_server_certificates": ("iam:ListServerCertificates",),
+    "s3:get_bucket_policy": ("s3:GetBucketPolicy",),
+    "s3:get_bucket_logging": ("s3:GetBucketLogging",),
+    "kms:get_key_rotation_status": ("kms:GetKeyRotationStatus",),
+    "ec2:describe_flow_logs": ("ec2:DescribeFlowLogs",),
+    "ec2:describe_network_acls": ("ec2:DescribeNetworkAcls",),
+    "accessanalyzer:list_analyzers": ("access-analyzer:ListAnalyzers",),
+    "securityhub:describe_hub": ("securityhub:DescribeHub",),
+    "config:describe_configuration_recorder_status": (
+        "config:DescribeConfigurationRecorderStatus",
+    ),
 }
 
 # Actions the managed policies supply, listed so the two-way test can tell
@@ -164,7 +201,29 @@ MANAGED_ACTIONS: frozenset[str] = frozenset(
 # Which categories each version of the policy can serve. One entry per version,
 # so a connection running an older stack can be told which checks it is losing
 # rather than only that it is behind.
+#
+# v1 is written out rather than sliced off v2, for the reason ``ROLE_HISTORY``
+# is: what an older stack grants is a fact about that stack, and deriving it
+# from today's list would make it change every time today's list does.
+V1_ACTIONS: tuple[str, ...] = (
+    "ec2:DescribeRegions",
+    "organizations:ListAccounts",
+    "organizations:DescribeOrganization",
+    "iam:GenerateCredentialReport",
+    "iam:GetCredentialReport",
+    "iam:GetAccountSummary",
+    "iam:GetAccountPasswordPolicy",
+    "s3:GetBucketPublicAccessBlock",
+    "s3:GetBucketPolicyStatus",
+    "s3:GetEncryptionConfiguration",
+    "s3:GetBucketLocation",
+    "ec2:GetEbsEncryptionByDefault",
+    "guardduty:ListDetectors",
+    "guardduty:GetDetector",
+)
+
 POLICY_HISTORY: dict[str, tuple[str, ...]] = {
+    "v1": V1_ACTIONS,
     POLICY_VERSION: INLINE_READ_ACTIONS,
 }
 

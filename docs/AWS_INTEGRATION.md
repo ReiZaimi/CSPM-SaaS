@@ -38,8 +38,12 @@ the read fails several minutes into a scan with `AccessDenied`.
 | 9 | `organizations:ListAccounts` returns member accounts from the management account | Discovery produces nothing otherwise, and a connection scans one account while claiming an organization |
 | 10 | The response shapes match what `normalizer.py` reads | A wrong key silently normalises to an empty estate |
 | 11 | An SNS subscription confirms, and a notification reaches the webhook | The confirmation is fetched, not echoed — a different mechanism from Azure's |
+| 12 | `iam:GetPolicyVersion` returns a document, and the URL-decode produces JSON | AWS returns it percent-escaped; a wrong decode reads as a policy granting nothing |
+| 13 | `iam:ListInstanceProfiles` returns the role behind each profile | Without it the graph's first capability hop draws nothing |
+| 14 | A region with GuardDuty, Security Hub or Access Analyzer switched off answers with an error rather than an empty list | The client treats those codes as an answer; a different code would read as a failed read |
+| 15 | `config:DescribeConfigurationRecorderStatus` names recorders the way `DescribeConfigurationRecorders` does | They are joined on `name`, and a mismatch reads as "not recording" |
 
-Once all eleven pass: remove the `# UNVERIFIED` markers in
+Once all fifteen pass: remove the `# UNVERIFIED` markers in
 `app/connectors/aws/iam.py`, drop the warnings from the module docstrings in
 `app/connectors/aws/`, and enable AWS in the provider picker.
 

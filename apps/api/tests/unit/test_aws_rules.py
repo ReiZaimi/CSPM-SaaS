@@ -19,23 +19,41 @@ from typing import Any
 from app.connectors.aws.normalizer import AwsNormalizer
 from app.connectors.base import RawSnapshot
 from app.core.enums import Provider, RuleState
+from app.rules.aws.compute.exposure import AwsInstanceMetadataRule
 from app.rules.aws.database.exposure import (
     AwsDatabaseEncryptionRule,
     AwsPublicDatabaseRule,
 )
 from app.rules.aws.identity.credentials import (
+    AwsAccessAnalyzerRule,
+    AwsAdministratorPolicyRule,
+    AwsExpiredCertificateRule,
     AwsPasswordPolicyRule,
     AwsRootAccessKeyRule,
+    AwsRootMfaRule,
     AwsStaleAccessKeyRule,
     AwsUserWithoutMfaRule,
 )
 from app.rules.aws.logging.trails import (
     AwsCloudTrailCoverageRule,
+    AwsConfigRecorderRule,
     AwsEbsDefaultEncryptionRule,
+    AwsFlowLogRule,
+    AwsTrailBucketLoggingRule,
+    AwsTrailEncryptionRule,
+    AwsTrailValidationRule,
 )
-from app.rules.aws.network.exposure import AwsPublicRdpRule, AwsPublicSshRule
+from app.rules.aws.network.exposure import (
+    AwsDefaultSecurityGroupRule,
+    AwsOpenNetworkAclRule,
+    AwsPublicRdpRule,
+    AwsPublicSshRule,
+)
+from app.rules.aws.posture.coverage import AwsGuardDutyRule, AwsSecurityHubRule
+from app.rules.aws.secrets.keys import AwsKeyRotationRule
 from app.rules.aws.storage.public_access import (
     AwsBucketEncryptionRule,
+    AwsBucketTransportRule,
     AwsPublicBucketRule,
 )
 from app.rules.base import RuleContext
@@ -520,3 +538,478 @@ def test_no_azure_rule_reaches_an_aws_resource() -> None:
 
     for rule in azure_rules:
         assert not any(rule.matches(r) for r in context.resources), rule.rule_id
+
+
+# =========================================================== the second wave
+#
+# Everything below judges evidence the first thirteen rules collected and never
+# read. The pattern is the same -- fixture in, verdict out -- and the cases that
+# earn their place are the ones where a naive check gets the wrong answer.
+
+
+# ------------------------------------------------------------------- compute
+def test_an_instance_accepting_imdsv1_fails() -> None:
+    """The metadata service is the most productive single step in a cloud
+    intrusion: an SSRF that reaches it reads the role's credentials."""
+    context = context_from(
+        ec2_instances=[
+            {
+                "region": "eu-west-1",
+                "items": [
+                    {"InstanceId": "i-1", "MetadataOptions": {"HttpTokens": "optional"}}
+                ],
+            }
+        ]
+    )
+    assert verdict(AwsInstanceMetadataRule(), context) is RuleState.FAIL
+
+
+def test_an_instance_requiring_a_token_passes() -> None:
+    context = context_from(
+        ec2_instances=[
+            {
+                "region": "eu-west-1",
+                "items": [
+                    {"InstanceId": "i-1", "MetadataOptions": {"HttpTokens": "required"}}
+                ],
+            }
+        ]
+    )
+    assert verdict(AwsInstanceMetadataRule(), context) is RuleState.PASS
+
+
+# -------------------------------------------------------------------- secrets
+def test_a_customer_key_that_does_not_rotate_fails() -> None:
+    context = context_from(
+        kms_keys=[
+            {
+                "region": "eu-west-1",
+                "items": [
+                    {
+                        "Arn": "arn:aws:kms:eu-west-1:1:key/abc",
+                        "KeyManager": "CUSTOMER",
+                        "KeyRotationEnabled": False,
+                    }
+                ],
+            }
+        ]
+    )
+    assert verdict(AwsKeyRotationRule(), context) is RuleState.FAIL
+
+
+def test_an_aws_managed_key_is_not_the_customer_s_to_rotate() -> None:
+    """AWS rotates it on its own schedule and the setting cannot be changed.
+
+    A finding here would be one nobody can act on, which is worse than no
+    finding: it costs attention and cannot be closed.
+    """
+    context = context_from(
+        kms_keys=[
+            {
+                "region": "eu-west-1",
+                "items": [
+                    {"Arn": "arn:aws:kms:eu-west-1:1:key/aws", "KeyManager": "AWS"}
+                ],
+            }
+        ]
+    )
+    assert verdict(AwsKeyRotationRule(), context) is RuleState.NOT_APPLICABLE
+
+
+# ------------------------------------------------------------- authorization
+def test_a_policy_granting_everything_fails_in_either_spelling() -> None:
+    """IAM accepts ``*`` and ``*:*`` and treats them the same.
+
+    A check that knew one spelling would pass the other, which is the shape of
+    bug that only shows up in the account that used it.
+    """
+    for action in ("*", "*:*", ["*"]):
+        context = context_from(
+            iam_policies=[{"Arn": "arn:aws:iam::1:policy/admin"}],
+            iam_policy_documents=[
+                {
+                    "Arn": "arn:aws:iam::1:policy/admin",
+                    "PolicyName": "admin",
+                    "Document": {
+                        "Statement": [
+                            {"Effect": "Allow", "Action": action, "Resource": "*"}
+                        ]
+                    },
+                }
+            ],
+        )
+        assert verdict(AwsAdministratorPolicyRule(), context) is RuleState.FAIL, action
+
+
+def test_a_scoped_policy_passes() -> None:
+    context = context_from(
+        iam_policies=[{"Arn": "arn:aws:iam::1:policy/reader"}],
+        iam_policy_documents=[
+            {
+                "Arn": "arn:aws:iam::1:policy/reader",
+                "PolicyName": "reader",
+                "Document": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": ["s3:GetObject"],
+                            "Resource": "arn:aws:s3:::reports/*",
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+    assert verdict(AwsAdministratorPolicyRule(), context) is RuleState.PASS
+
+
+def test_a_wildcard_grant_behind_a_condition_is_not_unbounded() -> None:
+    """A condition is a real limit, and a statement carrying one is not the
+    blanket grant this rule is about."""
+    context = context_from(
+        iam_policies=[{"Arn": "arn:aws:iam::1:policy/conditional"}],
+        iam_policy_documents=[
+            {
+                "Arn": "arn:aws:iam::1:policy/conditional",
+                "PolicyName": "conditional",
+                "Document": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": "*",
+                            "Resource": "*",
+                            "Condition": {
+                                "StringEquals": {"aws:PrincipalOrgID": "o-example"}
+                            },
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+    assert verdict(AwsAdministratorPolicyRule(), context) is RuleState.PASS
+
+
+def test_a_deny_of_everything_is_not_a_grant_of_everything() -> None:
+    context = context_from(
+        iam_policies=[{"Arn": "arn:aws:iam::1:policy/deny"}],
+        iam_policy_documents=[
+            {
+                "Arn": "arn:aws:iam::1:policy/deny",
+                "PolicyName": "deny",
+                "Document": {
+                    "Statement": [
+                        {"Effect": "Deny", "Action": "*", "Resource": "*"}
+                    ]
+                },
+            }
+        ],
+    )
+    assert verdict(AwsAdministratorPolicyRule(), context) is RuleState.PASS
+
+
+# -------------------------------------------------------------------- storage
+def test_a_bucket_with_no_policy_accepts_plaintext_http() -> None:
+    """AWS answers ``NoSuchBucketPolicy``, which the collector records as a null
+    configuration -- and that *is* the finding, not a missing reading."""
+    context = context_from(
+        **bucket(s3_bucket_policy=[{"Bucket": "logs", "Document": None}])
+    )
+    assert verdict(AwsBucketTransportRule(), context) is RuleState.FAIL
+
+
+def test_a_policy_denying_insecure_transport_passes() -> None:
+    context = context_from(
+        **bucket(
+            s3_bucket_policy=[
+                {
+                    "Bucket": "logs",
+                    "Document": {
+                        "Statement": [
+                            {
+                                "Effect": "Deny",
+                                "Principal": "*",
+                                "Action": "s3:*",
+                                "Resource": "arn:aws:s3:::logs/*",
+                                "Condition": {
+                                    "Bool": {"aws:SecureTransport": "false"}
+                                },
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+    )
+    assert verdict(AwsBucketTransportRule(), context) is RuleState.PASS
+
+
+# -------------------------------------------------------------------- network
+def acl(**entry: Any) -> dict[str, Any]:
+    return {
+        "network_acls": [
+            {
+                "region": "eu-west-1",
+                "items": [{"NetworkAclId": "acl-1", "Entries": [entry]}],
+            }
+        ]
+    }
+
+
+def test_an_acl_admitting_ssh_from_anywhere_fails() -> None:
+    context = context_from(
+        **acl(
+            Egress=False,
+            RuleAction="allow",
+            CidrBlock="0.0.0.0/0",
+            PortRange={"From": 22, "To": 22},
+        )
+    )
+    assert verdict(AwsOpenNetworkAclRule(), context) is RuleState.FAIL
+
+
+def test_a_deny_entry_is_not_a_finding_whatever_it_covers() -> None:
+    """The default ACL ends with a deny-all on 0.0.0.0/0. Read without this,
+    every well-written ACL in AWS reports as open."""
+    context = context_from(
+        **acl(Egress=False, RuleAction="deny", CidrBlock="0.0.0.0/0")
+    )
+    assert verdict(AwsOpenNetworkAclRule(), context) is RuleState.PASS
+
+
+def test_an_egress_entry_is_not_ingress() -> None:
+    context = context_from(
+        **acl(
+            Egress=True,
+            RuleAction="allow",
+            CidrBlock="0.0.0.0/0",
+            PortRange={"From": 22, "To": 22},
+        )
+    )
+    assert verdict(AwsOpenNetworkAclRule(), context) is RuleState.PASS
+
+
+def test_a_default_security_group_carrying_rules_fails() -> None:
+    context = context_from(
+        security_groups=[
+            {
+                "region": "eu-west-1",
+                "items": [
+                    {
+                        "GroupId": "sg-default",
+                        "GroupName": "default",
+                        "IpPermissions": [
+                            {"IpProtocol": "-1", "UserIdGroupPairs": [{"GroupId": "sg-default"}]}
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    assert verdict(AwsDefaultSecurityGroupRule(), context, "default") is RuleState.FAIL
+
+
+def test_a_named_group_is_judged_on_what_it_admits_instead() -> None:
+    context = context_from(
+        security_groups=[
+            {
+                "region": "eu-west-1",
+                "items": [{"GroupId": "sg-1", "GroupName": "web", "IpPermissions": []}],
+            }
+        ]
+    )
+    assert (
+        verdict(AwsDefaultSecurityGroupRule(), context, "web")
+        is RuleState.NOT_APPLICABLE
+    )
+
+
+# -------------------------------------------------------------------- logging
+def trail(**fields: Any) -> dict[str, Any]:
+    """One multi-region trail, as every region it covers reports it."""
+    entry = {
+        "Name": "org-trail",
+        "TrailARN": "arn:aws:cloudtrail:eu-west-1:1:trail/org-trail",
+        "IsMultiRegionTrail": True,
+        "S3BucketName": "audit-logs",
+        **fields,
+    }
+    return {
+        "enabled_regions": ["eu-west-1", "us-east-1"],
+        "cloudtrail_trails": [
+            {"region": "eu-west-1", "items": [entry]},
+            {"region": "us-east-1", "items": [entry]},
+        ],
+    }
+
+
+def test_one_multi_region_trail_is_counted_once() -> None:
+    """Every region it covers reports it, which is what makes coverage
+    answerable -- and what would make every other trail rule count it twice."""
+    context = context_from(**trail(LogFileValidationEnabled=False))
+    result = AwsTrailValidationRule().evaluate(None, context)
+
+    assert result.state is RuleState.FAIL
+    assert result.evidence["without_validation"] == [
+        "arn:aws:cloudtrail:eu-west-1:1:trail/org-trail"
+    ]
+
+
+def test_a_validated_trail_passes() -> None:
+    context = context_from(**trail(LogFileValidationEnabled=True))
+    assert verdict(AwsTrailValidationRule(), context) is RuleState.PASS
+
+
+def test_no_trail_at_all_is_the_coverage_rule_s_finding_not_this_one() -> None:
+    """Raising both would charge the security score twice for one problem."""
+    context = context_from(enabled_regions=["eu-west-1"], cloudtrail_trails=[])
+    assert verdict(AwsTrailValidationRule(), context) is RuleState.NOT_APPLICABLE
+
+
+def test_a_trail_without_a_kms_key_fails() -> None:
+    context = context_from(**trail(LogFileValidationEnabled=True))
+    assert verdict(AwsTrailEncryptionRule(), context) is RuleState.FAIL
+
+
+def test_a_trail_bucket_in_another_account_is_unknown_rather_than_failed() -> None:
+    """A dedicated log archive account is the shape AWS recommends, and
+    CloudGuard cannot read a bucket it was not granted. "We could not look" is
+    not "logging is off"."""
+    context = context_from(**trail(), s3_buckets=[])
+    assert verdict(AwsTrailBucketLoggingRule(), context) is RuleState.UNKNOWN
+
+
+def test_a_trail_bucket_without_access_logging_fails() -> None:
+    context = context_from(
+        **trail(),
+        s3_buckets=[{"Name": "audit-logs", "Region": "eu-west-1"}],
+        s3_bucket_logging=[{"Bucket": "audit-logs", "Configuration": {}}],
+    )
+    assert verdict(AwsTrailBucketLoggingRule(), context) is RuleState.FAIL
+
+
+def test_a_stopped_config_recorder_records_nothing() -> None:
+    """Creating a recorder is two commands and starting it is the third. A check
+    that only looked for existence would pass the account that stopped there."""
+    context = context_from(
+        enabled_regions=["eu-west-1"],
+        config_recorders=[
+            {
+                "region": "eu-west-1",
+                "items": [{"name": "default", "Status": {"recording": False}}],
+            }
+        ],
+    )
+    assert verdict(AwsConfigRecorderRule(), context) is RuleState.FAIL
+
+
+def test_a_recording_config_recorder_passes() -> None:
+    context = context_from(
+        enabled_regions=["eu-west-1"],
+        config_recorders=[
+            {
+                "region": "eu-west-1",
+                "items": [{"name": "default", "Status": {"recording": True}}],
+            }
+        ],
+    )
+    assert verdict(AwsConfigRecorderRule(), context) is RuleState.PASS
+
+
+def test_a_vpc_with_no_flow_log_fails() -> None:
+    context = context_from(
+        vpcs=[{"region": "eu-west-1", "items": [{"VpcId": "vpc-1"}]}],
+        vpc_flow_logs=[{"region": "eu-west-1", "items": []}],
+    )
+    assert verdict(AwsFlowLogRule(), context) is RuleState.FAIL
+
+
+def test_an_inactive_flow_log_covers_nothing() -> None:
+    """A flow log in a non-ACTIVE state records nothing, so reading its
+    existence rather than its status would pass an account logging nothing."""
+    context = context_from(
+        vpcs=[{"region": "eu-west-1", "items": [{"VpcId": "vpc-1"}]}],
+        vpc_flow_logs=[
+            {
+                "region": "eu-west-1",
+                "items": [{"ResourceId": "vpc-1", "FlowLogStatus": "INACTIVE"}],
+            }
+        ],
+    )
+    assert verdict(AwsFlowLogRule(), context) is RuleState.FAIL
+
+
+def test_an_active_flow_log_covers_its_vpc() -> None:
+    context = context_from(
+        vpcs=[{"region": "eu-west-1", "items": [{"VpcId": "vpc-1"}]}],
+        vpc_flow_logs=[
+            {
+                "region": "eu-west-1",
+                "items": [{"ResourceId": "vpc-1", "FlowLogStatus": "ACTIVE"}],
+            }
+        ],
+    )
+    assert verdict(AwsFlowLogRule(), context) is RuleState.PASS
+
+
+# ------------------------------------------------------------------- identity
+def test_a_root_user_without_mfa_fails() -> None:
+    context = context_from(account_summary=[{"AccountMFAEnabled": 0}])
+    assert verdict(AwsRootMfaRule(), context) is RuleState.FAIL
+
+
+def test_a_root_user_with_mfa_passes() -> None:
+    context = context_from(account_summary=[{"AccountMFAEnabled": 1}])
+    assert verdict(AwsRootMfaRule(), context) is RuleState.PASS
+
+
+def test_an_expired_certificate_is_judged_against_the_capture() -> None:
+    """Not against the clock. A replayed scan has to reach the verdict the
+    original one did, or "verified fixed" becomes a statement about when
+    somebody asked."""
+    context = context_from(
+        iam_server_certificates=[
+            {"ServerCertificateName": "old", "Expiration": "2025-01-01T00:00:00+00:00"}
+        ]
+    )
+    assert verdict(AwsExpiredCertificateRule(), context) is RuleState.FAIL
+
+
+def test_a_current_certificate_passes() -> None:
+    context = context_from(
+        iam_server_certificates=[
+            {"ServerCertificateName": "new", "Expiration": "2027-01-01T00:00:00+00:00"}
+        ]
+    )
+    assert verdict(AwsExpiredCertificateRule(), context) is RuleState.PASS
+
+
+def test_a_region_without_an_access_analyzer_fails() -> None:
+    context = context_from(
+        enabled_regions=["eu-west-1", "us-east-1"],
+        access_analyzers=[
+            {"region": "eu-west-1", "items": [{"name": "account", "status": "ACTIVE"}]},
+            {"region": "us-east-1", "items": []},
+        ],
+    )
+    assert verdict(AwsAccessAnalyzerRule(), context) is RuleState.FAIL
+
+
+# -------------------------------------------------------------------- posture
+def test_a_region_without_guardduty_fails() -> None:
+    context = context_from(
+        enabled_regions=["eu-west-1", "us-east-1"],
+        guardduty_detectors=[
+            {"region": "eu-west-1", "items": [{"Status": "ENABLED"}]},
+            {"region": "us-east-1", "items": []},
+        ],
+    )
+    assert verdict(AwsGuardDutyRule(), context) is RuleState.FAIL
+
+
+def test_not_knowing_the_regions_never_passes_a_coverage_rule() -> None:
+    """"No uncovered regions" is trivially true of an account nobody
+    enumerated, and would be the most misleading PASS this product could
+    produce."""
+    for rule in (AwsGuardDutyRule(), AwsSecurityHubRule(), AwsAccessAnalyzerRule()):
+        assert verdict(rule, context_from()) is RuleState.UNKNOWN, rule.rule_id

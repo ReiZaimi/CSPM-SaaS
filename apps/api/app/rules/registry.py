@@ -5,27 +5,43 @@ Adding a rule means adding it here and writing its tests; it never means
 inserting a database row (RULE_ENGINE.md section 4).
 """
 
+from app.rules.aws.compute.exposure import AwsInstanceMetadataRule
 from app.rules.aws.database.exposure import (
     AwsDatabaseEncryptionRule,
+    AwsDatabasePatchingRule,
     AwsPublicDatabaseRule,
 )
 from app.rules.aws.identity.credentials import (
+    AwsAccessAnalyzerRule,
+    AwsAdministratorPolicyRule,
+    AwsExpiredCertificateRule,
     AwsPasswordPolicyRule,
     AwsRootAccessKeyRule,
+    AwsRootMfaRule,
     AwsStaleAccessKeyRule,
     AwsUserWithoutMfaRule,
 )
 from app.rules.aws.logging.trails import (
     AwsCloudTrailCoverageRule,
+    AwsConfigRecorderRule,
     AwsEbsDefaultEncryptionRule,
+    AwsFlowLogRule,
+    AwsTrailBucketLoggingRule,
+    AwsTrailEncryptionRule,
+    AwsTrailValidationRule,
 )
 from app.rules.aws.network.exposure import (
+    AwsDefaultSecurityGroupRule,
+    AwsOpenNetworkAclRule,
     AwsPublicDatabasePortRule,
     AwsPublicRdpRule,
     AwsPublicSshRule,
 )
+from app.rules.aws.posture.coverage import AwsGuardDutyRule, AwsSecurityHubRule
+from app.rules.aws.secrets.keys import AwsKeyRotationRule
 from app.rules.aws.storage.public_access import (
     AwsBucketEncryptionRule,
+    AwsBucketTransportRule,
     AwsPublicBucketRule,
 )
 from app.rules.azure.compute.exposure import (
@@ -135,17 +151,34 @@ RULE_REGISTRY: list[SecurityRule] = [
     # ``az storage account update`` (MULTI_CLOUD.md section 6).
     AwsPublicBucketRule(),
     AwsBucketEncryptionRule(),
+    AwsBucketTransportRule(),
     AwsPublicSshRule(),
     AwsPublicRdpRule(),
     AwsPublicDatabasePortRule(),
+    AwsOpenNetworkAclRule(),
+    AwsDefaultSecurityGroupRule(),
     AwsPublicDatabaseRule(),
     AwsDatabaseEncryptionRule(),
+    AwsDatabasePatchingRule(),
     AwsUserWithoutMfaRule(),
     AwsRootAccessKeyRule(),
+    AwsRootMfaRule(),
     AwsStaleAccessKeyRule(),
     AwsPasswordPolicyRule(),
+    AwsAdministratorPolicyRule(),
+    AwsExpiredCertificateRule(),
+    AwsAccessAnalyzerRule(),
+    AwsInstanceMetadataRule(),
+    AwsKeyRotationRule(),
     AwsCloudTrailCoverageRule(),
+    AwsTrailValidationRule(),
+    AwsTrailEncryptionRule(),
+    AwsTrailBucketLoggingRule(),
+    AwsConfigRecorderRule(),
+    AwsFlowLogRule(),
     AwsEbsDefaultEncryptionRule(),
+    AwsGuardDutyRule(),
+    AwsSecurityHubRule(),
 ]
 
 

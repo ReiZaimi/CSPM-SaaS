@@ -284,9 +284,15 @@ def test_a_role_is_a_workload_identity_rather_than_a_person() -> None:
 
 
 # ---------------------------------------------------------- the graph's edges
-def test_an_instance_runs_as_its_profile_and_is_protected_by_its_groups() -> None:
+def test_an_instance_runs_as_its_role_and_is_protected_by_its_groups() -> None:
     """``HAS_IDENTITY`` is the capability edge -- the first hop from a
-    compromised workload to everything that workload may do."""
+    compromised workload to everything that workload may do.
+
+    Resolved through the instance profile rather than pointing at it. An
+    instance names its profile and the profile names the role, so an edge to the
+    profile stops one hop short of the thing that turns a foothold into a blast
+    radius.
+    """
     state = normalize(
         ec2_instances=[
             {
@@ -301,15 +307,48 @@ def test_an_instance_runs_as_its_profile_and_is_protected_by_its_groups() -> Non
                     }
                 ],
             }
-        ]
+        ],
+        iam_instance_profiles=[
+            {
+                "Arn": "arn:aws:iam::1:instance-profile/app",
+                "Roles": [{"Arn": "arn:aws:iam::1:role/app"}],
+            }
+        ],
     )
 
     assert ("sg-1", RelationshipType.PROTECTS, "i-1") in state.relationships
     assert (
         "i-1",
         RelationshipType.HAS_IDENTITY,
-        "arn:aws:iam::1:instance-profile/app",
+        "arn:aws:iam::1:role/app",
     ) in state.relationships
+
+
+def test_an_unresolvable_profile_draws_no_edge_rather_than_a_guessed_one() -> None:
+    """Inventing the role ARN from the profile's name holds most of the time,
+    which is the worst kind of wrong: the graph would claim a path to a role
+    that does not exist."""
+    state = normalize(
+        ec2_instances=[
+            {
+                "region": "eu-west-1",
+                "items": [
+                    {
+                        "InstanceId": "i-1",
+                        "IamInstanceProfile": {
+                            "Arn": "arn:aws:iam::1:instance-profile/app"
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert not [
+        edge
+        for edge in state.relationships
+        if edge[1] is RelationshipType.HAS_IDENTITY
+    ]
 
 
 def test_a_subnet_is_contained_by_its_vpc() -> None:

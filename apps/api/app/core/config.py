@@ -129,10 +129,6 @@ class Settings(BaseSettings):
     # to state it exactly and a wrong value fails at the moment they click
     # deploy rather than at the moment CloudGuard calls.
     aws_principal_arn: str = ""
-    # Where the CloudFormation template is published for the console to fetch.
-    # Empty means the console link is not offered and the template is served
-    # from this API, token-gated, the way the ARM template is.
-    aws_template_url: str = ""
     # Whether AWS is offered in the connection wizard.
     #
     # Off by default, and deliberately separate from having credentials. Every

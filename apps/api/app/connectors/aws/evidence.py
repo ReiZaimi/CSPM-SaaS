@@ -48,6 +48,22 @@ class AwsEvidence(EvidenceKey):
     IAM_USERS = "iam_users"
     IAM_ROLES = "iam_roles"
     IAM_POLICIES = "iam_policies"
+    # The policy *documents*, which ``ListPolicies`` does not return -- it
+    # answers metadata only. Its own key rather than folded into the listing
+    # because it is a separate call per policy and separately deniable: a role
+    # that can list policies and not read their versions has read the listing
+    # perfectly well, and only the check that judges what a policy grants should
+    # lose its verdict.
+    IAM_POLICY_DOCUMENTS = "iam_policy_documents"
+    # Which role each instance profile carries. The graph needs it and no rule
+    # does: an instance names its *profile*, and the profile names the role, so
+    # without this the hop from a compromised workload to what it may do stops
+    # one edge short.
+    IAM_INSTANCE_PROFILES = "iam_instance_profiles"
+    # TLS certificates uploaded to IAM. Almost always a leftover -- ACM is where
+    # certificates live now -- and an expired one is either forgotten or in use,
+    # both of which are worth saying.
+    IAM_SERVER_CERTIFICATES = "iam_server_certificates"
     # IAM's own report on every credential in the account: when each password
     # and access key was last used, whether MFA is on, whether the root account
     # still has keys. One call rather than four per user, and the only place
@@ -76,6 +92,15 @@ class AwsEvidence(EvidenceKey):
     # The bucket policy, which is the other half of "is this public": a bucket
     # can block public ACLs and still carry a policy granting ``*``.
     S3_BUCKET_POLICY_STATUS = "s3_bucket_policy_status"
+    # The policy document itself. Separate from the status above, which answers
+    # only "is this public": whether a policy *denies plaintext HTTP* cannot be
+    # read from a boolean, and it is the other half of what a bucket policy is
+    # for.
+    S3_BUCKET_POLICY = "s3_bucket_policy"
+    # Whether the bucket records who read what. Its own key because it is a
+    # separate call and because one bucket in particular has to have it: the one
+    # the CloudTrail logs are written to.
+    S3_BUCKET_LOGGING = "s3_bucket_logging"
 
     # --- account-wide settings that happen to be regional ------------------
     # Whether new EBS volumes are encrypted by default. Regional, and one of
@@ -89,6 +114,11 @@ class AwsEvidence(EvidenceKey):
     SUBNETS = "subnets"
     NETWORK_INTERFACES = "network_interfaces"
     ELASTIC_IPS = "elastic_ips"
+    # The subnet-level firewall, which is stateless and evaluated before a
+    # security group. A network ACL open to the world in front of a closed
+    # security group is not a finding; the reverse is, and neither can be seen
+    # from the other.
+    NETWORK_ACLS = "network_acls"
 
     # --- compute: regional -------------------------------------------------
     EC2_INSTANCES = "ec2_instances"
@@ -108,9 +138,20 @@ class AwsEvidence(EvidenceKey):
     # a trail covering this region" cannot be answered from one region's list.
     CLOUDTRAIL_TRAILS = "cloudtrail_trails"
     CONFIG_RECORDERS = "config_recorders"
+    # Whether anything records network flows in a VPC. The one log that answers
+    # "what talked to what" after the fact, and off by default.
+    VPC_FLOW_LOGS = "vpc_flow_logs"
 
     # --- posture: somebody else's conclusions, read as evidence ------------
     GUARDDUTY_DETECTORS = "guardduty_detectors"
+    # Whether Security Hub is turned on. The hub itself rather than its
+    # findings: CloudGuard reaches its own verdicts and does not re-report
+    # somebody else's, but a region with no hub has nobody aggregating at all.
+    SECURITYHUB_STATUS = "securityhub_status"
+    # Whether anything is watching for resources shared outside the account.
+    # Read as authorization rather than posture: it is a statement about who may
+    # reach what, and it is the only service that answers it.
+    ACCESS_ANALYZERS = "access_analyzers"
 
     @property
     def category(self) -> EvidenceCategory:
@@ -148,6 +189,10 @@ _CATEGORIES: dict[AwsEvidence, EvidenceCategory] = {
     AwsEvidence.IAM_USERS: EvidenceCategory.IDENTITY,
     AwsEvidence.IAM_ROLES: EvidenceCategory.IDENTITY,
     AwsEvidence.IAM_POLICIES: EvidenceCategory.AUTHORIZATION,
+    AwsEvidence.IAM_POLICY_DOCUMENTS: EvidenceCategory.AUTHORIZATION,
+    AwsEvidence.IAM_INSTANCE_PROFILES: EvidenceCategory.IDENTITY,
+    AwsEvidence.IAM_SERVER_CERTIFICATES: EvidenceCategory.IDENTITY,
+    AwsEvidence.ACCESS_ANALYZERS: EvidenceCategory.AUTHORIZATION,
     AwsEvidence.IAM_CREDENTIAL_REPORT: EvidenceCategory.IDENTITY,
     AwsEvidence.ACCOUNT_PASSWORD_POLICY: EvidenceCategory.IDENTITY,
     AwsEvidence.ACCOUNT_SUMMARY: EvidenceCategory.IDENTITY,
@@ -155,18 +200,23 @@ _CATEGORIES: dict[AwsEvidence, EvidenceCategory] = {
     AwsEvidence.S3_PUBLIC_ACCESS_BLOCK: EvidenceCategory.STORAGE,
     AwsEvidence.S3_ENCRYPTION: EvidenceCategory.STORAGE,
     AwsEvidence.S3_BUCKET_POLICY_STATUS: EvidenceCategory.STORAGE,
+    AwsEvidence.S3_BUCKET_POLICY: EvidenceCategory.STORAGE,
+    AwsEvidence.S3_BUCKET_LOGGING: EvidenceCategory.STORAGE,
     AwsEvidence.EBS_ENCRYPTION_DEFAULT: EvidenceCategory.COMPUTE,
     AwsEvidence.SECURITY_GROUPS: EvidenceCategory.NETWORK,
     AwsEvidence.VPCS: EvidenceCategory.NETWORK,
     AwsEvidence.SUBNETS: EvidenceCategory.NETWORK,
     AwsEvidence.NETWORK_INTERFACES: EvidenceCategory.NETWORK,
     AwsEvidence.ELASTIC_IPS: EvidenceCategory.NETWORK,
+    AwsEvidence.NETWORK_ACLS: EvidenceCategory.NETWORK,
     AwsEvidence.EC2_INSTANCES: EvidenceCategory.COMPUTE,
     AwsEvidence.RDS_INSTANCES: EvidenceCategory.DATABASE,
     AwsEvidence.KMS_KEYS: EvidenceCategory.SECRETS,
     AwsEvidence.CLOUDTRAIL_TRAILS: EvidenceCategory.LOGGING,
     AwsEvidence.CONFIG_RECORDERS: EvidenceCategory.LOGGING,
+    AwsEvidence.VPC_FLOW_LOGS: EvidenceCategory.LOGGING,
     AwsEvidence.GUARDDUTY_DETECTORS: EvidenceCategory.POSTURE,
+    AwsEvidence.SECURITYHUB_STATUS: EvidenceCategory.POSTURE,
 }
 
 # Enumerated rather than compared at call time: a key added without a category
@@ -193,6 +243,10 @@ _REGIONAL: frozenset[AwsEvidence] = frozenset(
         AwsEvidence.CLOUDTRAIL_TRAILS,
         AwsEvidence.CONFIG_RECORDERS,
         AwsEvidence.GUARDDUTY_DETECTORS,
+        AwsEvidence.NETWORK_ACLS,
+        AwsEvidence.VPC_FLOW_LOGS,
+        AwsEvidence.SECURITYHUB_STATUS,
+        AwsEvidence.ACCESS_ANALYZERS,
     }
 )
 
@@ -216,6 +270,11 @@ BASELINE_EVIDENCE: frozenset[AwsEvidence] = frozenset(
         AwsEvidence.ELASTIC_IPS,
         AwsEvidence.IAM_ROLES,
         AwsEvidence.IAM_POLICIES,
+        # The graph's missing edge. An instance names its profile and the
+        # profile names the role, so without this the hop from a compromised
+        # workload to everything it may do stops one short -- and no rule asks
+        # for it, so a plan derived from the rule set would drop it.
+        AwsEvidence.IAM_INSTANCE_PROFILES,
     }
 )
 

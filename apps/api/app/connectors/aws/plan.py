@@ -29,6 +29,7 @@ those declarations in both directions.
 import asyncio
 import csv
 import io
+import json
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -95,6 +96,17 @@ ACTION_KEYS: dict[str, tuple[AwsEvidence, ...]] = {
     "config:DescribeConfigurationRecorders": (AwsEvidence.CONFIG_RECORDERS,),
     "guardduty:ListDetectors": (AwsEvidence.GUARDDUTY_DETECTORS,),
     "guardduty:GetDetector": (AwsEvidence.GUARDDUTY_DETECTORS,),
+    "iam:GetPolicyVersion": (AwsEvidence.IAM_POLICY_DOCUMENTS,),
+    "iam:ListInstanceProfiles": (AwsEvidence.IAM_INSTANCE_PROFILES,),
+    "iam:ListServerCertificates": (AwsEvidence.IAM_SERVER_CERTIFICATES,),
+    "s3:GetBucketPolicy": (AwsEvidence.S3_BUCKET_POLICY,),
+    "s3:GetBucketLogging": (AwsEvidence.S3_BUCKET_LOGGING,),
+    "kms:GetKeyRotationStatus": (AwsEvidence.KMS_KEYS,),
+    "ec2:DescribeFlowLogs": (AwsEvidence.VPC_FLOW_LOGS,),
+    "ec2:DescribeNetworkAcls": (AwsEvidence.NETWORK_ACLS,),
+    "access-analyzer:ListAnalyzers": (AwsEvidence.ACCESS_ANALYZERS,),
+    "securityhub:DescribeHub": (AwsEvidence.SECURITYHUB_STATUS,),
+    "config:DescribeConfigurationRecorderStatus": (AwsEvidence.CONFIG_RECORDERS,),
 }
 
 
@@ -330,6 +342,41 @@ class AwsPlanBuilder:
                 actions=("s3:GetEncryptionConfiguration",),
                 endpoints=(endpoint("s3", "GetBucketEncryption", "2006-03-01"),),
             ),
+            CollectionTask(
+                key=AwsEvidence.S3_BUCKET_POLICY,
+                run=self._s3_bucket_policy,
+                depends_on=(AwsEvidence.S3_BUCKETS,),
+                actions=("s3:GetBucketPolicy",),
+                endpoints=(endpoint("s3", "GetBucketPolicy", "2006-03-01"),),
+            ),
+            CollectionTask(
+                key=AwsEvidence.S3_BUCKET_LOGGING,
+                run=self._s3_bucket_logging,
+                depends_on=(AwsEvidence.S3_BUCKETS,),
+                actions=("s3:GetBucketLogging",),
+                endpoints=(endpoint("s3", "GetBucketLogging", "2006-03-01"),),
+            ),
+            CollectionTask(
+                key=AwsEvidence.IAM_POLICY_DOCUMENTS,
+                run=self._iam_policy_documents,
+                depends_on=(AwsEvidence.IAM_POLICIES,),
+                actions=("iam:GetPolicyVersion",),
+                endpoints=(endpoint("iam", "GetPolicyVersion", "2010-05-08"),),
+            ),
+            CollectionTask(
+                key=AwsEvidence.IAM_INSTANCE_PROFILES,
+                run=self._iam_instance_profiles,
+                actions=("iam:ListInstanceProfiles",),
+                endpoints=(endpoint("iam", "ListInstanceProfiles", "2010-05-08"),),
+            ),
+            CollectionTask(
+                key=AwsEvidence.IAM_SERVER_CERTIFICATES,
+                run=self._iam_server_certificates,
+                actions=("iam:ListServerCertificates",),
+                endpoints=(
+                    endpoint("iam", "ListServerCertificates", "2010-05-08"),
+                ),
+            ),
         ]
 
     # ---------------------------------------------------------- regional tasks
@@ -393,12 +440,20 @@ class AwsPlanBuilder:
                 "2013-11-01",
             ),
             (
-                AwsEvidence.CONFIG_RECORDERS,
-                "config",
-                "describe_configuration_recorders",
-                "ConfigurationRecorders",
-                "config:DescribeConfigurationRecorders",
-                "2014-11-12",
+                AwsEvidence.NETWORK_ACLS,
+                "ec2",
+                "describe_network_acls",
+                "NetworkAcls",
+                "ec2:DescribeNetworkAcls",
+                "2016-11-15",
+            ),
+            (
+                AwsEvidence.VPC_FLOW_LOGS,
+                "ec2",
+                "describe_flow_logs",
+                "FlowLogs",
+                "ec2:DescribeFlowLogs",
+                "2016-11-15",
             ),
         ]
 
@@ -406,7 +461,10 @@ class AwsPlanBuilder:
             self._listing_task(key, service, operation, result_key, action, api, region)
             for key, service, operation, result_key, action, api in listings
         ]
+        tasks.append(self._config_recorders_task(region))
         tasks.append(self._instances_task(region))
+        tasks.append(self._securityhub_task(region))
+        tasks.append(self._access_analyzer_task(region))
         tasks.append(self._ebs_default_task(region))
         tasks.append(self._kms_task(region))
         tasks.append(self._guardduty_task(region))
@@ -517,17 +575,28 @@ class AwsPlanBuilder:
         async def run(collected: dict[str, Any]) -> TaskData:
             async with self.client("kms", region) as kms:
                 listed = await kms.paginate("list_keys", "Keys")
-                described = await _fan_out(
-                    listed,
-                    lambda entry: kms.optional(
-                        "describe_key", KeyId=str(entry.get("KeyId"))
-                    ),
-                )
-                keys = [
-                    (result or {}).get("KeyMetadata", {})
-                    for result in described
-                    if result
-                ]
+                async def describe(entry: dict[str, Any]) -> dict[str, Any] | None:
+                    key_id = str(entry.get("KeyId"))
+                    found = await kms.optional("describe_key", KeyId=key_id)
+                    if not found:
+                        return None
+                    metadata = dict(found.get("KeyMetadata") or {})
+                    # Rotation is a separate call and only means anything for a
+                    # key AWS does not manage: asking about an AWS-managed key
+                    # answers ``UnsupportedOperationException``, which is not a
+                    # finding and not a gap.
+                    if metadata.get("KeyManager") == "CUSTOMER":
+                        rotation = await kms.optional(
+                            "get_key_rotation_status", KeyId=key_id
+                        )
+                        metadata["KeyRotationEnabled"] = (
+                            None if rotation is None
+                            else bool(rotation.get("KeyRotationEnabled"))
+                        )
+                    return metadata
+
+                described = await _fan_out(listed, describe)
+                keys = [result for result in described if result]
                 return TaskData(
                     {AwsEvidence.KMS_KEYS.value: keys},
                     partial_reason=(
@@ -539,11 +608,104 @@ class AwsPlanBuilder:
             key=AwsEvidence.KMS_KEYS,
             run=run,
             region=region,
-            actions=("kms:ListKeys", "kms:DescribeKey"),
+            actions=("kms:ListKeys", "kms:DescribeKey", "kms:GetKeyRotationStatus"),
             endpoints=(
                 endpoint("kms", "ListKeys", "2014-11-01"),
                 endpoint("kms", "DescribeKey", "2014-11-01"),
+                endpoint("kms", "GetKeyRotationStatus", "2014-11-01"),
             ),
+        )
+
+    def _config_recorders_task(self, region: str) -> CollectionTask:
+        """Whether AWS Config exists here, and whether it is actually recording.
+
+        Two calls in one task, unlike the split this connector usually prefers.
+        The recorder's *existence* and its *status* are granted by the same
+        managed policy and refused together, so separating them would buy a
+        finer gap that cannot occur -- and a recorder that exists and is stopped
+        is the finding, which needs both halves to see.
+        """
+
+        async def run(collected: dict[str, Any]) -> TaskData:
+            async with self.client("config", region) as config:
+                listed = await config.call("describe_configuration_recorders")
+                status = await config.optional(
+                    "describe_configuration_recorder_status"
+                )
+                by_name = {
+                    str(entry.get("name")): entry
+                    for entry in (status or {}).get("ConfigurationRecordersStatus")
+                    or []
+                }
+                recorders = [
+                    {**recorder, "Status": by_name.get(str(recorder.get("name")))}
+                    for recorder in listed.get("ConfigurationRecorders") or []
+                ]
+                return TaskData({AwsEvidence.CONFIG_RECORDERS.value: recorders})
+
+        return CollectionTask(
+            key=AwsEvidence.CONFIG_RECORDERS,
+            run=run,
+            region=region,
+            actions=(
+                "config:DescribeConfigurationRecorders",
+                "config:DescribeConfigurationRecorderStatus",
+            ),
+            endpoints=(
+                endpoint("config", "DescribeConfigurationRecorders", "2014-11-12"),
+                endpoint(
+                    "config", "DescribeConfigurationRecorderStatus", "2014-11-12"
+                ),
+            ),
+        )
+
+    def _securityhub_task(self, region: str) -> CollectionTask:
+        """Whether Security Hub is switched on here.
+
+        The hub rather than its findings. CloudGuard reaches its own verdicts
+        and does not re-report somebody else's -- but a region with no hub has
+        nobody aggregating at all, and that is a fact about the account rather
+        than a conclusion of theirs.
+
+        A region where it is off answers ``InvalidAccessException``, which the
+        client already treats as an answer rather than a gap.
+        """
+
+        async def run(collected: dict[str, Any]) -> TaskData:
+            async with self.client("securityhub", region) as hub:
+                found = await hub.optional("describe_hub")
+                return TaskData(
+                    {AwsEvidence.SECURITYHUB_STATUS.value: [found] if found else []}
+                )
+
+        return CollectionTask(
+            key=AwsEvidence.SECURITYHUB_STATUS,
+            run=run,
+            region=region,
+            actions=("securityhub:DescribeHub",),
+            endpoints=(endpoint("securityhub", "DescribeHub", "2018-10-26"),),
+        )
+
+    def _access_analyzer_task(self, region: str) -> CollectionTask:
+        """Whether anything watches for resources shared outside the account."""
+
+        async def run(collected: dict[str, Any]) -> TaskData:
+            async with self.client("accessanalyzer", region) as analyzer:
+                listed = await analyzer.call("list_analyzers")
+                return TaskData(
+                    {
+                        AwsEvidence.ACCESS_ANALYZERS.value: list(
+                            listed.get("analyzers") or []
+                        )
+                    }
+                )
+
+        return CollectionTask(
+            key=AwsEvidence.ACCESS_ANALYZERS,
+            run=run,
+            region=region,
+            actions=("access-analyzer:ListAnalyzers",),
+            endpoints=(endpoint("accessanalyzer", "ListAnalyzers", "2019-11-01"),),
         )
 
     def _guardduty_task(self, region: str) -> CollectionTask:
@@ -681,6 +843,106 @@ class AwsPlanBuilder:
                 {AwsEvidence.ACCOUNT_SUMMARY.value: [response.get("SummaryMap") or {}]}
             )
 
+    async def _iam_policy_documents(self, collected: dict[str, Any]) -> TaskData:
+        """What each customer-managed policy actually grants.
+
+        ``ListPolicies`` answers metadata, so a check asking "does this grant
+        everything" has nothing to read without this. Only the *default*
+        version, which is the one in force -- an older version that granted more
+        is history rather than access.
+
+        AWS returns the document URL-encoded, and it is decoded here so the
+        stored reading is JSON somebody can read back in two years rather than a
+        percent-escaped string.
+        """
+        from urllib.parse import unquote
+
+        policies = collected.get(AwsEvidence.IAM_POLICIES.value) or []
+
+        async def read(policy: dict[str, Any]) -> dict[str, Any] | None:
+            arn = str(policy.get("Arn") or "")
+            version = str(policy.get("DefaultVersionId") or "")
+            if not arn or not version:
+                return None
+            async with self.client("iam") as iam:
+                found = await iam.optional(
+                    "get_policy_version", PolicyArn=arn, VersionId=version
+                )
+            if found is None:
+                return None
+            document = (found.get("PolicyVersion") or {}).get("Document")
+            if isinstance(document, str):
+                try:
+                    document = json.loads(unquote(document))
+                except ValueError:
+                    document = None
+            return {
+                "Arn": arn,
+                "PolicyName": policy.get("PolicyName"),
+                "VersionId": version,
+                "AttachmentCount": policy.get("AttachmentCount"),
+                "Document": document,
+            }
+
+        rows = await _fan_out(policies, read)
+        return TaskData(
+            {AwsEvidence.IAM_POLICY_DOCUMENTS.value: [row for row in rows if row]}
+        )
+
+    async def _iam_instance_profiles(self, collected: dict[str, Any]) -> TaskData:
+        async with self.client("iam") as iam:
+            profiles = await iam.paginate(
+                "list_instance_profiles", "InstanceProfiles"
+            )
+            return TaskData(
+                {AwsEvidence.IAM_INSTANCE_PROFILES.value: profiles},
+                partial_reason=(
+                    "list_instance_profiles stopped at the page cap"
+                    if iam.truncated
+                    else None
+                ),
+            )
+
+    async def _iam_server_certificates(self, collected: dict[str, Any]) -> TaskData:
+        async with self.client("iam") as iam:
+            certificates = await iam.paginate(
+                "list_server_certificates", "ServerCertificateMetadataList"
+            )
+            return TaskData(
+                {AwsEvidence.IAM_SERVER_CERTIFICATES.value: certificates},
+                partial_reason=(
+                    "list_server_certificates stopped at the page cap"
+                    if iam.truncated
+                    else None
+                ),
+            )
+
+    async def _s3_bucket_policy(self, collected: dict[str, Any]) -> TaskData:
+        """Each bucket's policy document, parsed.
+
+        A bucket with no policy answers ``NoSuchBucketPolicy``, which the client
+        treats as an answer -- and it *is* one: no policy means no policy
+        denying plaintext HTTP, which is the finding.
+        """
+        rows = await self._per_bucket(
+            collected, AwsEvidence.S3_BUCKET_POLICY, "get_bucket_policy"
+        )
+        parsed = []
+        for row in rows.data[AwsEvidence.S3_BUCKET_POLICY.value]:
+            document = (row.get("Configuration") or {}).get("Policy")
+            if isinstance(document, str):
+                try:
+                    document = json.loads(document)
+                except ValueError:
+                    document = None
+            parsed.append({**row, "Document": document})
+        return TaskData({AwsEvidence.S3_BUCKET_POLICY.value: parsed})
+
+    async def _s3_bucket_logging(self, collected: dict[str, Any]) -> TaskData:
+        return await self._per_bucket(
+            collected, AwsEvidence.S3_BUCKET_LOGGING, "get_bucket_logging"
+        )
+
     async def _s3_buckets(self, collected: dict[str, Any]) -> TaskData:
         """Every bucket, each carrying the region it actually lives in.
 
@@ -780,6 +1042,10 @@ _REGIONAL_TASK_KEYS: tuple[AwsEvidence, ...] = (
     AwsEvidence.RDS_INSTANCES,
     AwsEvidence.CLOUDTRAIL_TRAILS,
     AwsEvidence.CONFIG_RECORDERS,
+    AwsEvidence.NETWORK_ACLS,
+    AwsEvidence.VPC_FLOW_LOGS,
+    AwsEvidence.SECURITYHUB_STATUS,
+    AwsEvidence.ACCESS_ANALYZERS,
     AwsEvidence.EC2_INSTANCES,
     AwsEvidence.EBS_ENCRYPTION_DEFAULT,
     AwsEvidence.KMS_KEYS,
