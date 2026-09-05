@@ -895,9 +895,11 @@ class TestSubscriptionDiscovery:
                     }
                 ]
 
-        from app.services import cloud_connections as service
-
-        monkeypatch.setattr(service, "ArmClient", FakeArm)
+        # Patched where the call is made. Onboarding lives behind
+        # ``ProviderOnboarding`` (DECISIONS.md §71), so ``cloud_connections``
+        # holds no provider client to replace -- and the seam test fails the
+        # build if it ever does again.
+        monkeypatch.setattr("app.connectors.azure.onboarding.ArmClient", FakeArm)
         monkeypatch.setattr(
             "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
         )
@@ -1008,9 +1010,11 @@ class TestRecheckingAccess:
                     }
                 }
 
-        from app.services import cloud_connections as service
-
-        monkeypatch.setattr(service, "ArmClient", FakeArm)
+        # Patched where the call is made. Onboarding lives behind
+        # ``ProviderOnboarding`` (DECISIONS.md §71), so ``cloud_connections``
+        # holds no provider client to replace -- and the seam test fails the
+        # build if it ever does again.
+        monkeypatch.setattr("app.connectors.azure.onboarding.ArmClient", FakeArm)
         monkeypatch.setattr(
             "app.connectors.azure.auth.TokenProvider", lambda tenant_id: object()
         )
